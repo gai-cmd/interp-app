@@ -183,3 +183,69 @@ implementation=ready, state=untested, result=null, 검사 결과 목록 비어 �
 필요한 범위 밖 변경은 settings.test.mjs의 live 기대 상태 planned를 untested로,
 언어 전환 후 기대 사전 키 capability.planned를 capability.untested로 바꾸는 두 곳이다.
 제품 등록을 planned로 되돌리거나 진단에 다른 등록 정보를 주입하는 우회는 하지 않는다.
+
+## P2-13 허브 청취 엔진과 최근 자막 복구
+
+`createHubListenEngine({client, deviceTTS, now?, setTimeout?, clearTimeout?})`는
+P2-11 클라이언트와 P2-08 자막·상태, P2-12 기기 음성 큐를 조립한다.
+새 레거시 코드를 이식하지 않았다. 원본 live.js의 모델 음성 폐기 정책을 확인했고,
+translate·xlsx·제공자 voice 경로는 호출하지 않는다. 의존 구현 누락이나
+P1 테스트 기대값 변경은 없다. 지정된 세 파일만 추가·수정했다.
+
+### 호출과 화면 계약
+
+- `join({hubId, roomCode, language?}, {signal?})`는 동기적으로
+  `{ready, done, closed}`를 반환한다. ready는 최초 hello 성공 여부,
+  done은 작업 종료, closed는 실제 소켓 종료 확인이다.
+- `leave()`는 종료를 요청한다. 종료 확인 시간이 초과되면 상태는 failed이지만
+  busy는 유지한다. 이후 closed가 해결되어야 새 참가가 가능하다.
+- `setMuted(false)`는 running에서 사용자가 소리를 켤 때 호출한다.
+  재접속 중 호출은 거부한다. `setLanguage()`는 기존 참가를 중지하며 자동 접속하지 않는다.
+- `snapshot()/subscribe()`는 세션·방송·출력 상태를 따로 제공한다.
+  `translations`는 선택 목표어, `sources`는 원문이다. 문장별 대응을 추정하지 않는다.
+  `captions`는 전체 언어의 공통 저장소 snapshot이며 확정/중단 행 합계 100개와
+  활성 임시 행만 유지한다. 화면은 문자열을 textContent로 표시해야 한다.
+- `recentPossible=true`는 최근 자막이 섞일 수 있다는 안내 신호이며 개별 행의
+  replay 판정이 아니다. 새 UI 문구는 추가하지 않았다. P2-14·16에서 상태·reason·
+  recentPossible을 세 언어 사전 키로 렌더링한다. 기기 음성 안내 키는 기존 큐를 따른다.
+- `close()`는 엔진을 폐기하고 메모리 자막과 구독을 정리한다. 실제 소켓 종료가
+  미확인인 경우 busy는 여전히 유지된다.
+
+### 복구와 식별의 한계
+
+서버의 최근 30개는 모든 언어를 합친 확정 이벤트 최대 30개다. 클라이언트에서
+언어별 30개를 요청하거나 30번째 수신을 replay 종료로 취급하지 않는다.
+모든 언어를 수신 순서대로 저장한 뒤 화면에서 필터링한다. lastSeq는 마지막으로
+관측한 숫자이며 누락 문장 수나 방송 ID가 아니다. 서버 ts로 지연을 계산하지 않는다.
+
+첫 참가·재접속은 음성 OFF다. 음소거 때 받은 final도 음성 큐의 중복 억제에
+전달하며 소리를 켜도 읽지 않는다. partial·원문·다른 목표어·중복·확정 후 revision은
+자동 낭독하지 않는다. 소리 켜기 뒤 도착한 첫 final만 자격을 얻는다.
+서버에 replay 경계가 없어 사용자 동작 뒤 도착한 과거 final까지 완벽히 구별할 수는 없다.
+
+재접속에서는 epoch·저장소·큐의 중복 억제를 유지하고 수신 누락 가능성을 표시한다.
+단절 중 방송 재시작으로 낮아진 seq나 재사용 ID가 오면 기존 저장소의 watermark와
+revision 정책상 일부 새 자막이 억제될 수 있다. 이를 확실한 새 방송으로 추정해
+자동 초기화하지 않는다. 사용자가 나갔다 다시 참가하면 새 epoch로 초기화한다.
+cast.stopped도 종료 후 수동 참가만 허용하므로 다음 방송은 새 epoch가 된다.
+hello만 있으면 방송 상태는 unknown이다. connected 상태 메시지는 waiting,
+선택 목표어 자막 수신은 receiving으로 표시한다. 선택 언어 제거·방 종료·접근 거부·
+fatal은 큐와 연결을 정리한다. raw detail은 보관하지 않으며 fatal은 안전한
+broadcast-error 사유와 UNAVAILABLE 코드로 표현한다.
+
+### 후속 과제 주의
+
+P2-15·17은 참가 전에 앱 작업 소유권을 확보하고 순차·직접 Live·진단 재생 종료를
+확인해야 한다. 허브는 제공자 Live 슬롯을 사용하지 않는다. pagehide·탭 이탈에는
+leave를 연결하고 복귀 후 수동 참가한다. 등록 허브와 CSP는 P2-20 책임이다.
+방 코드는 클라이언트의 참가 URL에만 필요하며 엔진 snapshot·오류·측정에 넣지 않는다.
+큐 통계와 자막 통계는 기존 모듈의 단조 시계 측정을 재사용한다. 실제 TTS 첫소리·
+종단 지연·실기기·규모 운영 합격은 이번 자동 테스트 결과로 주장하지 않는다.
+
+### 자동 검증 결과
+
+`node --test tests/hub-listen.test.mjs` 12개, 공통 G의
+`node --test tests/*.test.mjs` 535개가 통과했다.
+`node --test tests/`도 내부 전체 검사와 디렉터리 진입 검사를 통과했다.
+실패·취소·skip·todo는 0이다. `node scripts/check-i18n.mjs`는
+3개 언어·205개 키·53개 소스에서 I18N_OK, `git diff --check`도 통과했다.
