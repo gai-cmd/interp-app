@@ -5,11 +5,13 @@ import { readFile } from 'node:fs/promises';
 import { APP_DEFAULTS, ENDPOINT_ALLOWLIST, ENDPOINT_ORIGINS, PRODUCT_PROVIDER_IDS, createAppConfig } from '../app/config.js';
 import { GEMINI_DEFINITION, GEMINI_ENDPOINTS, createGeminiAdapter, registerGemini, resolveGeminiFallback } from '../app/providers/gemini/index.js';
 import { REST_ENDPOINT, MODELS, DEFAULT_MODEL, FALLBACK_MODEL } from '../app/providers/gemini/config.js';
+import { DEFAULT_LIVE_MODEL, LIVE_MODELS } from '../app/providers/gemini/live-config.js';
 import { LIVE_ENDPOINT } from '../app/providers/gemini/live-client.js';
 import { VOICE_MODELS, VOICE_NAMES } from '../app/providers/gemini/voice.js';
 import { CAPABILITIES, ProviderError } from '../app/providers/contract.js';
 import { createRegistry } from '../app/providers/registry.js';
 import { createBudget, createRetryExecutor } from '../app/engine/retry.js';
+import { createDiagnostics } from '../app/engine/diagnostics.js';
 import { encodeWav } from '../app/audio/wav.js';
 import { SecurityError } from '../app/security/redact.js';
 import { envelope, output } from './fixtures/gemini.mjs';
@@ -52,12 +54,12 @@ function context(overrides = {}) {
 }
 const textRequest = (changes = {}) => ({ input: { format: 'text', text: '사과 12개' }, sourceLanguage: 'ko', targetLanguage: 'en', ...changes });
 
-test('Gemini registration declares translate/stt/voice ready, live planned, fixed endpoints and i18n keys', async () => {
+test('Gemini registration declares all capabilities ready, fixed endpoints and i18n keys', async () => {
   const registry = createRegistry();
   const descriptor = registerGemini(registry, { resolveCredential: async () => PERSONAL });
   assert.equal(descriptor.id, 'gemini');
   assert.equal(descriptor.browserDirect, true);
-  assert.deepEqual(CAPABILITIES.map((name) => descriptor.capabilities[name].implementation), ['ready', 'ready', 'planned', 'ready']);
+  assert.deepEqual(CAPABILITIES.map((name) => descriptor.capabilities[name].implementation), ['ready', 'ready', 'ready', 'ready']);
   for (const name of CAPABILITIES) assert.deepEqual(descriptor.capabilities[name].transports, ['direct']);
   assert.deepEqual(descriptor.capabilities.translate.inputFormats, ['text', 'wav']);
   assert.deepEqual(descriptor.capabilities.stt.inputFormats, ['wav']);
@@ -66,7 +68,7 @@ test('Gemini registration declares translate/stt/voice ready, live planned, fixe
   assert.deepEqual(descriptor.capabilities.translate.models, [...MODELS]);
   assert.deepEqual(descriptor.capabilities.voice.models, [...VOICE_MODELS]);
   assert.deepEqual(descriptor.capabilities.voice.voices, [...VOICE_NAMES]);
-  assert.deepEqual(descriptor.capabilities.live.models, []);
+  assert.deepEqual(descriptor.capabilities.live.models, [...LIVE_MODELS]);
   assert.deepEqual(descriptor.credentialPolicy, { directPersonal: true, directShared: true, hubManaged: false });
   assert.equal(descriptor.quotaPolicy.scope, 'project');
   assert.deepEqual(descriptor.endpoints, [REST_ENDPOINT, LIVE_ENDPOINT]);
@@ -74,7 +76,9 @@ test('Gemini registration declares translate/stt/voice ready, live planned, fixe
   assert.deepEqual(descriptor.fallbackPolicy.translate, [{ model: FALLBACK_MODEL, condition: 'default-model-failed',
     on: ['MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'UNAVAILABLE', 'NETWORK_ERROR', 'INVALID_RESULT'] }]);
   assert.deepEqual(descriptor.fallbackPolicy.stt, descriptor.fallbackPolicy.translate);
-  assert.deepEqual(descriptor.fallbackPolicy.live, []);
+  assert.deepEqual(descriptor.capabilities.live.outputFormats, ['pcm16', 'subtitle']);
+  assert.deepEqual(descriptor.capabilities.live.voices, []);
+  assert.deepEqual(descriptor.fallbackPolicy.live.map((entry) => entry.model), LIVE_MODELS.slice(1));
   assert.deepEqual(descriptor.fallbackPolicy.voice, []);
   assert.deepEqual(descriptor.terms, { notice: 'providers.geminiTerms', status: 'unreviewed', reviewedAt: null });
   // Label and terms notice are dictionary keys in all three languages, never text.
@@ -119,18 +123,29 @@ test('app config composes exactly one product provider behind a fixed endpoint a
   assert.throws(() => config.keyStore.getSelection(), code('STORE_CLOSED', SecurityError));
 });
 
-test('planned live capability is rejected before any credential, fetch or socket use', async () => {
-  const h = harness();
+test('ready live remains unverified and requires credentials and a supported transport', async () => {
+  const h = harness({ key: null });
   const lookups = [];
   h.keyStore.subscribe((event) => lookups.push(event));
   await assert.rejects(h.router.call('live', { input: { format: 'pcm16' }, sourceLanguage: 'ko', targetLanguage: 'ja' }, context()),
-    code('CAPABILITY_UNIMPLEMENTED'));
+    code('CREDENTIAL_MISMATCH'));
   await assert.rejects(h.router.call('live', { input: { format: 'pcm16' } }, context({ transport: 'hub', keySource: 'hub' })),
-    code('CAPABILITY_UNIMPLEMENTED'));
+    code('TRANSPORT_UNSUPPORTED'));
   assert.equal(h.calls.length, 0);
   assert.equal(h.sockets.length, 0);
   assert.equal(lookups.length, 0);
-  assert.equal(h.providers[0].capabilities.live.implementation, 'planned');
+  assert.equal(h.providers[0].capabilities.live.implementation, 'ready');
+  const diagnostics = createDiagnostics({ config: h.config });
+  try {
+    const live = diagnostics.capabilities({ providerId: 'gemini', keySource: 'personal' })
+      .find((entry) => entry.capability === 'live');
+    assert.equal(live.implementation, 'ready');
+    assert.equal(live.state, 'untested');
+    assert.equal(live.result, null);
+    assert.deepEqual(diagnostics.snapshot().results, []);
+    assert.equal(h.sockets.length, 0);
+    assert.equal(h.calls.length, 0);
+  } finally { await diagnostics.close(); }
   await h.dispose();
 });
 
@@ -282,5 +297,52 @@ test('provider failures and key deletion surface as codes without the key', asyn
   assert.equal(leaks(events), false);
   await assert.rejects(h.router.call('translate', textRequest(), context()), code('CREDENTIAL_REQUIRED'));
   assert.equal(h.calls.length, 1);
+  await h.dispose();
+});
+
+test('voice and live share one physical client slot in both directions', async () => {
+  const h = harness();
+  const liveRequest = { input: { format: 'pcm16' }, targetLanguage: 'ja' };
+  const voiceRequest = { input: { format: 'text' }, language: 'ja' };
+  for (const [first, second, request, other] of [
+    ['voice', 'live', voiceRequest, liveRequest], ['live', 'voice', liveRequest, voiceRequest],
+  ]) {
+    const opening = h.router.call(first, request, context());
+    await tick(); await tick();
+    const ws = h.sockets.at(-1);
+    ws.open(); ws.json({ setupComplete: {} });
+    const session = await opening;
+    const count = h.sockets.length;
+    await assert.rejects(h.router.call(second, other, context()), code('SESSION_LIMIT'));
+    assert.equal(h.sockets.length, count);
+    if (first === 'live') {
+      assert.equal(ws.sent[0].setup.model, 'models/' + DEFAULT_LIVE_MODEL);
+      assert.deepEqual(ws.sent[0].setup.generationConfig.responseModalities, ['AUDIO']);
+      assert.equal(ws.sent[0].setup.systemInstruction, undefined);
+      await session.sendAudio(new Uint8Array(1024));
+    }
+    await session.close();
+    assert.equal(ws.readyState, 3);
+  }
+  assert.equal(h.calls.length, 0);
+  await h.dispose();
+});
+
+test('fallback resolver selection separates Live, REST and voice', async () => {
+  const h = harness({ key: null });
+  const live = h.resolveFallback('gemini', 'live');
+  assert.notEqual(live, h.resolveFallback('gemini'));
+  assert.equal(h.resolveFallback('gemini', 'stt'), resolveGeminiFallback);
+  assert.equal(h.resolveFallback('gemini', 'voice'), null);
+  let request = { input: { format: 'pcm16' }, targetLanguage: 'ko' };
+  for (const model of LIVE_MODELS.slice(1)) {
+    request = live(new ProviderError('MODEL_UNSUPPORTED'), request);
+    assert.equal(request.model, model);
+  }
+  assert.equal(live(new ProviderError('MODEL_UNSUPPORTED'), request), null);
+  for (const value of ['INVALID_KEY', 'PERMISSION_DENIED', 'DAILY_LIMIT', 'UNKNOWN_429',
+    'RATE_LIMITED', 'SAFETY_BLOCKED', 'TOKEN_LIMIT', 'INVALID_RESULT']) {
+    assert.equal(live(new ProviderError(value), { model: DEFAULT_LIVE_MODEL }), null);
+  }
   await h.dispose();
 });

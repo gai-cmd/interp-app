@@ -7,7 +7,7 @@ import { createRouter } from './providers/router.js';
 import { createKeyStore } from './security/key-store.js';
 import { createSessionManager } from './engine/session-manager.js';
 import { VOICE_POLICY } from './engine/voice.js';
-import { GEMINI_ENDPOINTS, GEMINI_PROVIDER_ID, registerGemini, resolveGeminiFallback } from './providers/gemini/index.js';
+import { GEMINI_ENDPOINTS, GEMINI_PROVIDER_ID, registerGemini, resolveGeminiFallback, resolveGeminiLiveFallback } from './providers/gemini/index.js';
 
 // Fixed at review time. P1-18 builds CSP connect-src from this list; the QR
 // payload, settings UI and runtime options cannot add or replace entries.
@@ -45,7 +45,7 @@ function assertAllowed(descriptors) {
  * keyStore -> router reference -> adapter authentication boundary; nothing
  * here or in callers receives a raw key. sessionManager is the single Live
  * slot shared by voice, diagnostics and later simultaneous interpretation.
- * resolveFallback(providerId) returns the registered model-fallback resolver
+ * resolveFallback(providerId, capability = 'translate') returns the registered model-fallback resolver
  * for createRetryExecutor, or null when the provider declares none.
  */
 export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, clearTimeout, now } = {}) {
@@ -61,7 +61,10 @@ export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, c
   return Object.freeze({
     registry, keyStore, router, sessionManager, providers,
     endpoints: ENDPOINT_ALLOWLIST, endpointOrigins: ENDPOINT_ORIGINS, defaults: APP_DEFAULTS,
-    resolveFallback(providerId) { return fallbacks[providerId] ?? null; },
+    resolveFallback(providerId, capability = 'translate') {
+      if (providerId === GEMINI_PROVIDER_ID && capability === 'live') return resolveGeminiLiveFallback;
+      return ['translate', 'stt'].includes(capability) ? fallbacks[providerId] ?? null : null;
+    },
     // Ends every session and credential; callers stop engines first (P1-14).
     async dispose() {
       keyStore.dispose();

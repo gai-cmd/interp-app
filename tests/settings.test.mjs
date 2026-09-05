@@ -288,7 +288,7 @@ test('one registered provider shows its title without a picker, mounts into the 
   assert.equal(h.el('settings-app-mode').textContent, ko['pwa.web']);
   assert.equal(visible(h.el('settings-app-version')), false);
   assert.equal(byClass(h.root, 'diag-scope').textContent, ko['diagnostics.scope']);
-  for (const [name, state] of [['translate', 'untested'], ['stt', 'untested'], ['live', 'planned'], ['voice', 'untested']]) {
+  for (const [name, state] of [['translate', 'untested'], ['stt', 'untested'], ['live', 'untested'], ['voice', 'untested']]) {
     assert.equal(h.capRow(name).getAttribute('data-state'), state, name);
     assert.equal(byClass(h.capRow(name), 'diag-capability-state').textContent, ko[STATE_KEYS[state]]);
   }
@@ -302,7 +302,7 @@ test('one registered provider shows its title without a picker, mounts into the 
     assert.equal(h.view.elements.keyStatus.textContent, dictionary['settings.noKey']);
     assert.equal(byClass(h.root, 'settings-section-title').textContent, dictionary['language.ui']);
     assert.equal(byClass(h.diagRow('text'), 'diag-check-label').textContent, dictionary['diagnostics.text']);
-    assert.equal(byClass(h.capRow('live'), 'diag-capability-state').textContent, dictionary['capability.planned']);
+    assert.equal(byClass(h.capRow('live'), 'diag-capability-state').textContent, dictionary['capability.untested']);
     assert.equal(h.view.elements.voiceSelect.childNodes[0].textContent, dictionary['voice.provider']);
     assert.equal(byClass(h.diagRow('text'), 'diag-check-run').textContent, dictionary['common.check']);
   }

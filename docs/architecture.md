@@ -105,3 +105,81 @@ UI 문구는 모두 app/i18n/ko.json·en.json·ja.json의 같은 키로 관리�
 설계와 다른 정책 결정이나 누락된 의존 인터페이스는 없다. 이번 변경은 기존 P1 코드의 계약 확장이며 레거시 코드를 새로 이식하지 않았다. 따라서 이식 출처·해시 및 범위 밖 `reuse-map.md` 변경은 없다. 지정된 다섯 기존 파일만 수정한다.
 
 검증에는 live/voice × direct/hub의 기존 필드·선택 필드·context ID 보존, raw 필드·오류 비밀 제거, goAway 이후 사용 가능, 원격 closed 중복 차단, 소비자 close 대기 중 동기·늦은 이벤트 차단을 포함한다. P1-20b에서 추가한 `tests/package.json`·`directory.test.mjs` 덕분에 위 P1-01 실행 환경 기록과 달리 현재 `node --test tests/`도 전체 기능 검사를 실행한다. 자동 검증은 실제 API·실기기·P2 출시 검증을 대신하지 않는다.
+
+## P2-05 Live 등록과 공통 복구 정책
+
+Gemini의 네 능력 모두 구현 상태가 ready다. Live 기본 모델은
+`gemini-3.5-live-translate-preview`, 순방향 폴백은
+`gemini-3.1-flash-live-preview` → `gemini-live-2.5-flash-preview`다.
+입력 pcm16(16kHz·mono), 출력 pcm16(24kHz·mono)과 subtitle을 선언한다.
+모델별 AUDIO·transcription·translationConfig 및 flash 고정 프롬프트는
+P2-03의 live-config.js를 그대로 사용한다. 지원 목소리는 빈 목록이다.
+createGeminiAdapter는 voice와 live에 같은 저수준 Live client를 주입한다.
+
+등록 ready는 현재 키·출처·모델·브라우저의 연결 검사 성공이 아니다. 등록만으로
+네트워크를 열거나 진단 결과를 생성하지 않는다. 기존 terms의 unreviewed와
+hubManaged=false도 유지한다. 실제 Live 검사와 측정은 P2-18 책임이다.
+모델 이름은 저장소 설계값이며 실제 서비스 지원 여부를 검증한 결과가 아니다.
+
+`config.resolveFallback(providerId, capability = 'translate')`는 기존 단일 인자
+REST 호출을 보존한다. live는 별도 resolveGeminiLiveFallback을 반환하고 voice와
+미지원 능력에는 null을 반환한다. Live 후보는 등록된 조건 순서대로만 이동한다.
+모델·설정 미지원, UNAVAILABLE, NETWORK_ERROR만 모델 폴백에 해당한다.
+분당 제한·SESSION_LIMIT은 같은 모델로 제한 복구하며 한도·키·권한·안전 오류를
+이유로 모델을 순환하지 않는다. REST의 INVALID_RESULT 품질 폴백은 Live에 적용하지 않는다.
+
+### 후속 엔진에서 사용할 인터페이스
+
+`createLiveRecovery({ now?, random?, setTimeout?, clearTimeout? })`를 사용자 시작마다
+한 번 만들고 모든 연결·모델에서 같은 객체와 budget을 유지한다. 기본 now는 단조
+performance.now다. 공통 createBudget과 createLiveRetryPolicy를 재사용하며 지터,
+서버 대기, 취소는 기존 retry.js 도구가 수행한다.
+
+- `budget`: 최초를 포함해 네 연결을 허용한다. 직접 제공자 호출은 라우터만
+  consume한다. 허브 클라이언트는 자신의 연결 경계에서 동일 객체를 소비한다.
+- `opened()`: setup 또는 hello 완료를 알리며 실패 횟수를 초기화하지 않는다.
+- `activity()`: 유효한 동작을 확인한 시점부터 안정 구간을 시작한다. 반복 호출은
+  시작 시점을 옮기지 않는다. 단절 전에 60초 연속 안정 동작이 확인되면 다음 복구에서
+  현재 연결을 새 구간의 최초 연결로 계산하고 추가 세 번을 허용한다.
+- `wait(error, { signal, closed, goAway, request, resolveFallback })`: 실제 이전 종료가
+  확인된 closed=true에서만 다음 연결을 허용한다. 약 1·2·4초 지터 대기와 더 긴
+  서버 대기를 적용하고 다음 request를 반환한다. goAway는 같은 request를 반환하며
+  모델 폴백과 같은 추가 연결 예산을 쓴다. 중복 대기와 대기 중 연결은 거부한다.
+- `restart()`: 이전 실행을 취소·정리한 후 사용자가 수동 재시작할 때만 사용한다.
+  대기 중에는 거부한다. 새 사용자 실행 객체 생성도 같은 의미다.
+
+P2-09·11은 입력을 중지하고 lease.close()/sessionManager.close()의 성공을 확인한 뒤
+wait를 호출한다. finishInput, 소켓 close 호출 시작, 정리 timeout은 종료 확인이 아니다.
+종료 확인 실패 시 기존 세션 관리자 점유를 유지한다. 재시도에는 이전 lease 정리용
+signal이 아니라 사용자 실행 signal을 전달한다. 각 새 연결은 세션 관리자의 새로운
+generation을 사용한다. 녹음 재전송·별도 voice 호출·자동 REST 전환은 추가하지 않는다.
+정책 자체는 소켓·캡처·오디오를 소유하지 않는다.
+
+설계 정책 변경이나 누락된 의존 구현은 없다. 위 정책 인터페이스는 이 과제에서
+정의했다. 새 레거시 코드를 이식하지 않고 P2-03·04 구현을 import했다.
+따라서 범위 밖 reuse-map.md와 i18n 파일은 변경하지 않았고 새 UI 문자열도 없다.
+기존 인증 경계는 유지하며 WebSocket 생성 내부의 인증 URL이라는 P1의 제한도
+그대로다. 모든 네트워크 URL에서 비밀이 제거되었다고 주장하지 않는다.
+
+### P2-05 자동 검증 결과와 범위 충돌
+
+Node v24.18.0에서 지정 테스트
+`node --test tests/provider-integration.test.mjs tests/live-recovery.test.mjs`는
+19개 통과, 실패·취소·skip·todo 0이다. `node scripts/check-i18n.mjs`는
+I18N_OK(3개 언어·205개 키·43개 소스), `git diff --check`도 통과했다.
+
+`node --test tests/*.test.mjs`와 `node --test tests/`는 직접 실행했으나
+동일한 기존 검사 한 개 때문에 실패한다. tests/settings.test.mjs:292는
+live 검사 상태를 planned로 고정한다. 이번 ready 등록 후 실제 화면 상태는
+untested이며 이는 등록과 실키 검사 결과를 분리하는 설계에 부합한다.
+그 파일은 사용자 지정 수정 범위 밖이므로 수정·삭제·우회하지 않았다.
+전체 테스트 통과라는 완료 기준은 미충족이다. 이 기대값을 새 등록 계약에
+맞추는 범위 확장이 필요하다. 실키·실기기 검증과 출시 판정도 수행하지 않았다.
+
+재검수에서도 지정 19개 검사는 통과했고 전체 검사는 같은 설정 테스트 한 개가
+실패했다. provider-integration.test.mjs에 실제 createDiagnostics 조합으로
+implementation=ready, state=untested, result=null, 검사 결과 목록 비어 있음과
+네트워크 호출 없음 검사를 보강했다. 등록과 검사 상태 분리를 직접 검증한다.
+필요한 범위 밖 변경은 settings.test.mjs의 live 기대 상태 planned를 untested로,
+언어 전환 후 기대 사전 키 capability.planned를 capability.untested로 바꾸는 두 곳이다.
+제품 등록을 planned로 되돌리거나 진단에 다른 등록 정보를 주입하는 우회는 하지 않는다.
