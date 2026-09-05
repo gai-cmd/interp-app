@@ -10,8 +10,9 @@ import { createSessionManager } from './engine/session-manager.js';
 import { VOICE_POLICY } from './engine/voice.js';
 import { GEMINI_ENDPOINTS, GEMINI_PROVIDER_ID, registerGemini, resolveGeminiFallback, resolveGeminiLiveFallback } from './providers/gemini/index.js';
 
-// Fixed at review time. P1-18 builds CSP connect-src from this list; the QR
+// Fixed at review time. P2-20 builds CSP connect-src from this list; the QR
 // payload, settings UI and runtime options cannot add or replace entries.
+// Audience hubs add network destinations, not provider transports or keys.
 export const ENDPOINT_ALLOWLIST = Object.freeze([...new Set([...GEMINI_ENDPOINTS, ...HUB_ENDPOINTS])]);
 export const ENDPOINT_ORIGINS = Object.freeze([...new Set(ENDPOINT_ALLOWLIST.map((endpoint) => new URL(endpoint).origin))]);
 

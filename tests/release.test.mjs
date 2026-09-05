@@ -7,6 +7,9 @@ import { dirname, join, relative, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ENDPOINT_ORIGINS } from '../app/config.js';
+import { REGISTERED_HUBS, HUB_ENDPOINTS, HUB_ORIGINS, hubEndpoints, hubOrigins } from '../app/hub/config.js';
+import { REGISTERED_HUBS as PROTOCOL_HUBS, createHubProtocol } from '../app/hub/protocol.js';
+import { boot, visible } from './fixtures/scenarios.mjs';
 import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import {
   ICON_FILES, MANIFEST_FILES, ROOT_FILES, applyRelease, collectVersionedFiles, pointRelease, readRelease,
@@ -412,4 +415,98 @@ test('CLI stages and checks with fixed codes and never echoes argument contents'
   assert.equal(bad.status, 1);
   assert.equal(bad.stdout, '');
   assert.deepEqual(bad.stderr.trim().split('\n').sort(), ['RELEASE_SECRET_PATTERN docs/notes.md', 'RELEASE_UNEXPECTED_FILE docs/notes.md']);
+});
+
+// P2-20 exercises reviewed code registries only; no real venue or key is used.
+test('empty product hub registry stays shared, frozen and invisible at boot', async (t) => {
+  assert.equal(REGISTERED_HUBS, PROTOCOL_HUBS);
+  assert.ok(Object.isFrozen(REGISTERED_HUBS));
+  assert.deepEqual(REGISTERED_HUBS, []);
+  assert.deepEqual(HUB_ENDPOINTS, []);
+  assert.deepEqual(HUB_ORIGINS, []);
+  const b = await boot();
+  t.after(() => b.app.close());
+  assert.deepEqual(b.el('sim-mode').children.map(option => option.getAttribute('value')), ['direct']);
+  assert.equal(visible(b.el('sim-room')), false);
+  assert.equal(b.socketURLs.length, 0);
+});
+
+test('reviewed hub endpoints reject unsafe registration without exposing input', () => {
+  const hub = { id: 'venue', labelKey: 'hub.venue', url: 'wss://venue.example.test:8443/ws' };
+  assert.deepEqual(hubEndpoints([hub, { ...hub, id: 'second' }]), [hub.url]);
+  assert.deepEqual(hubOrigins([hub]), ['wss://venue.example.test:8443']);
+  assert.equal(createHubProtocol({ hubs: [hub] }).buildUrl('venue', 'abc123'), `${hub.url}?room=abc123`);
+  for (const hubs of [null, {}, [null], [hub, hub], [{ ...hub, labelKey: 'SECRET label' }],
+    ...['ws://venue.example.test/ws', 'https://venue.example.test/ws',
+      'wss://SECRET@venue.example.test/ws', 'wss://venue.example.test/ws?room=SECRET',
+      'wss://venue.example.test/ws#SECRET', 'wss://venue.example.test/other']
+      .map(url => [{ ...hub, url }])]) {
+    assert.throws(() => hubEndpoints(hubs), error => {
+      assert.equal(error.code, 'INVALID_REQUEST');
+      assert.doesNotMatch(JSON.stringify(error), /SECRET/);
+      return true;
+    });
+  }
+});
+
+test('registered venue CSP follows the immutable release through rollback', async (t) => {
+  const directory = await temp(t), root = await repoLikeSource(directory), out = join(directory, 'out');
+  await stageRelease({ id: 'empty', root, out });
+  const protocol = await readFile(join(root, 'app/hub/protocol.js'), 'utf8');
+  const hubs = [{ id: 'venue', labelKey: 'hub.venue', url: 'wss://venue.example.test:8443/ws' }];
+  // The existing P2-10 registry is the shared declaration, including in fixtures.
+  await write(root, 'app/hub/protocol.js', protocol.replace('REGISTERED_HUBS = Object.freeze([])',
+    `REGISTERED_HUBS = Object.freeze(${JSON.stringify(hubs)})`));
+  for (const language of SUPPORTED_LANGUAGES) {
+    const dictionary = JSON.parse(await readFile(join(root, `app/i18n/${language}.json`), 'utf8'));
+    assert.equal(typeof dictionary[hubs[0].labelKey], 'string');
+  }
+  await stageRelease({ id: 'venue', root, out });
+  const csp = async () => parseHeaders(await readFile(join(out, '_headers'), 'utf8'))
+    .find(rule => rule.path === '/*').headers.get('content-security-policy');
+  assert.deepEqual(checkCsp(await csp(), [...ENDPOINT_ORIGINS, 'wss://venue.example.test:8443']), []);
+  assert.deepEqual((await checkRelease({ dir: out })).issues,
+    [{ code: 'RELEASE_CSP_MISMATCH', path: 'releases/empty/app/config.js' }]);
+  const venueOnly = join(directory, 'venue-only');
+  await stageRelease({ id: 'venue', root, out: venueOnly });
+  assert.equal((await checkRelease({ dir: venueOnly })).ok, true);
+  await pointRelease({ id: 'empty', root, out });
+  assert.deepEqual(checkCsp(await csp(), ENDPOINT_ORIGINS), []);
+  assert.deepEqual((await checkRelease({ dir: out })).issues,
+    [{ code: 'RELEASE_CSP_MISMATCH', path: 'releases/venue/app/config.js' }]);
+});
+
+test('P2 JS graph and stream worklet resolve inside the versioned SW shell', async (t) => {
+  const directory = await temp(t), out = join(directory, 'out'), id = 'p2-graph';
+  await stageRelease({ id, out });
+  const files = await collectVersionedFiles(repoRoot);
+  const shell = readRelease(await readFile(join(out, 'sw.js'), 'utf8')).shell;
+  const base = new URL(`https://app.example.test/interp-app/releases/${id}/`);
+  const cached = new Set(shell.map(path => new URL(path, 'https://app.example.test/interp-app/').href));
+  for (const file of files.filter(file => file.endsWith('.js'))) {
+    const url = new URL(file, base);
+    assert.ok(cached.has(url.href), file);
+    const source = await readFile(join(out, `releases/${id}`, file), 'utf8');
+    const references = [...source.matchAll(/^[ \t]*(?:import|export)\s+(?:[^;]*?\sfrom\s*)?['"]([^'"]+)['"]/gm),
+      ...source.matchAll(/new URL\(['"]([^'"]+)['"],\s*import\.meta\.url\)/g)];
+    for (const [, specifier] of references) {
+      assert.ok(specifier.startsWith('.'), specifier);
+      const target = new URL(specifier, url);
+      assert.ok(target.href.startsWith(base.href), target.href);
+      assert.ok(cached.has(target.href), target.href);
+    }
+  }
+  const capture = await readFile(join(out, `releases/${id}/app/audio/stream-capture.js`), 'utf8');
+  assert.match(capture, /addModule\(new URL\('\.\/capture-worklet\.js', import\.meta\.url\)\)/);
+  for (const file of ['app/hub/config.js', 'app/audio/stream-capture.js', 'app/audio/stream-player.js', 'app/i18n/boot-fallback.js']) {
+    assert.ok(cached.has(new URL(file, base).href), file);
+  }
+  await rm(join(out, `releases/${id}/app/audio/capture-worklet.js`));
+  assert.equal((await checkRelease({ dir: out })).ok, false);
+});
+
+test('staging rejects endpoint and origin declaration drift', async (t) => {
+  const directory = await temp(t), root = await fixtureSource(directory);
+  await write(root, 'app/config.js', `${FIXTURE_APP['app/config.js']}\nexport const ENDPOINT_ALLOWLIST = ['wss://venue.example.test/ws'];\n`);
+  await assert.rejects(stageRelease({ id: 'drift', out: join(directory, 'out'), root }), { message: 'RELEASE_CONFIG_INVALID' });
 });

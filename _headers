@@ -1,5 +1,6 @@
 # GitHub Pages does not apply this file. Verify actual response headers.
 # Staging derives connect-src from the selected release app/config.js.
+# No venue is registered by default; never add a wildcard for future hubs.
 # Cloudflare Pages headers (design-v0.6 §11.2, §13.1). scripts/check-release.mjs
 # verifies that connect-src lists exactly 'self' plus the ENDPOINT_ORIGINS
 # exported by app/config.js and that no other directive names a remote host.

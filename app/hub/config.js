@@ -18,4 +18,9 @@ export function hubEndpoints(hubs = REGISTERED_HUBS) {
 }
 
 export const HUB_ENDPOINTS = hubEndpoints();
-export const HUB_ORIGINS = Object.freeze([...new Set(HUB_ENDPOINTS.map((endpoint) => new URL(endpoint).origin))]);
+/** CSP sources never include the WebSocket path or a room code. */
+export function hubOrigins(hubs = REGISTERED_HUBS) {
+  return Object.freeze([...new Set(hubEndpoints(hubs).map((endpoint) => new URL(endpoint).origin))]);
+}
+
+export const HUB_ORIGINS = hubOrigins();

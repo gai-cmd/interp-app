@@ -1,8 +1,8 @@
-# 릴리스 체크리스트 (P1-21)
+# 릴리스 체크리스트 (P1-21·P2-20)
 
 기준 설계: `design-v0.6.md` §11.2(배포 산출물의 비밀 검사), §13(정적 배포·서비스 워커·업데이트), §16(P1 완료 상태), §17.4, §19(출시 보류 조건). 도구: `scripts/stage-release.mjs`, `scripts/check-release.mjs`, `scripts/check-i18n.mjs`.
 
-**현재 상태(2026-09-05):** 구현 완료. 로컬 스테이징(`p1-review`)과 `check-release`는 통과했다. **공개 HTTPS 배포는 아직 없고**, 개인 모드·PWA·공용 검증은 미완료다(`device-matrix.md` §6). 출시 판정은 §6의 보류 조건에 따른다.
+**현재 상태(2026-09-06):** 아래 기록에 GitHub Pages 테스트 배포가 있다. 해당 호스트는 `_headers`를 적용하지 않으므로 로컬 CSP 검사 통과를 배포 CSP 적용 성공으로 판정하지 않는다. 개인 모드·PWA·공용·현장 허브·목표 규모 검증은 별도이며, 출시 판정은 §8의 보류 조건에 따른다.
 
 ## 1. 원칙
 
@@ -66,7 +66,7 @@
 ### 5.2 정적 호스트 업로드 (승인 필요)
 
 - 배포 루트 **전체**(이전 `releases/*` 포함)를 Cloudflare Pages 프로젝트에 올린다. 이전 릴리스 디렉터리를 빼면 아직 그 버전을 가리키는 열린 탭·캐시가 깨진다(§13.2).
-- `_headers`가 그대로 올라가는지 확인한다(Pages는 루트의 `_headers`를 적용한다). 다른 호스트를 쓰면 같은 헤더를 호스트 설정으로 재현하고 §5.3에서 확인한다.
+- `_headers`가 그대로 올라가는지 확인한다(Cloudflare Pages용 설정이며 GitHub Pages에는 적용되지 않는다). 다른 호스트를 쓰면 같은 헤더를 호스트 설정으로 재현하고 §6에서 실제 응답을 확인한다.
 - 배포 전 요약: 릴리스 ID, 커밋, 자동 게이트 결과, 바뀐 점, 롤백 대상 ID. 오너 동의 후 실행한다.
 - 배포 시점의 무료 제공 조건과 헤더 적용을 확인한다(§13.1). 커스텀 도메인 구매·유료 기능은 도입하지 않는다.
 
@@ -79,7 +79,7 @@
 | 1 | 진입 파일 | `curl -sI <origin>/` , `curl -sI <origin>/sw.js` | 200, `Cache-Control: no-cache` |
 | 2 | CSP·권한 헤더 | `curl -sI <origin>/` | `Content-Security-Policy`에 `connect-src 'self' https://generativelanguage.googleapis.com wss://generativelanguage.googleapis.com`, `Permissions-Policy: microphone=(self)`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `frame-ancestors 'none'` |
 | 3 | 릴리스 경로 | `curl -sI <origin>/releases/<id>/release.json` | 200, `Cache-Control: public, max-age=31536000, immutable` |
-| 4 | MIME | `curl -sI <origin>/releases/<id>/app/i18n/ko.json`, `<origin>/manifest.ko.webmanifest`, `<origin>/releases/<id>/app/main.js` | `application/json`, `application/manifest+json`, `text/javascript` 계열. JSON MIME이 틀리면 `app/main.js`의 JSON 모듈 import가 실패해 앱이 뜨지 않는다 |
+| 4 | MIME | `curl -sI <origin>/releases/<id>/app/i18n/ko.json`, `<origin>/manifest.ko.webmanifest`, `<origin>/releases/<id>/app/main.js` | `application/json`, `application/manifest+json`, `text/javascript` 계열. 사전은 fetch로 읽으며 JS 부팅 경로에는 JSON 모듈 import가 없다. worklet도 JavaScript MIME으로 제공되어야 한다 |
 | 5 | 진입 HTML | `curl -s <origin>/ \| grep releases/` | 모든 버전 경로가 `./releases/<id>/…` |
 | 6 | 브라우저 콜드 로드 | 데스크톱 브라우저 새 프로필로 `<origin>/` | 셸 렌더, 콘솔 0건, 설정 → 앱 → 버전이 `<id>` |
 | 7 | 서비스 워커 | 개발자 도구 Application → Service Workers / Cache Storage | 활성 worker 1개, 캐시 `interp-shell-<id>`에 셸 파일만 |
@@ -161,3 +161,38 @@
 | 날짜 | 릴리스 ID | 호스트 | URL | 검사 | 비고 |
 |---|---|---|---|---|---|
 | 2026-09-05 21:37 JST | p1-20260905 | GitHub Pages (`gai-cmd/interp-app`, 브랜치 `gh-pages`) | https://gai-cmd.github.io/interp-app/ | check-release RELEASE_OK 52 · 배포 후 curl: `/`, `sw.js`, manifest, `releases/…/app/main.js`, `i18n/ko.json` 모두 200·정확한 MIME · 헤드리스 Chrome 152 콜드 로드 스모크 통과(셸·SW 등록·설정·키 비저장·콘솔 0) | **테스트 배포**(§19 판정: 공개 출시 아님). GitHub Pages는 `_headers`(CSP·Permissions-Policy)를 적용하지 않음 → 헤더까지 필요하면 Cloudflare Pages로 이전. manifest `id`는 `/interp-app/`로 고정. 실기기(Android/iOS)·실키 검증은 미실시 |
+
+
+## P2-20 허브 등록과 릴리스 검증
+
+- 실제 현장 주소가 입력되지 않아 등록 목록은 비어 있다. 임의 예시 주소를 제품 목록에 넣지 않는다. 빈 목록에서는 현장 방송 선택·방 코드 UI가 숨겨지고 부팅만으로 소켓이 열리지 않는다.
+- 파일 범위와 P2-10·17 계약을 보존하기 위해 `app/hub/config.js`는 기존 `app/hub/protocol.js`의 `REGISTERED_HUBS`를 재사용한다. 현재 등록 원본은 protocol.js이며 config.js에 별도 목록을 만들면 안 된다. 향후 등록 또는 선언 이동은 protocol.js·main.js의 소비 경로를 함께 검토할 수 있는 과제에서 수행한다. 이것이 이번 파일 범위에 따른 설계 조정이며 의존 구현을 대체하지 않았다.
+- 등록 항목은 `{ id, labelKey, url }` 형태다. 중복 ID, WSS 이외 프로토콜, 사용자 정보, `/ws` 이외 경로, query·fragment·비정규 URL을 거부한다. 이름은 세 언어 사전에 있는 키로 지정한다. 설정·QR·방 코드로 endpoint를 추가하지 않는다.
+- `hubEndpoints()`와 `hubOrigins()`로 검증·중복 제거한 주소를 얻는다. 앱의 `ENDPOINT_ALLOWLIST`는 Gemini와 허브 endpoint를 합치고 `ENDPOINT_ORIGINS`를 도출한다. 허브는 청중 수신 주소이며 제공자 transport·키 정책을 바꾸지 않는다.
+- 스테이징은 **선택된 불변 릴리스**의 app/config.js에서 CSP origin을 읽는다. endpoint 선언과 origin이 다르면 `RELEASE_CONFIG_INVALID`로 중단한다. `--point`도 이전 릴리스의 origin으로 헤더를 복원한다. 오래된 최소 구성 릴리스의 origin-only 인터페이스는 유지한다. 기존 check-release는 배포 루트의 모든 릴리스 origin이 같아야 통과한다. 따라서 허브 추가·제거로 origin이 바뀐 버전을 기존 버전과 함께 두면 CSP 불일치로 거부된다. 헤더 롤백 성공도 이 혼재 거부를 해제하지 않는다. 이전 파일 삭제나 CSP 합집합으로 우회하지 말고, 배포 전 별도 origin 이전 등 구버전 탭·롤백을 보존할 전환 계획을 후속 과제에서 검토해야 한다.
+- `connect-src`는 `'self'`와 등록 origin만 포함한다. 허브 `/ws` 경로·방 코드는 CSP에 넣지 않는다. 인증서·DNS·게스트 Wi-Fi 접근과 실제 호스트의 CSP 응답은 현장에서 별도 확인한다.
+- 허용 목록은 기존 `app/**/*.js`, `app/i18n/*.json`, styles.css 그대로다. P2-06 스트림 캡처는 기존 `capture-worklet.js`를 재사용하므로 새 worklet 파일 종류를 추가하지 않는다. 전체 JS의 상대 import와 `new URL(..., import.meta.url)` 참조가 서브패스 배포에서도 같은 버전 경로·SW 목록 안에 있는지 검사한다. worklet 누락 릴리스는 거부된다.
+- 회귀 테스트는 빈 목록 실제 앱 부팅, 유효·무효 등록, 등록 허브 CSP와 기존 check-release 일치, 허브 없는 버전으로 롤백, JS·worklet 그래프, endpoint/origin 불일치를 다룬다. 기존 P1 테스트 단언을 수정하거나 삭제·건너뛰지 않았다. 새 원본 코드는 이식하지 않았다.
+
+검증 명령은 `node --test tests/release.test.mjs`, 공통 G 세 명령, `node --test tests/`, 그리고 워크스페이스 내부의 새 `OUT`에 대한 다음 두 명령이다.
+
+```sh
+node scripts/stage-release.mjs --id p2-check --out "$OUT"
+node scripts/check-release.mjs "$OUT"
+```
+
+로컬 검증과 실제 배포는 구분한다. P2-21 이후에는 실키·실기기·허브 접속·물리적 첫소리 지연·목표 규모를 별도 기록해야 한다. 방 코드는 메모리와 참가 WebSocket URL에서만 사용하며 측정 기록에 넣지 않는다. 이번 작업은 배포·git 커밋을 수행하지 않는다.
+
+### 2026-09-06 P2-20 로컬 실행 결과
+
+| 명령 | 결과 |
+|---|---|
+| `node --test tests/release.test.mjs` | 14 통과 |
+| `node --test tests/*.test.mjs` | 586 통과, fail·todo·skip·취소 0 |
+| `node --test tests/` | 내부 585 통과, 디렉터리 진입 1 통과 |
+| `node scripts/check-i18n.mjs` | I18N_OK, 3개 언어·301개 키·57개 파일 |
+| `git diff --check` | 통과 |
+| `node scripts/stage-release.mjs --id p2-check --out /Users/gai/work/interp-app/release/p2-20-check-20260906-1` | RELEASE_STAGED, 71개 파일 |
+| `node scripts/check-release.mjs /Users/gai/work/interp-app/release/p2-20-check-20260906-1` | RELEASE_OK, current=p2-check, releases=1, files=71 |
+
+산출물은 git에서 제외되는 `release/` 아래에 보관했다. 변경한 소스·테스트·문서는 과제 지정 6개 파일뿐이다.

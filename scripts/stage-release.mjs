@@ -110,12 +110,19 @@ function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex')
 async function releaseHeaders(template, releaseDir) {
   let origins;
   try {
-    ({ ENDPOINT_ORIGINS: origins } = await import(pathToFileURL(join(releaseDir, 'app/config.js')).href));
+    const config = await import(pathToFileURL(join(releaseDir, 'app/config.js')).href);
+    origins = config.ENDPOINT_ORIGINS;
     if (!Array.isArray(origins) || !origins.length || origins.some((origin) => {
       const url = new URL(origin);
       return !['https:', 'wss:'].includes(url.protocol) || url.origin !== origin
         || url.username || url.password || /[\s;*]/.test(origin);
     })) throw 0;
+    // Preserve old minimal releases while checking the product declaration.
+    if (config.ENDPOINT_ALLOWLIST !== undefined) {
+      if (!Array.isArray(config.ENDPOINT_ALLOWLIST)) throw 0;
+      const derived = [...new Set(config.ENDPOINT_ALLOWLIST.map(endpoint => new URL(endpoint).origin))];
+      if (derived.length !== new Set(origins).size || derived.some(origin => !origins.includes(origin))) throw 0;
+    }
   } catch { throw fail('RELEASE_CONFIG_INVALID'); }
   const policies = template.match(/^\s+Content-Security-Policy:.*$/gm) ?? [];
   if (policies.length !== 1 || (policies[0].match(/\bconnect-src\b/g) ?? []).length !== 1) {
