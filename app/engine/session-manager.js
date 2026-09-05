@@ -62,6 +62,10 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
     isCurrent(value) { return current?.generation === value && !current.controller.signal.aborted; },
     replace(open, context = {}) {
       if (typeof open !== 'function' || !context.signal) return Promise.reject(new ProviderError('INVALID_REQUEST'));
+      // Retire events immediately, even while an earlier open is pending.
+      if (!context.signal.aborted && current) {
+        current.controller.abort(); current.detach(); notify();
+      }
       return serialize(async () => {
         assertActive(context.signal);
         await shutdown(current);
@@ -69,7 +73,6 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
         const controller = new AbortController();
         const entry = { controller, generation: ++generation, detach: () => {} };
         current = entry;
-        notify();
         const abort = () => { shutdown(entry).catch(() => {}); };
         context.signal.addEventListener('abort', abort, { once: true });
         entry.detach = () => context.signal.removeEventListener('abort', abort);
@@ -82,6 +85,7 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
           assertActive(controller.signal);
           return open({ ...context, signal: controller.signal, generation: entry.generation, onEvent });
         }).catch((error) => { throw sessionError(entry, error); });
+        notify();
         try {
           const session = await withDeadline(() => entry.opening, { ...timing, timeoutMs, signal: controller.signal });
           if (typeof session?.close !== 'function') throw new ProviderError('INVALID_RESULT');

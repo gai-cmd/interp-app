@@ -80,9 +80,43 @@ test('queued cancelled replacement never opens; close cancels an in-flight open'
 });
 
 test('failed close permanently blocks new sockets even through another manager', async () => {
-  const manager = createSessionManager();
+  const { createSessionManager: isolated } = await import('../app/engine/session-manager.js?failed-close');
+  const manager = isolated();
   const lease = await manager.replace(async () => session(async () => { throw new Error('SECRET'); }), context());
   await assert.rejects(lease.close(), code('PROVIDER_ERROR'));
-  await assert.rejects(createSessionManager().replace(() => { assert.fail(); }, context()), code('PROVIDER_ERROR'));
+  await assert.rejects(isolated().replace(() => { assert.fail(); }, context()), code('PROVIDER_ERROR'));
   assert.equal(manager.occupied, true);
+});
+
+
+test('replacement immediately retires events while old close is pending', async () => {
+  const manager = createSessionManager();
+  const closed = deferred(); let ctx, events = 0;
+  await manager.replace(value => { ctx = value; return session(() => closed.promise); }, context({ onEvent() { events++; } }));
+  const next = manager.replace(() => session(), context());
+  ctx.onEvent({ type: 'audio' });
+  assert.equal(events, 0); assert.equal(ctx.signal.aborted, true);
+  closed.resolve(); await (await next).close();
+});
+
+test('remote closed stays SESSION_CLOSED; user abort stays ABORTED', async () => {
+  for (const remote of [true, false]) {
+    const manager = createSessionManager(); const controller = new AbortController();
+    let ctx, events = 0;
+    const lease = await manager.replace(value => { ctx = value; return { ...session(), speak: () => new Promise(() => {}) }; }, context({ signal: controller.signal, onEvent() { events++; } }));
+    const speaking = lease.speak('text');
+    await tick();
+    if (remote) ctx.onEvent({ type: 'closed' }); else controller.abort();
+    await assert.rejects(speaking, code(remote ? 'SESSION_CLOSED' : 'ABORTED'));
+    ctx.onEvent({ type: 'closed' }); ctx.onEvent({ type: 'audio' });
+    assert.equal(events, remote ? 1 : 0);
+    await manager.close();
+  }
+});
+
+test('subscription may close during reservation without an uninitialized opening promise', async () => {
+  const manager = createSessionManager(); let closing;
+  const unsubscribe = manager.subscribe(state => { if (state.active) closing = manager.close(); });
+  await assert.rejects(manager.replace(() => session(), context()), code('ABORTED'));
+  await closing; unsubscribe(); assert.equal(manager.occupied, false);
 });

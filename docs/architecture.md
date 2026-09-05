@@ -249,3 +249,83 @@ leave를 연결하고 복귀 후 수동 참가한다. 등록 허브와 CSP는 P2
 `node --test tests/`도 내부 전체 검사와 디렉터리 진입 검사를 통과했다.
 실패·취소·skip·todo는 0이다. `node scripts/check-i18n.mjs`는
 3개 언어·205개 키·53개 소스에서 I18N_OK, `git diff --check`도 통과했다.
+
+## P2-15 앱 작업 소유권과 세션 전환
+
+`createActivity()`의 모든 인스턴스는 같은 모듈의 앱 작업 슬롯·전환 큐·세대를
+공유한다. 별도의 `createSessionManager()` 인스턴스들도 기존 제공자 Live 슬롯을
+공유한다. 두 슬롯의 의미는 다르다. 허브 참가와 그 기기 TTS는 앱 작업을 점유하지만
+제공자 Live 슬롯을 점유하지 않는다. 순차 작업은 녹음·REST·재생 전체를,
+직접 동시통역은 준비·연결·복구·재생 전체를 앱 작업으로 소유한다.
+탭·기기 간 보안 경계나 제공자 프로젝트의 할당량 강제 장치는 아니다.
+
+### 호출 계약
+
+- `acquire(kind, {cancel, close, signal?})`는 동기적으로 lease를 반환한다.
+  kind는 `seq`, `sim`, `hub`, `diagnostics`, `preview`다. 점유·전환 대기 중이면
+  기존 `SESSION_LIMIT` 코드로 거부한다. 사용자 제스처에서 acquire 후 같은 호출
+  스택으로 기존 엔진을 시작할 수 있다. 권한·키 검사도 점유 확보 후 수행한다.
+- `replace(kind, hooks)`는 기존 세대를 즉시 무효화하고 취소를 호출한다.
+  기존 정리 확인 후 FIFO 순서로 새 lease를 반환한다. diagnostics·preview는
+  replace로 호출해도 실행 중 작업을 빼앗지 않고 acquire와 같은 규칙을 적용한다.
+- lease는 `generation`, `signal`, `isCurrent()`, 멱등 `close()`를 제공한다.
+  비동기 결과·이벤트를 반영하기 전에 isCurrent를 검사한다. 앱 세대는 엔진 상태의
+  세대 및 제공자 연결 세대와 별개이며 연결 세대를 덮어쓰지 않는다.
+- cancel은 캡처·송신·재시도·PCM·TTS를 동기적으로 중지하는 훅이다.
+  close는 엔진 정리와 늦게 생성되는 자원 및 실제 소켓 종료까지 확인한다.
+  cancel의 Promise 완료를 기다리기 전에 close도 시작하며 두 결과 모두 확인한다.
+  어느 쪽의 실패도 숨기지 않는다. 엔진 시작 실패도 lease.close로 정리한다.
+- 관리자 `close()`는 활성 작업을 즉시 무효화하고 이미 대기 중인 전환도 취소한다.
+  이후 사용자의 명시적 시작은 허용한다. 과거 lease.close는 새 작업을 종료하지 않는다.
+- `snapshot()/subscribe()`는 generation·occupied·active·kind만 제공한다.
+  occupied는 정리·전환 대기 중에도 true다. PWA 업데이트 판단에 사용한다.
+  키·방 코드·텍스트·원본 오류는 저장하거나 알리지 않는다. 새 UI 문자열은 없다.
+
+정리 기본 제한은 기존 세션 관리자와 같은 10초이며 타이머를 주입할 수 있다.
+시간 초과는 점유 해제가 아니다. 실제 정리가 나중에 성공하면 해제되지만,
+정리 Promise가 실패하면 새 관리자 생성으로도 우회할 수 없다. 제품용 강제 초기화
+API는 없다. 실패 테스트는 별도 모듈 인스턴스를 사용해 다른 사례에 점유를 누출하지 않는다.
+
+세션 관리자 replace도 큐를 기다리기 전에 기존 signal을 abort해 늦은 이벤트를
+차단한다. 구독 알림 전에 opening Promise를 설치해 구독자의 즉시 close를 지원한다.
+원격 closed에 따른 내부 abort는 SESSION_CLOSED로 유지하고 사용자 취소는 ABORTED다.
+P1의 실제 종료 확인·오류 정규화·자동 음성 재전송 금지 계약을 보존한다.
+
+### 후속 연결과 구현 범위
+
+P2-09 sim과 P2-13 hub 엔진은 이미 구현되어 있다. 파일 제한에 따라 이번에는
+엔진·셸·진단 파일을 수정하지 않았으며 P2-17·18에서 모든 시작 경로에 위 점유
+계약을 연결해야 한다. 기존 엔진을 직접 실행하면 앱 작업 슬롯을 자동 획득하지 않는다.
+
+- sim: cancel/close 훅에 stop을 연결하고, done 이후에도 sessionManager.close의
+  성공을 확인한다. sim의 failed 결과나 done 해결만으로 소켓 종료를 단정하지 않는다.
+- hub: cancel에서 leave를 호출해 TTS를 즉시 비우고, close에서 leave와 참가 handle의
+  closed를 확인한다. leave 결과만으로 종료를 확정하지 않는다.
+- seq·진단·미리듣기: 기존 cancel과 작업 done, voice 정리, sessionManager.close를
+  조합한다. 정상 완료도 lease.close로 점유를 반환한다. 재접속 중에는 유지한다.
+- 키·제공자·통역 언어·청취 방식 변경과 pagehide는 await activity.close 후 설정을
+  적용하며 새 연결은 수동 시작한다. UI 언어·음소거·설정 창 열기는 전환하지 않는다.
+- 비동기 replace 이후 브라우저 제스처 권한은 보장되지 않는다. 탭 전환은 close로
+  끝내고 다음 시작 제스처에서 동기 acquire와 기존 엔진 start/join을 호출한다.
+
+설계 정책 변경과 의존 구현 누락은 없다. 훅 기반 점유 API의 구체적 형태는 이 과제에서
+정했다. 원본 translate/live/xlsx 및 voice/TTS 경계를 확인했으나 레거시 코드를
+이식하지 않았으므로 새 출처 해시나 범위 밖 reuse-map 변경은 없다.
+P1 테스트 기대값 변경·삭제·skip은 없다. 기존 종료 실패 검사는 의미를 유지하며
+별도 모듈에 격리했다. 실키·실기기·종단 지연·규모 시험은 수행하지 않았다.
+
+### P2-15 자동 검증 결과
+
+Node v24.18.0에서 다음 명령을 직접 실행했다.
+
+| 명령 | 결과 |
+|---|---|
+| `node --test tests/activity.test.mjs tests/session-manager.test.mjs` | 16개 통과 |
+| `node --test tests/*.test.mjs` | 550개 통과 |
+| `node --test tests/` | 내부 기능 549개 및 진입 검사 1개 통과 |
+| `node scripts/check-i18n.mjs` | I18N_OK, 3개 언어·301개 키·54개 소스 |
+| `git diff --check` | 통과 |
+
+모든 테스트의 실패·취소·skip·todo는 0이다. 신규 파일은 activity.js와
+activity.test.mjs이며, session-manager.js·session-manager.test.mjs·이 문서를
+수정했다. git 커밋은 만들지 않았다.
