@@ -81,3 +81,36 @@ UI·네트워크·로그·저장소 코드는 추가하지 않았다. 입력 오
 ### 검증
 
 `tests/fixtures/segments.mjs`는 합성 발화와 주입 가능한 가짜 시계다. `tests/segment-assembler.test.mjs`는 문장부호·조각 사이 소수점·약어·혼합 언어·반복 발화·Unicode·침묵 재설정·역할/세대 ID·revision·삭제 snapshot·종료·타이머 정리를 검사한다. 전체 회귀 및 G 실행 결과는 완료 메시지에 기록한다. 실제 제공자 연결·실기기 시험은 이번 과제 범위가 아니다.
+
+## P2-03 Gemini 단일 동시통역 연결 — 2026-09-05
+
+지정된 원본 5개의 SHA-256을 다시 계산하여 위 지문과 일치함을 확인했다. `live-config.js`는 `live.js`의 모델 후보·`buildSetup`을, `live.js` 어댑터는 `LiveLane`의 전사·송신 및 `main-handlers.js`의 `voiceOpen` PCM 수신 경계를 참고하여 이식했다. 두 구현 파일 상단에 출처·심벌·날짜·해시·변경점을 기록했다. `translate.js`, `xlsx.js`, `ttsDirect/voiceDirect`, `voiceSpeak`, `jpGeminiSpeak`는 재사용 경계를 대조했으며 이번 구현에 별도 번역·xlsx·낭독·재생 코드를 추가하지 않았다.
+
+### 호출 계약
+
+- `createGeminiLive({ live, clock? }).open({ input: { format: 'pcm16', sampleRate?: 16000, channels?: 1 }, targetLanguage: 'ko' | 'en' | 'ja', model? }, context)`를 제공한다. `context`는 기존 라우터의 signal·sessionId·generation·turnId·주소·자격증명 참조다. 조립기 ID를 위해 비어 있지 않은 sessionId와 0 이상의 정수 generation이 필요하다.
+- `live`는 기존 `createGeminiLiveClient()` 인스턴스다. P2-05에서 voice와 **동일 인스턴스**를 주입하고 세션 관리자를 통해 열어야 한다. 이 어댑터는 소켓·인증 URL·키 조회를 만들지 않는다. 기존 P1의 소켓 생성 시점 인증 URL 경계는 수정하지 않았다.
+- `sendAudio(pcm)`는 PCM16 little-endian·mono·16kHz를 담은 `Uint8Array`를 받는다. 2~1,024바이트의 짝수 길이만 허용하여 32ms 프레임과 마지막 짧은 프레임을 지원한다. subarray의 실제 바이트 범위를 그대로 인코딩하며 누적·재전송하지 않는다. 숫자 샘플 배열이나 WAV를 자동 변환하지 않는다.
+- `finishInput()`은 `realtimeInput.audioStreamEnd = true`를 한 번 전송한다. 서버 자동 VAD를 유지하는 setup에 맞는 신호이며, `activityEnd` 또는 텍스트 `clientContent.turnComplete`로 대체하지 않는다. 입력 종료 후 출력은 계속 수신하지만 추가 `sendAudio`는 거절한다. 프로토콜 자체는 새 오디오로 입력 재개를 허용하나, 앱의 finish 인터페이스는 이 연결의 입력 종료로 정의했다. [공식 WebSocket 프로토콜](https://ai.google.dev/api/live)의 자동 VAD·audioStreamEnd 정의를 확인했다.
+- `close()`는 멱등적이며 기존 transport의 close 확인·실패를 그대로 기다린다. `closed`는 물리적 종료 promise다. timeout을 종료 성공으로 바꾸지 않는다. setup 도중 취소 후 늦게 반환된 transport도 닫힌 뒤 open을 거절한다.
+
+### setup·이벤트와 검증 정책
+
+- 설계의 세 모델만 고정했다. 번역 전용 모델에는 translationConfig·입출력 전사만 설정하고 systemInstruction은 보내지 않는다. 두 flash 후보는 목표어 통역 전용 고정 프롬프트를 사용한다. 원어 힌트·자유 프롬프트·페르소나를 setup으로 전달하지 않으며, 목소리는 검증된 목록이 없으므로 지정 시 SETTINGS_UNSUPPORTED다. 모델 후보 선언은 실제 서비스·계정 지원 검증을 의미하지 않는다.
+- `inputTranscription`과 `outputTranscription`은 원본의 증분 전사 경로를 유지해 각각 `mode: 'delta'`로 조립한다. 반복 문자열을 추측으로 제거하지 않는다. `interimInputTranscription` 같은 수정 가설은 이 증분 경로에 섞지 않으며, 향후 모델이 누적 snapshot을 반환한다면 해당 모델 정책과 정규화 검사를 별도 추가해야 한다. 전사의 실제 모델별 특성은 실키 시험에 남는다.
+- `finished: true`는 텍스트가 없는 메시지에서도 해당 조립기를 확정한다. 이는 이식 원본과 상세 설계의 호환 필드이며 현재 공식 전사 스키마의 필수 제공 필드라고 주장하지 않는다. turnComplete와 1.5초 침묵도 확정한다. generationComplete는 턴 완료와 구분하여 자막·오디오 완료 신호로 사용하지 않는다. 공식 프로토콜은 생성 완료 뒤 재생 대기에 따라 turnComplete가 늦게 올 수 있다고 명시한다.
+- source/translation 조립기는 별도 ID·카운터를 쓴다. subtitle에는 `id → segmentId`, `sequence → seq`, revision·role·final과 해당 역할의 텍스트만 전달한다. 원문을 받지 않으면 sourceText 필드 자체를 생성하지 않는다. modelTurn의 일반 text를 원문이나 번역 전사로 위장하지 않는다.
+- `interrupted`는 활성 꼬리를 중단하고 별도 interrupted 이벤트를 보낸다. 같은 메시지의 오디오·완료보다 중단을 우선한다. 이후 새 턴은 계속 처리한다. 중지·단절은 조립기를 cancel하고 늦은 타이머·자막·오디오를 차단한다. 기존 라우터가 자막 status를 전달하지 않으므로 후속 엔진은 interrupted/error/closed/자체 중지에서 활성 자막을 중단 상태로 처리해야 한다.
+- PCM은 `audio { audio: Uint8Array, sampleRate: 24000 }`로 직접 전달한다. bare `audio/pcm`은 Live의 기본 24kHz로 해석하고, 명시된 rate가 다르거나 지원하지 않는 MIME 매개변수·홀수/빈 PCM·비정규 base64이면 INVALID_RESULT로 닫는다. PCM 파트와 알려진 전사·제어 필드를 메시지 전체에서 검증한 뒤 방출하여 뒤쪽 잘못된 파트 앞의 오디오·자막이 일부 유출되지 않게 했다.
+- 기존 transport의 수신 제한을 재사용하며 어댑터에도 content UTF-8 1MiB, 디코딩 PCM 청크 768KiB, 전사 조각 16,000자 상한을 둔다. 이는 제공자 한도가 아닌 앱 검증 정책이다. 메시지 봉투 크기 때문에 실효 PCM 최대치는 더 작다. 긴 세션의 누적 PCM·발화 기록·세션 길이 제한은 추가하지 않았다.
+- goAway는 검증한 timeLeftMs만 전달하고 입력을 멈춰 현재 transport를 닫는다. 자동 재접속·모델 순환·REST/voice 호출은 없다. 복구를 시작하는 상위 엔진은 close 확인 후 공통 예산을 사용해야 한다. 오류는 기존 ProviderError 코드로 정규화하고 원문·cause·close reason·임의 필드는 버린다. UI 문자열을 추가하지 않아 사전 변경은 없다.
+
+### 설계 구체화와 후속 인계
+
+설계 목표를 변경하지 않았다. 미지정 함수명·입력 바이트 타입·마지막 짧은 프레임·수신 검증 상한·finish 이후 입력 재개 금지·bare PCM의 기본 rate 해석을 이번 파일 안에서 구체화했다. P2-01 계약과 P2-02 조립기가 모두 존재하므로 임시 대체 모듈은 없다.
+
+P2-04는 기존 transport의 동시통역 송신 bufferedAmount 한도와 오류 분류를 보강한다. P2-05는 능력 등록·모델별 폴백 조건·voice/live 인스턴스 공유를 연결한다. 현재 앱의 live 능력 등록은 이 과제에서 바꾸지 않았다. P2-09는 입력 송신 펌프·음소거·연속 PCM 재생·goAway 복구와 활성 자막 중단을 조립한다. 라우터는 processing.live와 조립기 타임스탬프를 전달하지 않으므로 측정·메타데이터 확장은 해당 후속 과제에서 명시적으로 검토해야 한다.
+
+### 검증 범위
+
+`tests/fixtures/gemini-live.mjs`는 합성 PCM·전사, 종료를 수동 확인하는 주입 Live client와 기존 가짜 시계를 제공한다. 개별 검사는 모델별 setup, 실제 기존 transport와의 소켓 단일 소유권, 프레임·base64·24kHz·크기 검증, 원문 부재, 역할별 ID·반복 전사, 침묵·finished·턴 경계, 중단 우선순위, 콜백 도중 close, setup 도중 abort, 늦은 응답, 물리적 close와 timeout 구분, 오류 비밀 제거, 숨은 재시도 부재를 다룬다. Node Buffer를 제거한 상태에서도 PCM 경로를 실행한다. 실키·실기기·장시간 운영 성공을 주장하지 않는다. 완료 명령의 실제 결과는 최종 완료 메시지에 기록한다.
