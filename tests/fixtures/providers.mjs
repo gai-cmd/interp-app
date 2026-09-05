@@ -47,6 +47,17 @@ export function deferred() {
   return { promise, resolve, reject };
 }
 
+// Controllable normalized stream, including emissions during physical shutdown.
+export function streamAdapter({ close = () => {}, cancel = () => {} } = {}) {
+  let incoming;
+  const session = { sendAudio() {}, finishInput() {}, speak() {}, cancel, close };
+  const implementation = adapter();
+  const open = async (_request, ctx) => { incoming = ctx; return session; };
+  implementation.live.open = open;
+  implementation.voice.open = open;
+  return { implementation, emit(event) { incoming.onEvent(event); }, get signal() { return incoming.signal; } };
+}
+
 export const textRequest = () => ({ input: { format: 'text', text: 'hello' }, targetLanguage: 'ko' });
 export function context(overrides = {}) {
   return { providerId: 'alpha', keySource: 'personal', transport: 'direct',

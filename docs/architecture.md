@@ -80,3 +80,28 @@ Live는 제공자 합산 앱 내 활성 소켓 1개다. 이전 종료 확인 실
 UI 문구는 모두 app/i18n/ko.json·en.json·ja.json의 같은 키로 관리한다(P1-04). ko-KR/ja-JP/en-US를 정규화하고 미지원 언어는 영어로 폴백한다. 날짜·숫자는 Intl, 제공자 텍스트는 textContent로 렌더링한다. 오류는 정규화 코드 → 사전 키로 연결하며 원문을 표시하지 않는다.
 
 원본 프로젝트는 수정하거나 브라우저에서 직접 import하지 않는다. [reuse-map.md](reuse-map.md)에 기록한 경계대로 이식하며 이식 파일 상단에 영어 출처 주석을 남긴다. P2/P3의 빈 파일은 만들지 않는다.
+
+## P2-01 스트림 이벤트 확장
+
+기준은 [design-p2.md](design-p2.md) §8.6·§9 및 P2-01이다. `contract.js`의 동결된 `STREAM_EVENT_FIELDS`를 라우터가 사용하여 허용 목록과 구현이 어긋나지 않게 한다.
+
+| 이벤트 | 전달하는 데이터 필드 |
+|---|---|
+| `audio` | `audio`, `sampleRate` |
+| `transcript` | `text`, `final` |
+| `subtitle` | 기존 `sourceText`, `translatedText`, `final`, `revision`; 선택적 `segmentId`, `seq`, `role` |
+| `goAway` | `timeLeftMs` |
+| `error` | 기존 `normalizeError`로 정규화한 `error` |
+| `interrupted`, `complete`, `closed` | 추가 데이터 없음 |
+
+모든 이벤트에는 `type`과 라우터 호출 시점 context의 `turnId`, `sessionId`, `generation`을 붙인다. 어댑터가 보낸 같은 이름의 ID나 호출 이후 context 변경은 이를 덮어쓰지 못한다. `segmentId`는 어댑터가 조립한 구간 식별자로 유지한다. 없는 선택 필드는 생략하며 `0`, `false`, 빈 문자열 등 기존 값은 유지한다. 알려지지 않은 이벤트 및 허용 목록 밖 raw payload·임의 필드는 폐기한다. 이벤트 객체는 얕게 동결하며 PCM을 복제하거나 버퍼 내부까지 동결하지 않는다.
+
+정규화 어댑터는 `segmentId` 문자열, 음이 아닌 안전한 정수 `seq`, `source | translation` 역할, 음이 아닌 유한한 밀리초 `timeLeftMs`를 제공한다. 기존 계약처럼 필드 값 검증은 어댑터 책임이고 라우터는 허용 필드 선택과 수명주기를 맡는다. 허용된 텍스트 자체의 비밀 탐지·삭제 기능은 아니다. P2-02·03은 실행 세션·연결 세대·역할·독립 카운터로 구간을 식별하고 공통 구간 모델의 `id`·`sequence`에 대응시킨다. 라우터는 원문/번역문 문장 경계를 짝짓거나 revision을 조립하지 않는다.
+
+`goAway`는 종료 예고이며 자체적으로 세션을 종료하거나 재시도하지 않는다. 후속 엔진은 송신 중지 → 이전 연결의 실제 종료 확인 → 공통 예산에 따른 새 연결 순서를 지킨다. 소비자 `close()`·abort·voice `cancel()` 이후에는 정리 완료 전이라도 모든 이벤트를 차단한다. 원격 `closed`는 최대 한 번 전달하고 이후 이벤트를 차단한다. 기존 P1-20b의 원격 종료와 사용자 취소 구분 및 물리적 종료 확인 계약은 유지한다.
+
+이 허브 경로 검사는 제공자 라우터의 주입형 `hub.call` 계약이다. 현장 방송 청중의 `cast.caption` 수신 경로는 P2-10 이후 별도 모듈 책임이며 이를 라우터에 추가하지 않았다. UI 문자열·키 처리·Gemini 능력 등록도 변경하지 않았다.
+
+설계와 다른 정책 결정이나 누락된 의존 인터페이스는 없다. 이번 변경은 기존 P1 코드의 계약 확장이며 레거시 코드를 새로 이식하지 않았다. 따라서 이식 출처·해시 및 범위 밖 `reuse-map.md` 변경은 없다. 지정된 다섯 기존 파일만 수정한다.
+
+검증에는 live/voice × direct/hub의 기존 필드·선택 필드·context ID 보존, raw 필드·오류 비밀 제거, goAway 이후 사용 가능, 원격 closed 중복 차단, 소비자 close 대기 중 동기·늦은 이벤트 차단을 포함한다. P1-20b에서 추가한 `tests/package.json`·`directory.test.mjs` 덕분에 위 P1-01 실행 환경 기록과 달리 현재 `node --test tests/`도 전체 기능 검사를 실행한다. 자동 검증은 실제 API·실기기·P2 출시 검증을 대신하지 않는다.

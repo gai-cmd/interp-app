@@ -1,4 +1,4 @@
-import { CAPABILITIES, ProviderError, assertActive, normalizeError } from './contract.js';
+import { CAPABILITIES, STREAM_EVENT_FIELDS, ProviderError, assertActive, normalizeError } from './contract.js';
 
 // Race cancellation without retaining AbortSignal.reason (it may contain secrets).
 // A late session is still closed even when its open promise ignored cancellation.
@@ -96,11 +96,7 @@ export function createRouter({ registry, getCredentialRef, hub } = {}) {
       let closing;
       const emit = (event) => {
         if (ended || signal.aborted || !streaming || !event) return;
-        const fields = {
-          audio: ['audio', 'sampleRate'], transcript: ['text', 'final'],
-          subtitle: ['sourceText', 'translatedText', 'final', 'revision'],
-          interrupted: [], complete: [], error: ['error'], closed: [],
-        }[event.type];
+        const fields = Object.hasOwn(STREAM_EVENT_FIELDS, event.type) ? STREAM_EVENT_FIELDS[event.type] : undefined;
         if (!Array.isArray(fields)) return;
         if (event.type === 'closed') { ended = true; detach(); }
         const data = Object.fromEntries(fields.filter((key) => event[key] !== undefined)

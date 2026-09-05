@@ -2,6 +2,13 @@
 export const CAPABILITIES = Object.freeze(['translate', 'stt', 'live', 'voice']);
 export const TRANSPORTS = Object.freeze(['direct', 'hub']);
 export const IMPLEMENTATIONS = Object.freeze(['ready', 'planned', 'unsupported']);
+// Normalized adapter events only; raw provider envelopes never cross the router.
+export const STREAM_EVENT_FIELDS = Object.freeze(Object.fromEntries(Object.entries({
+  audio: ['audio', 'sampleRate'], transcript: ['text', 'final'],
+  subtitle: ['sourceText', 'translatedText', 'final', 'revision', 'segmentId', 'seq', 'role'],
+  goAway: ['timeLeftMs'],
+  interrupted: [], complete: [], error: ['error'], closed: [],
+}).map(([type, fields]) => [type, Object.freeze(fields)])));
 export const ERROR_CODES = Object.freeze([
   'INVALID_PROVIDER', 'DUPLICATE_PROVIDER', 'UNKNOWN_PROVIDER', 'INVALID_REQUEST',
   'CAPABILITY_UNSUPPORTED', 'CAPABILITY_UNIMPLEMENTED', 'INPUT_UNSUPPORTED',
@@ -141,6 +148,14 @@ export function defineProvider(definition, adapter = {}) {
  * Finite status: 'ok' | 'no-speech' | 'unrecognized'.
  * Adapters emit via context.onEvent({ type, ...data }); consumers receive
  * { ...data, turnId, sessionId, generation } and terminal 'closed' at most once.
+ * STREAM_EVENT_FIELDS lists the only forwarded data fields; undefined is omitted.
+ * subtitle optionally adds segmentId (string), seq (nonnegative safe integer),
+ * and role ('source' | 'translation'). Existing subtitle fields remain unchanged.
+ * Adapters own field validation and segment identity/order, not the router.
+ * goAway { timeLeftMs: nonnegative finite number } is an advisory event, not
+ * terminal: the engine owns stopping input, confirmed close, and recovery budget.
+ * Routing IDs are snapshotted from context and override all adapter event IDs.
+ * Consumer close/abort/cancel suppress events immediately, including 'closed'.
  * LiveSession: sendAudio(pcm), finishInput(), close() -> Promise<void>.
  * VoiceSession: speak(request), cancel(), close() -> Promise<void>.
  * close resolves only after resource shutdown, and must also work after abort.

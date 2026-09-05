@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createRegistry } from '../app/providers/registry.js';
 import { createRouter } from '../app/providers/router.js';
 import { ProviderError, normalizeError } from '../app/providers/contract.js';
-import { provider, adapter, context, textRequest, credentialRef, deferred } from './fixtures/providers.mjs';
+import { provider, adapter, context, textRequest, credentialRef, deferred, streamAdapter } from './fixtures/providers.mjs';
 
 function setup(definition = provider(), implementation = adapter(), options = {}) {
   const registry = createRegistry();
@@ -307,3 +307,82 @@ test('product modules contain only relative imports and no fixture or browser si
     assert.doesNotMatch(source, /tests\/fixtures|console\.|process\.|\bwindow\b|\bnavigator\b|new WebSocket/);
   }
 });
+
+
+for (const capability of ['live', 'voice']) {
+  for (const transport of ['direct', 'hub']) {
+    test(`${capability}/${transport} preserves stream fields and context IDs without raw payloads`, async () => {
+      const definition = provider();
+      definition.capabilities.live.implementation = 'ready';
+      definition.capabilities[capability].transports = [transport];
+      definition.credentialPolicy.hubManaged = true;
+      const stream = streamAdapter(), events = [];
+      const { router } = setup(definition, stream.implementation, {
+        hub: { call: (_capability, request, ctx) => stream.implementation[capability].open(request, ctx) },
+      });
+      const ctx = context({ transport, keySource: transport === 'hub' ? 'hub' : 'personal',
+        onEvent: (event) => events.push(event) });
+      const session = await router.call(capability,
+        { input: { format: capability === 'live' ? 'pcm16' : 'text' } }, ctx);
+      const ids = { turnId: ctx.turnId, sessionId: ctx.sessionId, generation: ctx.generation };
+      ctx.turnId = 'changed'; ctx.sessionId = 'changed'; ctx.generation = 99;
+      const expected = [
+        { type: 'audio', audio: new Uint8Array([1, 2]), sampleRate: 24000 },
+        { type: 'transcript', text: 'hello', final: false },
+        { type: 'subtitle', sourceText: 'hello', translatedText: '안녕', final: false, revision: 0 },
+        { type: 'subtitle', sourceText: 'hello', final: false, revision: 0,
+          segmentId: 'session-1:1:source:0', seq: 0, role: 'source' },
+        { type: 'subtitle', translatedText: '안녕', final: true, revision: 1,
+          segmentId: 'session-1:1:translation:0', seq: 1, role: 'translation' },
+        { type: 'goAway', timeLeftMs: 0 },
+        { type: 'goAway', timeLeftMs: 1500 },
+        { type: 'interrupted' }, { type: 'complete' },
+      ];
+      for (const event of expected) {
+        stream.emit({ segmentId: undefined, seq: undefined, role: undefined, ...event,
+          turnId: 'forged', sessionId: 'forged', generation: 999,
+          raw: { key: 'TEST_SECRET' }, payload: 'TEST_SECRET', content: 'TEST_SECRET',
+          key: 'TEST_SECRET', detail: 'TEST_SECRET', url: 'TEST_SECRET' });
+      }
+      stream.emit({ type: 'error', error: Object.assign(new ProviderError('TIMEOUT'),
+        { cause: 'TEST_SECRET', payload: 'TEST_SECRET' }), raw: 'TEST_SECRET' });
+      for (const type of ['content', 'unknown', '__proto__', 'constructor', 'toString']) stream.emit({ type, raw: 'TEST_SECRET' });
+      assert.deepEqual(events.slice(0, -1), expected.map((event) => ({ ...event, ...ids })));
+      assert.equal(events.at(-1).error.code, 'TIMEOUT');
+      assert.deepEqual(Object.keys(events.at(-1)).sort(), ['error', 'generation', 'sessionId', 'turnId', 'type']);
+      assert.doesNotMatch(inspect(events), /TEST_SECRET/);
+      assert.ok(events.every(Object.isFrozen));
+      assert.equal(stream.signal.aborted, false);
+      await (capability === 'live' ? session.finishInput() : session.speak({}));
+      stream.emit({ type: 'closed', reason: 'TEST_SECRET' });
+      stream.emit({ type: 'closed' }); stream.emit(expected[4]); stream.emit(expected[5]);
+      assert.deepEqual(events.at(-1), { type: 'closed', ...ids });
+      assert.equal(events.length, expected.length + 2);
+      await assert.rejects(capability === 'live' ? session.finishInput() : session.speak({}), code('SESSION_CLOSED'));
+      await session.close();
+    });
+  }
+
+  test(`${capability} suppresses events immediately throughout pending consumer close`, async () => {
+    const pending = deferred(), started = deferred(), events = [];
+    let closes = 0;
+    const stream = streamAdapter({ close() {
+      closes++;
+      stream.emit({ type: 'closed' }); stream.emit({ type: 'goAway', timeLeftMs: 0 });
+      started.resolve(); return pending.promise;
+    } });
+    const definition = provider(); definition.capabilities.live.implementation = 'ready';
+    const session = await setup(definition, stream.implementation).router.call(capability,
+      { input: { format: capability === 'live' ? 'pcm16' : 'text' } },
+      context({ onEvent: (event) => events.push(event) }));
+    const closing = session.close();
+    assert.equal(session.close(), closing);
+    stream.emit({ type: 'subtitle', translatedText: 'late', segmentId: 'late', seq: 0, role: 'translation' });
+    await started.promise;
+    stream.emit({ type: 'goAway', timeLeftMs: 1000 });
+    assert.deepEqual(events, []);
+    pending.resolve(); await closing;
+    stream.emit({ type: 'closed' });
+    assert.deepEqual(events, []); assert.equal(closes, 1);
+  });
+}
