@@ -1,10 +1,12 @@
 // New implementation of design-v0.6 §§6.1, 6.2, 7.4, 9.1 and 20.3: user-started
-// connection checks, one capability at a time. Results are kept per
-// (providerId, keySource, check) and cleared when that key changes. Nothing
+// connection checks, one capability at a time. P2 adds shared activity ownership
+// and model-scoped checks (design-p2 §9/§17); no legacy code is ported. Results are kept per
+// (providerId, keySource, check, requestedModel) and cleared when that key changes. Nothing
 // here runs on its own: no check starts when a key is saved, and a check of
 // one capability never marks another one available. Live checks go through
 // the app's single session slot (config.sessionManager). No legacy code.
-import { CAPABILITIES, ProviderError, normalizeError } from '../providers/contract.js';
+import { createActivity } from './activity.js';
+import { CAPABILITIES, ERROR_CODES, ProviderError, normalizeError } from '../providers/contract.js';
 import { createBudget, withDeadline } from './retry.js';
 import { createVoiceEngine } from './voice.js';
 import { createPCMPlayer } from '../audio/pcm-player.js';
@@ -30,8 +32,10 @@ export const DIAGNOSTIC_MESSAGE_KEYS = Object.freeze(['seq.silence', 'seq.unreco
 const network = new Set(['text', 'ptt', 'voice', 'live']);
 const identifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
 const language = (value) => typeof value === 'string' && /^(ko|en|ja)$/.test(value);
-const errorCode = (value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(value) ? value : null;
-const resultKey = ({ providerId, keySource, kind }) => `${providerId ?? '-'}|${keySource ?? '-'}|${kind}`;
+const safeCodes = new Set([...ERROR_CODES, 'VOICE_FAILED', 'PLAYBACK_BLOCKED', 'MICROPHONE_UNAVAILABLE', 'MICROPHONE_DENIED']);
+const errorCode = (value) => safeCodes.has(value) ? value : null;
+const resultKey = ({ providerId, keySource, kind, requestedModel }) =>
+  JSON.stringify([providerId ?? null, keySource ?? null, kind, requestedModel ?? null]);
 const otherLanguage = (target) => ['ko', 'en', 'ja'].find((value) => value !== target);
 
 /** PCM16 LE mono 24 kHz test tone for the playback check; deterministic and short. */
@@ -64,16 +68,24 @@ export function tonePCM({ ms = DIAGNOSTICS_POLICY.toneMs, hz = DIAGNOSTICS_POLIC
  * another; the router refuses credentials outside the current selection.
  */
 export function createDiagnostics({ config, voiceEngine, capture = null, getAudioContext = null,
-  isBusy = () => false, sessionId = 'diagnostics', now = () => Date.now(), setTimeout = globalThis.setTimeout,
+  isBusy = () => false, activity = createActivity(), sessionId = 'diagnostics', now = () => performance.now(), setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout, random = Math.random } = {}) {
   if (typeof isBusy !== 'function' || typeof config?.router?.call !== 'function' || typeof config.registry?.get !== 'function'
     || typeof config.keyStore?.subscribe !== 'function' || typeof config.sessionManager?.replace !== 'function'
     || (voiceEngine !== undefined && typeof voiceEngine?.speak !== 'function')
     || (capture !== null && typeof capture?.start !== 'function')
     || (getAudioContext !== null && typeof getAudioContext !== 'function')
+    || typeof now !== 'function' || typeof activity?.acquire !== 'function'
     || typeof setTimeout !== 'function' || typeof clearTimeout !== 'function') {
     throw new ProviderError('INVALID_REQUEST');
   }
+  const readNow = now;
+  let lastTime = 0;
+  now = () => {
+    const value = readNow();
+    if (Number.isFinite(value)) lastTime = Math.max(lastTime, Math.min(Number.MAX_SAFE_INTEGER, value));
+    return lastTime;
+  };
   const timing = { setTimeout, clearTimeout, now, random };
   const ownsVoice = voiceEngine === undefined;
   // Without an audio context Live voice cannot play; the check reports that.
@@ -82,6 +94,8 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
     sessionManager: config.sessionManager, ...timing });
   const listeners = new Set();
   const results = new Map();
+  let activityLease = null, liveUsed = false;
+  const pending = new Set();
   let active = null, serial = 0, generation = 0, closed = false;
 
   function notify() {
@@ -114,10 +128,14 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
   function record(turn, fields) {
     const state = CAPABILITY_STATES.includes(fields.state) ? fields.state : 'failed';
     const code = errorCode(fields.errorCode);
+    const messageKey = DIAGNOSTIC_MESSAGE_KEYS.includes(fields.messageKey)
+      || (code && fields.messageKey === `error.${code}`) ? fields.messageKey : undefined;
+    const models = descriptor(turn.route?.providerId)?.capabilities[turn.capability]?.models ?? [];
     return Object.freeze({ kind: turn.kind, capability: turn.capability, providerId: turn.route?.providerId ?? null,
       keySource: turn.route?.keySource ?? null, state, errorCode: code,
-      messageKey: fields.messageKey ?? (state === 'failed' && code ? `error.${code}` : state === 'cancelled' ? 'seq.cancelled' : undefined),
-      model: typeof fields.model === 'string' ? fields.model : null, sequence: turn.sequence, at: now() });
+      messageKey: messageKey ?? (state === 'failed' && code ? `error.${code}` : state === 'cancelled' ? 'seq.cancelled' : undefined),
+      model: models.includes(fields.model) ? fields.model : null, requestedModel: turn.model,
+      ...(Number.isFinite(fields.setupMs) ? { setupMs: fields.setupMs } : {}), sequence: turn.sequence, at: now() });
   }
   // A check cancelled by a newer one must not overwrite the newer result.
   function store(result) {
@@ -131,6 +149,7 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
 
   // One attempt, no fallback: a check reports what the default path does now.
   function call(turn, capability, request) {
+    request = { ...request, ...(turn.explicitModel ? { model: turn.model } : {}) };
     const context = { ...turn.route, turnId: turn.turnId, sessionId, generation: turn.generation,
       budget: createBudget({ limit: 1 }) };
     return withDeadline((signal) => config.router.call(capability, request, { ...context, signal }),
@@ -208,8 +227,11 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
 
   // Opens and closes one simultaneous session through the shared slot (§9.1).
   async function liveCheck(turn, options) {
+    liveUsed = true;
+    const started = now();
     const target = targetOf(options);
-    const request = { input: { format: 'pcm16' }, sourceLanguage: sourceOf(options, target), targetLanguage: target };
+    const request = { input: { format: 'pcm16' }, sourceLanguage: sourceOf(options, target), targetLanguage: target,
+      ...(options.model ? { model: turn.model } : {}) };
     const open = (context) => config.router.call('live', request, { ...context, ...turn.route, budget: createBudget({ limit: 1 }) });
     const opening = config.sessionManager.replace(open, { signal: turn.signal, turnId: turn.turnId, sessionId });
     opening.catch(() => {});
@@ -221,8 +243,9 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
       opening.then((late) => late.close()).catch(() => {});
       throw error;
     }
+    const setupMs = Math.max(0, now() - started);
     await lease.close();
-    return { state: 'available' };
+    return { state: 'available', model: turn.model, setupMs };
   }
 
   async function microphoneCheck(turn) {
@@ -264,7 +287,7 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
         if (!holds) return record(turn, { state: 'failed', errorCode: 'CREDENTIAL_REQUIRED' });
       }
       const outcome = await checks[turn.kind](turn, options);
-      if (turn.signal.aborted && outcome.state !== 'available') return record(turn, { state: 'cancelled' });
+      if (turn.signal.aborted) return record(turn, { state: 'cancelled' });
       return record(turn, outcome);
     } catch (raw) {
       const error = normalizeError(raw);
@@ -284,9 +307,9 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
     if (closed) return;
     generation += 1;
     cancelActive();
-    if (event.type === 'store-closed') {
+    if (event.type === 'store-closed' || event.type === 'selection-changed') {
       for (const [key, result] of results) if (result.providerId !== null) results.delete(key);
-    } else if (event.type !== 'selection-changed') {
+    } else {
       // Results describe one key; a changed or removed key invalidates them.
       for (const [key, result] of results) {
         if (result.providerId === event.providerId && result.keySource === event.keySource) results.delete(key);
@@ -300,7 +323,7 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
   const api = Object.freeze({
     kinds: DIAGNOSTIC_KINDS,
     /** Per-capability table for one route; without a check nothing is 'available'. */
-    capabilities(route = selection()) {
+    capabilities(route = selection(), options = {}) {
       const desc = route && identifier(route.providerId) ? descriptor(route.providerId) : null;
       return Object.freeze(CAPABILITIES.map((name) => {
         if (!desc) return Object.freeze({ capability: name, implementation: null, route: null, state: 'untested', result: null });
@@ -308,9 +331,11 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
         const { state, route: path } = routing(desc, name);
         const kind = DIAGNOSTIC_KINDS.find((item) => KIND_CAPABILITY[item] === name);
         const running = active && !active.settled && active.kind === kind && active.route?.providerId === route.providerId
-          && active.route.keySource === route.keySource;
-        const result = state === 'untested' && ['personal', 'shared'].includes(route.keySource)
-          ? results.get(resultKey({ providerId: route.providerId, keySource: route.keySource, kind })) ?? null : null;
+          && active.route.keySource === route.keySource && active.model === (options.model ?? cap.models[0] ?? null);
+        let result = state === 'untested' && ['personal', 'shared'].includes(route.keySource)
+          ? results.get(resultKey({ providerId: route.providerId, keySource: route.keySource, kind,
+            requestedModel: options.model ?? cap.models[0] ?? null })) ?? null : null;
+        if (result && result.requestedModel !== (options.model ?? cap.models[0] ?? null)) result = null;
         return Object.freeze({ capability: name, implementation: cap.implementation, route: path,
           state: running ? 'running' : result ? result.state : state, result });
       }));
@@ -318,6 +343,7 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
     run(kind, options = {}) {
       if (closed) throw new ProviderError('SESSION_CLOSED');
       // The composition root guards sequential work and update application.
+      if (activityLease?.signal.aborted) throw new ProviderError('SESSION_LIMIT');
       if (isBusy()) throw new ProviderError('INVALID_REQUEST');
       if (!DIAGNOSTIC_KINDS.includes(kind) || !options || typeof options !== 'object') throw new ProviderError('INVALID_REQUEST');
       let route = null;
@@ -326,19 +352,42 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
           ? { providerId: options.providerId, keySource: options.keySource } : selection();
         route = chosen ? Object.freeze({ providerId: chosen.providerId, keySource: chosen.keySource, transport: 'direct' }) : null;
       }
+      const models = descriptor(route?.providerId)?.capabilities[KIND_CAPABILITY[kind]]?.models ?? [];
+      if (options.model !== undefined && !models.includes(options.model)) throw new ProviderError('MODEL_UNSUPPORTED');
+      if (!activityLease) activityLease = activity.acquire('diagnostics', {
+        cancel() { for (const item of pending) item.controller.abort(); },
+        async close() {
+          await Promise.all([...pending].map(item => item.work));
+          if (liveUsed) await config.sessionManager.close();
+        }
+      });
       const controller = new AbortController();
       const turn = { kind, capability: KIND_CAPABILITY[kind], route, controller, signal: controller.signal,
-        turnId: `check-${++serial}`, sequence: serial, generation, stop: null, capturing: false, settled: false, done: null };
+        explicitModel: options.model !== undefined, model: options.model ?? models[0] ?? null, turnId: `check-${++serial}`, sequence: serial, generation, stop: null, capturing: false, settled: false, done: null };
       const abort = () => controller.abort();
       options.signal?.addEventListener?.('abort', abort, { once: true });
       if (options.signal?.aborted) abort();
       // The previous check is aborted, not awaited: capture must start in this gesture.
       cancelActive();
       active = turn;
-      turn.done = runTurn(turn, options).then((result) => {
+      pending.add(turn);
+      turn.work = runTurn(turn, options);
+      turn.done = turn.work.then(async (result) => {
+        pending.delete(turn);
         turn.settled = true;
         options.signal?.removeEventListener?.('abort', abort);
-        if (active === turn) active = null;
+        if (active === turn) {
+          const lease = activityLease;
+          try { await lease.close(); } catch (raw) {
+            turn.settled = true; active = null;
+            const failed = record(turn, { state: 'failed', errorCode: normalizeError(raw).code });
+            if (turn.generation === generation) store(failed);
+            notify(); return failed;
+          }
+          liveUsed = false;
+          if (activityLease === lease) activityLease = null;
+          if (active === turn) active = null;
+        }
         // A result for a key replaced meanwhile is not kept.
         if (result.providerId === null || turn.generation === generation) store(result);
         notify();

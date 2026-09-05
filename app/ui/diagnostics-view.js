@@ -5,6 +5,7 @@
 // registered capability shows "untested" until its own check passed, and a
 // passed text check never changes the voice or PTT rows. All text is
 // dictionary-bound and rendered with textContent.
+import { METRIC_NAMES } from '../engine/listen-metrics.js';
 import { CAPABILITIES } from '../providers/contract.js';
 import { DIAGNOSTIC_KINDS, KIND_CAPABILITY } from '../engine/diagnostics.js';
 import { createBinder } from './seq-view.js';
@@ -42,9 +43,11 @@ export function checkState(kind, snapshot, capabilities) {
  * { providerId, keySource } the table describes (the current key selection by
  * default); getOptions() supplies { sourceLanguage, targetLanguage, voice }
  * for checks; notify(key) receives dictionary keys for thrown engine errors.
+ * metrics and hub optionally expose snapshot()/subscribe(). Missing observations
+ * remain unmeasured; this view never opens a hub or promotes its state to Live.
  * Returns { element, render, refresh, destroy }.
  */
-export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null, getOptions = null, notify = null,
+export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null, getOptions = null, notify = null, metrics = null, hub = null,
   document: doc = root?.ownerDocument } = {}) {
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof diagnostics?.run !== 'function'
     || typeof diagnostics.subscribe !== 'function') throw new Error('INVALID_REQUEST');
@@ -94,6 +97,32 @@ export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null
     checkRows[kind] = { row, state, message, model, button };
   }
   section.append(scope, userStart, table, list);
+  for (const key of ['diagnostics.liveScope', 'diagnostics.connectionOnly', 'diagnostics.metrics',
+    'diagnostics.metricsPrivacy', 'diagnostics.timingBoundary', 'diagnostics.policyBudget']) {
+    const note = element(doc, 'p'); bind.text(note, key); section.append(note);
+  }
+  const hubLabel = element(doc, 'p'); bind.text(hubLabel, 'diagnostics.hub');
+  const hubStatus = element(doc, 'p', { attributes: { role: 'status' } });
+  section.append(hubLabel, hubStatus);
+  const metricRows = new Map();
+  for (const name of METRIC_NAMES) {
+    const row = element(doc, 'p', { attributes: { 'data-metric': name } });
+    const label = element(doc, 'span'); bind.text(label, `diagnostics.${name}`);
+    const value = element(doc, 'span'); row.append(label, value);
+    section.append(row); metricRows.set(name, value);
+  }
+  function renderObservations() {
+    const data = attempt(() => metrics?.snapshot());
+    for (const [name, node] of metricRows) node.textContent = Number.isFinite(data?.[name])
+      ? String(data[name]) : i18n.t('diagnostics.notMeasured');
+    memoryState.textContent = data?.memoryState === 'unsupported' ? i18n.t('diagnostics.unsupported') : '';
+    const state = attempt(() => hub?.snapshot())?.broadcast;
+    const key = { waiting: 'hub.broadcast.waiting', receiving: 'hub.broadcast.receiving', ended: 'hub.broadcast.ended' }[state];
+    hubStatus.textContent = key ? i18n.t(key) : i18n.t('diagnostics.notMeasured');
+  }
+  const memoryState = element(doc, 'p'); section.append(memoryState);
+  const detachMetrics = metrics?.subscribe?.(renderObservations);
+  const detachHub = hub?.subscribe?.(renderObservations);
 
   // keySource is null while the displayed provider has no selected key: the
   // table still shows registration state, but no network check can start.
@@ -120,8 +149,9 @@ export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null
 
   function render(next = diagnostics.snapshot()) {
     snapshot = next;
+    renderObservations();
     const current = route();
-    const capabilities = attempt(() => diagnostics.capabilities(current)) ?? [];
+    const capabilities = attempt(() => diagnostics.capabilities(current, attempt(() => getOptions?.()) ?? {})) ?? [];
     for (const name of CAPABILITIES) {
       const entry = capabilities.find((item) => item.capability === name);
       const nodes = capabilityRows[name];
@@ -158,6 +188,7 @@ export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null
     refresh() { bind.refresh(); render(snapshot); },
     destroy() {
       unsubscribe();
+      detachMetrics?.(); detachHub?.();
       bind.clear();
       section.remove();
     },

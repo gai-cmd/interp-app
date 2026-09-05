@@ -51,11 +51,13 @@ export function sharedFragmentFrom(value) {
  * persistence says whether a storage was given to the key store (the
  * "remember" option is offered only then). app is { version?, standalone? }
  * for the app section; getDeviceVoices() lists SpeechSynthesis voices.
+ * Optional metrics and hub expose snapshot()/subscribe(); the composition root
+ * must supply the current operational collector and venue listener explicitly.
  * Returns { element, elements, providerId, selectProvider, render, refresh,
  * diagnosticsView, destroy }.
  */
 export function createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc = shell?.root?.ownerDocument,
-  persistence = false, app = null, getDeviceVoices = null, onUiLanguageChange = null } = {}) {
+  persistence = false, app = null, metrics = null, hub = null, getDeviceVoices = null, onUiLanguageChange = null } = {}) {
   const root = shell?.elements?.panels?.settingsBody;
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof shell.onLanguageChange !== 'function'
     || typeof config?.keyStore?.subscribe !== 'function' || typeof config.registry?.get !== 'function'
@@ -312,7 +314,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     return { sourceLanguage: interpretation.sourceLanguage, targetLanguage: interpretation.targetLanguage,
       ...(voice.voice ? { voice: voice.voice } : {}) };
   }
-  const diagnosticsView = createDiagnosticsView({ root: diagnosticsSection, i18n, diagnostics, document: doc, notify,
+  const diagnosticsView = createDiagnosticsView({ root: diagnosticsSection, i18n, diagnostics, document: doc, notify, metrics, hub,
     // The table describes the displayed provider; results need its selected key source.
     getRoute: () => { const current = selection(); return { providerId, keySource: current?.providerId === providerId ? current.keySource : null }; },
     getOptions: checkOptions });
@@ -440,9 +442,12 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     voiceField.hidden = voices.length === 0;
     previewButton.disabled = settings.output !== 'provider' || voices.length === 0 || diagnostics.snapshot().running !== null;
     if (typeof getDeviceVoices === 'function') {
-      const list = (attempt(() => getDeviceVoices()) ?? []).filter((voice) => typeof voice?.voiceURI === 'string')
+      const list = attempt(() => {
+        const raw = getDeviceVoices();
+        return (Array.isArray(raw) ? raw : []).filter((voice) => typeof voice?.voiceURI === 'string')
         .map((voice) => ({ voiceURI: voice.voiceURI, name: typeof voice.name === 'string' ? voice.name : voice.voiceURI,
           lang: typeof voice.lang === 'string' ? voice.lang : '' }));
+      }) ?? [];
       const ids = ['', ...list.map((voice) => voice.voiceURI)];
       if (deviceSelect.childNodes.length !== ids.length || Array.from(deviceSelect.childNodes).map((option) => option.getAttribute('value')).join('\n') !== ids.join('\n')) {
         for (const option of Array.from(deviceSelect.childNodes)) option.remove();

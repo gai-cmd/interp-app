@@ -97,13 +97,13 @@ function fakeAudioContext() {
     } };
 }
 
-function harness({ key = KEY, select = true, capture: withCapture = true, audio = fakeAudioContext(), voiceEngine } = {}) {
+function harness({ key = KEY, select = true, capture: withCapture = true, audio = fakeAudioContext(), voiceEngine, liveModels = ['test-model'] } = {}) {
   const log = [];
   const registry = createRegistry();
   const adapter = scriptedAdapter(log);
   // alpha: everything direct and ready, including simultaneous live (ownership test).
   const alpha = provider('alpha');
-  alpha.capabilities.live = capability('ready', ['direct'], ['pcm16'], ['pcm16', 'subtitle']);
+  alpha.capabilities.live = capability('ready', ['direct'], ['pcm16'], ['pcm16', 'subtitle'], { models: liveModels });
   alpha.capabilities.voice.voices = ['Kore'];
   registry.register(alpha, adapter);
   // beta: planned live, unsupported voice.
@@ -229,12 +229,12 @@ test('results are kept per provider and key source, cleared by key events, and n
   const before = h.diagnostics.snapshot().generation;
   h.keyStore.select('alpha', 'shared');
   assert.equal(h.diagnostics.snapshot().generation, before + 1);
-  assert.equal(h.table({ providerId: 'alpha', keySource: 'personal' }).translate, 'available', 'selection alone keeps results');
+  assert.equal(h.table({ providerId: 'alpha', keySource: 'personal' }).translate, 'untested', 'P2 selection changes invalidate connection results');
   assert.equal(h.adapter.calls.length, 1);
   const shared = await h.diagnostics.run('text').done;
   assert.equal(shared.state, 'available'); assert.equal(shared.keySource, 'shared');
   assert.equal(h.adapter.calls.at(-1).context.keySource, 'shared');
-  assert.equal(h.diagnostics.snapshot().results.length, 2);
+  assert.equal(h.diagnostics.snapshot().results.length, 1);
   // The personal result is for the old personal key only.
   h.keyStore.setPersonal('alpha', 'NEW-SECRET-KEY');
   assert.equal(h.adapter.calls.length, 2, 'saving a key runs no check');
@@ -469,4 +469,105 @@ test('every message key a result can carry exists in all three dictionaries', as
   for (const key of keys) {
     for (const language of ['ko', 'en', 'ja']) assert.equal(typeof dictionaries[language][key], 'string', `${language}:${key}`);
   }
+});
+
+test('P2 checks share activity ownership and never steal active hub or direct work', async () => {
+  const { createActivity } = await import('../app/engine/activity.js');
+  const activity = createActivity();
+  const h = harness();
+  for (const kind of ['hub', 'sim', 'seq']) {
+    const lease = activity.acquire(kind, { cancel() {}, async close() {} });
+    assert.throws(() => h.diagnostics.run('live'), code('SESSION_LIMIT'));
+    assert.throws(() => h.diagnostics.run('microphone'), code('SESSION_LIMIT'));
+    assert.equal(h.adapter.calls.length, 0); assert.equal(h.capture.sessions.length, 0);
+    await lease.close();
+  }
+  const check = h.diagnostics.run('microphone');
+  assert.equal(activity.snapshot().kind, 'diagnostics');
+  assert.throws(() => activity.acquire('hub', { cancel() {}, async close() {} }), code('SESSION_LIMIT'));
+  await activity.close();
+  assert.equal((await check.done).state, 'cancelled');
+  assert.equal(activity.occupied, false);
+  await h.diagnostics.close();
+});
+
+test('P2 live checks report only the requested registered model, with no microphone or voice invocation', async () => {
+  const h = harness();
+  const result = await h.diagnostics.run('live', { model: 'test-model' }).done;
+  assert.equal(result.state, 'available'); assert.equal(result.model, 'test-model');
+  assert.equal(result.requestedModel, 'test-model'); assert.equal(result.setupMs, 0);
+  assert.equal(h.adapter.lives[0].request.model, 'test-model');
+  assert.equal(h.capture.sessions.length, 0); assert.equal(h.adapter.sessions.length, 0);
+  assert.equal(h.table().voice, 'untested');
+  assert.equal(h.diagnostics.capabilities(undefined, { model: 'other-model' }).find(c => c.capability === 'live').state, 'untested');
+  assert.throws(() => h.diagnostics.run('live', { model: 'SECRET' }), code('MODEL_UNSUPPORTED'));
+  h.adapter.script.translate.push({ status: 'ok', translatedText: 'ok', model: 'SECRET' });
+  assert.equal((await h.diagnostics.run('text').done).model, null);
+  assert.equal(leaks(h.diagnostics.snapshot()), false);
+  await h.diagnostics.close();
+});
+
+test('P2 settings first load survives empty, malformed and throwing voice lists', async () => {
+  const { createBrowser } = await import('./fixtures/scenarios.mjs');
+  const { startApp } = await import('../app/main.js');
+  for (const getVoices of [() => [], () => null, () => ({}), () => { throw new Error('SECRET'); },
+    () => [{ get voiceURI() { throw new Error('SECRET'); } }]]) {
+    const b = createBrowser(); b.win.speechSynthesis.getVoices = getVoices;
+    const app = await startApp({ window: b.win, setTimeout: b.clock.setTimeout, clearTimeout: b.clock.clearTimeout });
+    assert.ok(app); assert.ok(app.settingsView);
+    assert.equal(b.root.textContent.includes('SECRET'), false);
+    await app.close();
+  }
+});
+
+test('P2 operational metrics and venue state render separately and never attest Live', async () => {
+  const { createBrowser, domText } = await import('./fixtures/scenarios.mjs');
+  const { createDiagnosticsView } = await import('../app/ui/diagnostics-view.js');
+  const { createListenMetrics } = await import('../app/engine/listen-metrics.js');
+  const b = createBrowser(); const h = harness(); const metrics = createListenMetrics();
+  const dict = JSON.parse(await readFile(new URL('../app/i18n/en.json', import.meta.url), 'utf8'));
+  let listener; let detached = false;
+  const hub = { snapshot: () => ({ broadcast: 'receiving', detail: 'SECRET', room: 'SECRET' }),
+    subscribe(fn) { listener = fn; return () => { detached = true; }; } };
+  const view = createDiagnosticsView({ root: b.root, diagnostics: h.diagnostics, metrics, hub,
+    i18n: { t: key => dict[key] ?? key } });
+  metrics.observe('reconnects', 3); listener();
+  const text = domText(b.root);
+  assert.ok(text.includes(dict['hub.broadcast.receiving']));
+  assert.ok(text.includes(dict['diagnostics.timingBoundary']));
+  assert.ok(text.includes(dict['diagnostics.unsupported']));
+  assert.equal(text.includes('SECRET'), false);
+  assert.equal(h.table().live, 'untested'); assert.equal(h.adapter.calls.length, 0);
+  view.destroy(); assert.equal(detached, true); await h.diagnostics.close();
+});
+
+test('P2 result storage has a fixed cap and Live timeout waits for late socket cleanup', async () => {
+  const h = harness();
+  for (let i = 0; i < 80; i++) await h.diagnostics.run('live', { providerId: `unknown${i}`, keySource: 'personal' }).done;
+  assert.equal(h.diagnostics.snapshot().results.length, DIAGNOSTICS_POLICY.maxResults);
+  const gate = deferred(); let closed = 0;
+  const oldRouter = h.config.router;
+  h.config.router = { call: () => gate.promise };
+  const handle = h.diagnostics.run('live');
+  await until(() => h.sessionManager.occupied);
+  h.clock.advance(DIAGNOSTICS_POLICY.requestTimeoutMs); await tick();
+  gate.resolve({ async close() { closed++; } });
+  const result = await handle.done;
+  assert.equal(result.state, 'failed'); assert.equal(result.errorCode, 'TIMEOUT');
+  assert.equal(closed, 1); assert.equal(h.sessionManager.occupied, false);
+  assert.equal(h.clock.size, 0);
+  h.config.router = oldRouter; await h.diagnostics.close();
+});
+
+
+test('P2 multiple registered Live models keep isolated results and key changes invalidate all models', async () => {
+  const h = harness({ liveModels: ['test-model', 'second-model'] });
+  await h.diagnostics.run('live', { model: 'test-model' }).done;
+  assert.equal(h.diagnostics.capabilities(undefined, { model: 'second-model' }).find(c => c.capability === 'live').state, 'untested');
+  await h.diagnostics.run('live', { model: 'second-model' }).done;
+  assert.deepEqual(h.diagnostics.snapshot().results.map(r => r.model), ['test-model', 'second-model']);
+  assert.equal(h.diagnostics.capabilities(undefined, { model: 'second-model' }).find(c => c.capability === 'live').state, 'available');
+  h.keyStore.setPersonal('alpha', 'NEW-SECRET-KEY');
+  assert.equal(h.diagnostics.snapshot().results.length, 0);
+  await h.diagnostics.close();
 });
