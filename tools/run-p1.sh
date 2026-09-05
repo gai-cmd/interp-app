@@ -3,7 +3,7 @@
 # and committing on success. Prints one line per task (Monitor-friendly). Exit 2 = task failed
 # twice (hand off to Fable), exit 3 = Astra blocked (rate/usage limit).
 shopt -s nullglob
-APP="$HOME/jarvis2/interp-app"; cd "$APP" || exit 1
+APP="$HOME/work/interp-app"; cd "$APP" || exit 1
 GITC="git -c user.name=gai -c user.email=gai@kaflixcloud.co.jp"
 run_tests() {
   local files=(tests/*.test.mjs)

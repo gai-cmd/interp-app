@@ -3,7 +3,7 @@
 #   tools/astra-task.sh <task-id> <task-prompt-file>
 # Output: docs/build/<task-id>.log (full transcript) and docs/build/<task-id>.last.md (final message).
 set -u
-APP="$HOME/jarvis2/interp-app"
+APP="$HOME/work/interp-app"
 ID="$1"; PROMPT="$2"
 mkdir -p "$APP/docs/build"
 cd "$APP"
