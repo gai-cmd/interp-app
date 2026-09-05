@@ -168,3 +168,47 @@ P2-09는 캡처 onFrame을 현재 연결의 큐에 연결하고, 재연결/goAwa
 ### 자동 검증 범위
 
 합성 PCM과 독립된 가상 단조/AudioContext 시계를 사용한다. LE offset·복사·연속 예약, 3초 상태 해제, 8초 및 256개 경계의 할당 전 거부, 실제 제공자 턴을 기다리는 복귀·2초 강제 복귀, 300초 연속 재생과 늦은 ended 회수, mute/interrupted/abort, suspended 130초와 반복 수신, resume 거부·진행 중 취소, closed context·잘못된 PCM·생성/connect/start 실패 및 오류 비밀 제거를 검사한다. 실제 스피커 첫소리·Safari/모바일·장시간 운영 성공은 이 모의 검사로 판정하지 않는다. 완료 명령과 최종 통과 수는 최종 보고에 기록한다.
+
+## P2-10 기존 허브 프로토콜 파서 — 2026-09-05
+
+### 원본과 변경 범위
+
+서버 수정 없이 `~/jarvis2/interp-web/server.js`의 `publicSettings`, `castStart`, `castStop`, 청중 WebSocket 연결 경로를 읽고 수신 계약을 이식했다. 전체 SHA-256은 `b179d94a9de1f6af012e3b40226199bb6c30e4b5564d00b97931cdbbb6cd7d48`이다. 상태 종류는 `lib/live.js`의 `LiveLane`을 대조했고 해시 `8afc7818740a45bb69e349450f4290b9574adcd24cb8ee294060ec08056febfe`가 기존 지문과 일치했다. 지정된 translate·xlsx·main-handlers의 voice/tts·ambient-state 음성 경계도 확인했지만 이 과제에는 이식하지 않는다.
+
+신규 파일은 `app/hub/protocol.js`, `tests/hub-protocol.test.mjs`, `tests/fixtures/hub.mjs`이며 이 문서를 갱신했다. 기존 P1 테스트 단언·제공자 라우팅·키 처리·능력 등록은 변경하지 않았다. P2-08의 `createCaptionStore().upsertHub()`가 존재하므로 선행 의존 누락은 없다. 코드만 반환하는 기존 `ProviderError`를 재사용한다.
+
+### 호출 계약과 설계 구체화
+
+- `createHubProtocol({ hubs? }) → { buildUrl(hubId, roomCode), parse }`. `hubs`는 코드 소유 구성·테스트 전용 주입점이며 `{ id, url }` 목록이다. 사용자·QR·서버 settings를 이 인자로 전달하지 않는다. 생성 시 검증·복사하며 참가 시에는 등록 ID만 받는다. 기본 `REGISTERED_HUBS`는 빈 불변 배열이다. 검증된 주소 없이 가짜 운영 허브를 등록하지 않는다.
+- 등록 URL은 정규화된 절대 `wss://…/ws`만 허용한다. 사용자 정보·query·fragment·다른 경로·정규화로 바뀌는 주소를 거부한다. 참가 URL에는 `room`만 추가한다. 방 코드는 원본의 생성 규칙에 따라 대소문자를 보존하는 영숫자 1–8자로 제한한다. 원본이 base64url 특수문자를 제거하므로 짧은 코드도 가능하다. 자동 trim·대소문자 변환은 하지 않는다. 방 코드는 WebSocket 참가 URL에만 필요하며 페이지 URL·로그·저장소용 값으로 반환하지 않는다.
+- `parseHubMessage(text)`는 동기·무상태 함수다. JSON 텍스트만 받는다. 전체 UTF-8 1MiB, 자막 16,000 UTF-16 단위, 식별자 256자 상한을 적용한다. 식별자는 원본 ID 형식에 필요한 영숫자·점·밑줄·콜론·하이픈만 받는다. `seq/revision/ts`는 0 이상의 안전한 정수이며 `ts`만 생략 가능하다. final은 실제 boolean이어야 한다. 빈 자막은 snapshot 삭제 수정을 위해 허용한다.
+- 반환 이벤트는 `hello`, `caption`, `status`, `stopped`, `settings`, `closed`, `denied`다. 알려진 잘못된 메시지는 `INVALID_RESULT`, 알 수 없는 타입은 크기·JSON 객체 검사 후 null이다. 정상 `status` 호환은 지원 언어 또는 `*`와 실제 LiveLane 상태 6종이 모두 있는 경우에만 적용하며 다른 일반 `status`는 null이다.
+- hello는 참가 sessionId와 정제 settings만 전달하며 방송 중 상태를 만들지 않는다. settings는 `allowedLangs/defaultLang`만 채택한다. 언어 목록은 최대 64개·각 코드 최대 35자로 검증하고 ko/en/ja 교집합에서 중복을 제거한다. 기본 언어가 교집합에 없으면 첫 허용 언어, 교집합이 비면 null이다. 빈 목록을 임의 언어로 채우지 않는다. `name`, `castActive`, `castLangs`, endpoint, 키, 저장·접근·quota 설정은 폐기한다.
+- caption은 `lang/segmentId/seq/text/final/revision/ts?`만 전달한다. 모든 지원 언어와 `src`를 수신 순서 그대로 전달하며 선택 목표어 필터, 누락 계산, 중복·revision 판정은 하지 않는다. 소비자가 로컬 epoch를 붙여 P2-08에 전달한다. ts를 로컬 시계에서 빼서 지연으로 계산하지 않는다.
+- status는 lang와 검증된 state만 전달한다. 선택 사항인 model도 청중 상태에 필요하지 않아 detail과 함께 폐기한다. fatal을 일일 quota·키 오류로 추정하지 않는다. stopped의 알려진 서버 사유는 `stopped/broadcast-error/time-limit` 의미 코드로 제한하고 알 수 없는 사유는 stopped로 축약한다. closed는 room-closed, outside/denied는 접근 거부로 매핑한다. 이들은 UI 문구가 아니며 P2-14·16에서 사전 키로 표시한다.
+
+설계의 의미 변경은 없다. 함수 시그니처·필드별 상한·잘못된 입력 처리·기본 언어 폴백은 상세 설계에서 미지정한 부분을 위와 같이 구체화했다. PCM·구독·replay-end·source 명령 생성이나 서버 변경을 추가하지 않았다.
+
+### 후속 주의와 검증
+
+P2-11은 Blob/ArrayBuffer를 크기 확인 후 텍스트로 변환하고 비동기 해석 순서를 보존해야 한다. 대기 128개·2MiB, 초과 시 연결 정리, 종료·재접속·세대 검사는 클라이언트 책임이다. 이 파서에는 소켓·타이머·API 키·마이크·TTS·로그·저장소가 없다.
+
+P2-13은 전체 이벤트 처리 후 목표어를 선택하며, hello에서 방송 중을 추정하지 않는다. settings가 선택 언어를 제거하면 중지한다. fatal/접근 거부/종료 시 상태·큐를 정리한다. 재접속 자막의 seq 불연속으로 누락 개수를 만들지 않으며 최근 자막 자동 낭독을 차단한다. P2-20은 실제 검증한 WSS 주소와 `ENDPOINT_ORIGINS`·CSP를 함께 등록해야 한다. Node fixture 성공을 실제 허브 접속·규모·출시 검증으로 확대하지 않는다.
+
+단위 검사는 실제 타입 덮어쓰기, hello/settings 정제, 종료·접근 거부, URL·방 코드 주입 차단, UTF-8 크기 경계, 정수·revision·언어·텍스트 상한, raw 오류 폐기, 전체 언어 순서와 불연속 replay, 실제 P2-08 저장소의 revision·중복 final 처리를 포함한다.
+
+실행 결과: `node --test tests/hub-protocol.test.mjs`는 9개 통과, `node scripts/check-i18n.mjs`는 `I18N_OK languages=3 keys=205 files=50`, `git diff --check`는 통과했다. `node --test tests/*.test.mjs`와 `node --test tests/`는 기존 개인정보 검사 한 항목이 실패했다. 처음 추가한 테스트의 긴 가짜 비밀 표식이 키 형태 탐지에 걸려 테스트 소스에서는 짧은 표식으로 수정했다. 그러나 외부에서 기록되는 `docs/build/P2-10.log`에도 이전 명령 내용이 남아 재실행은 이 로그를 원인으로 실패한다. 이 로그는 허용된 네 파일 밖이므로 수정·삭제하지 않았고 기존 개인정보 검사도 약화하지 않았다. 로그의 가짜 표식 정리 권한이 확보된 뒤 전체 검사를 재실행해야 하므로 전체 완료 판정은 보류한다.
+
+### 재시도 검증
+
+2026-09-05, Node v24.18.0에서 기존 구현과 원본 서버의 청중 메시지를 다시 대조했다. 파서·fixture·테스트 소스는 이전 수정 상태를 유지했고 이번 재시도에서는 이 문서만 갱신했다. 설계 변경이나 P1 단언 수정은 없다.
+
+| 직접 실행한 명령 | 결과 |
+|---|---|
+| `node --test tests/hub-protocol.test.mjs` | 9개 통과 |
+| `node --test tests/*.test.mjs` | 483개 통과, 개인정보 검사 1개 실패, skip·todo·취소 0 |
+| `node --test tests/` | 내부 482개 통과, 개인정보 검사 1개 실패로 디렉터리 진입 검사 실패 |
+| `node scripts/check-i18n.mjs` | `I18N_OK languages=3 keys=205 files=50` |
+| `git diff --check` | 통과 |
+
+기존 개인정보 검사의 값 패턴으로 빌드 로그를 읽기 전용 검사한 결과, 검출 위치는 `docs/build/P2-10.log:2736` 한 줄이다. 원문 값은 출력하지 않았다. 필요한 조치는 해당 줄의 가짜 표식 값만 짧은 `test-marker`로 치환하고 나머지 로그를 보존하는 것이다. 이 파일은 사용자 지정 수정 범위 밖이므로 범위 예외 승인 전에는 실행하지 않는다. 로그가 남아 있는 현재 상태에서는 네 파일만 수정하여 전체 검사를 통과시킬 수 없으며, 테스트에서 로그를 제외하거나 검사 패턴을 약화하지 않는다.

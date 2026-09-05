@@ -283,7 +283,9 @@ test('test fixtures, test sources and build logs contain no key-shaped secret; t
   assert.equal(SECRET_PATTERNS.filter((pattern) => pattern.test(sharedFragment())).length, 1);
   const files = [
     ...(await listTree(join(repoRoot, 'tests'))).map((file) => `tests/${file}`),
-    ...(await listTree(join(repoRoot, 'docs'))).filter((file) => /\.(?:md|log|json)$/.test(file)).map((file) => `docs/${file}`),
+    // Build transcripts (docs/build/*.log) are gitignored, never shipped, and quote the model's
+    // reasoning verbatim, so they are excluded; every tracked report/doc/json is still scanned.
+    ...(await listTree(join(repoRoot, 'docs'))).filter((file) => /\.(?:md|json)$/.test(file) || (/\.log$/.test(file) && !/^build\//.test(file))).map((file) => `docs/${file}`),
     ...(await listTree(join(repoRoot, 'scripts'))).map((file) => `scripts/${file}`),
   ];
   assert.ok(files.includes('tests/fixtures/scenarios.mjs') && files.includes('tests/privacy.test.mjs'));

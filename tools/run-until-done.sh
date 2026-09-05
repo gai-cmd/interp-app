@@ -9,10 +9,12 @@ while true; do
   if [ $code -eq 2 ]; then echo "$PREFIX task failed twice · stopping for review"; exit 2; fi
   # 3 = all profiles limited · wait for the earliest "try again at HH:MM" (fallback 30 min)
   last=$(ls -t docs/build/$PREFIX-*.log 2>/dev/null | head -1)
-  at=$(grep -io 'try again at [0-9:]* [AP]M' "$last" 2>/dev/null | head -1 | sed 's/try again at //I')
+  # formats seen: "try again at 10:22 PM" and "try again at Sep 6th, 2026 3:47 AM"
+  at=$(grep -io 'try again at [^.]*[AP]M' docs/build/$PREFIX-*.log 2>/dev/null | sed 's/.*try again at //I' | sort -u | tail -1)
   wait=1800
   if [ -n "$at" ]; then
-    target=$(date -j -f "%I:%M %p" "$at" +%s 2>/dev/null); now=$(date +%s)
+    hm=$(echo "$at" | grep -oE '[0-9]{1,2}:[0-9]{2} [AP]M' | tail -1)
+    target=$(date -j -f "%I:%M %p" "$hm" +%s 2>/dev/null); now=$(date +%s)
     if [ -n "$target" ]; then [ "$target" -le "$now" ] && target=$((target+86400)); wait=$((target-now+90)); fi
   fi
   echo "$PREFIX PAUSED · both Astra profiles limited · resuming in $((wait/60)) min ($at)"
