@@ -10,7 +10,7 @@ run_tests() {
   [ ${#files[@]} -eq 0 ] && { echo "no tests"; return 0; }
   node --test "${files[@]}" > docs/build/last-test.log 2>&1
 }
-blocked() { grep -qiE "usage limit|rate limit|quota exceeded|too many requests|status\":429|429 Too Many|requires a newer version|unexpected argument|Usage: codex exec" "$1"; }
+blocked() { grep -qiE "^ERROR:.*(usage limit|rate limit|quota|429|too many requests)|requires a newer version|unexpected argument|Usage: codex exec" "$1"; }
 for f in docs/build/tasks/P1-*.md; do
   id=$(basename "$f" .md)
   [ -f "docs/build/$id.done" ] && continue
