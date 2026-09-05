@@ -48,10 +48,12 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
   const store = state ?? createState({ defaults: config.defaults, sessionId, now });
   const voice = voiceEngine ?? createVoiceEngine({ router: config.router, deviceTTS, getAudioContext,
     sessionManager: config.sessionManager, ...timing });
-  let active = null, serial = 0, closed = false;
+  let active = null, serial = 0, closed = false, stopping = 0;
+  const settling = new Set(), workListeners = new Set(), latest = new Map();
+  const notifyWork = () => { for (const fn of workListeners) { try { fn(); } catch { /* Observer-owned failure. */ } } };
   const ensureOpen = () => { if (closed) throw new ProviderError('SESSION_CLOSED'); };
   // The composition root guards diagnostics and update application.
-  const ensureStart = () => { ensureOpen(); if (isBusy()) throw new ProviderError('INVALID_REQUEST'); };
+  const ensureStart = () => { ensureOpen(); if (stopping || isBusy()) throw new ProviderError('INVALID_REQUEST'); };
   const record = (turnId) => store.snapshot().turns.find((turn) => turn.turnId === turnId) ?? null;
   const stale = (turn) => turn.signal.aborted || store.snapshot().generation !== turn.generation;
 
@@ -84,12 +86,13 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
     const turn = { turnId, controller, signal: controller.signal, generation: store.snapshot().generation,
       captureSession: null, done: null };
     active = turn;
+    latest.set(turnId, turn);
     turn.done = (async () => {
       let failure = null;
       try { await work(turn); } catch (raw) { failure = normalizeError(raw).code; }
       finally {
         if (active === turn) active = null;
-        if (!store.closed) {
+        if (!store.closed && !stale(turn)) {
           const current = record(turnId);
           if (current && !terminal.has(current.phase)) {
             if (turn.signal.aborted || failure === 'ABORTED') store.cancelTurn(turnId);
@@ -97,9 +100,13 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
           }
           store.finishTurn(turnId);
         }
+        if (latest.get(turnId) === turn) latest.delete(turnId);
       }
       return record(turnId);
     })();
+    settling.add(turn.done);
+    notifyWork();
+    turn.done.finally(() => { settling.delete(turn.done); notifyWork(); });
     return Object.freeze({ turnId, done: turn.done });
   }
 
@@ -140,11 +147,11 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
         ...(settings.deviceVoiceURI ? { deviceVoiceURI: settings.deviceVoiceURI } : {}) },
       { signal: turn.signal, turnId, sessionId: store.snapshot().sessionId, ...route });
     } catch { result = { status: 'failed', messageKey: 'error.VOICE_FAILED', errorCode: 'VOICE_FAILED' }; }
-    if (turn.signal.aborted && !['cancelled', 'completed'].includes(result?.status)) {
+    if (turn.signal.aborted) {
       result = { ...result, status: 'cancelled', messageKey: 'error.ABORTED', errorCode: 'ABORTED' };
     }
     // Voice outcome sits beside the captions; the translation stays committed.
-    store.setVoiceResult(turnId, result);
+    if (latest.get(turnId) === turn && store.snapshot().generation === turn.generation) store.setVoiceResult(turnId, result);
   }
 
   function onKeyEvent(event) {
@@ -247,9 +254,20 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
       ensureOpen();
       store.setVoice(options);
     },
+    async stop() {
+      ensureOpen();
+      stopping++;
+      abortActive();
+      notifyWork();
+      try {
+        await Promise.all([...settling]);
+        await config.sessionManager?.close?.();
+      } finally { stopping--; notifyWork(); }
+    },
+    subscribeWork(listener) { workListeners.add(listener); return () => workListeners.delete(listener); },
     subscribeVoice(listener) { return voice.subscribe?.(listener) ?? (() => {}); },
     snapshot() {
-      return Object.freeze({ closed, activeTurnId: active?.turnId ?? null,
+      return Object.freeze({ closed, busy: active !== null || settling.size > 0 || stopping > 0, activeTurnId: active?.turnId ?? null,
         recording: Boolean(active?.captureSession), voice: voice.snapshot?.() ?? null });
     },
     async close() {
@@ -258,9 +276,10 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
       unsubscribe();
       const pending = abortActive();
       try { capture.cancel(); } catch { /* Capture is already idle. */ }
-      await pending;
+      await Promise.all([pending, ...settling]);
       await voice.close?.();
       store.close();
+      workListeners.clear();
     },
   };
   return Object.freeze(api);

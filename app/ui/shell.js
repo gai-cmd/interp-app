@@ -1,11 +1,12 @@
 // New implementation of design-v0.6 §7.1 and §12: the common shell. Header
 // with app name, provider/key-source badges (never a key value), connection
 // state and a settings button; the sequential/simultaneous tabs with the
-// simultaneous tab blocked as planned (P2); the notice region that shows
+// simultaneous view and asynchronous cleanup; the notice region that shows
 // store notices and clears them; and the settings container P1-16 fills.
 // Importing touches no browser globals; document/window are injected.
 import { NOTICE_DURATION_MS, keySelectionKeys, resolveKey } from './errors.js';
 import { createBinder, createSeqView } from './seq-view.js';
+import { createSimView } from './sim-view.js';
 
 export const TABS = Object.freeze(['sequential', 'simultaneous']);
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
@@ -26,6 +27,7 @@ function element(doc, tag, { className, attributes = {} } = {}) {
  * persistence of the UI language (separate from the interpretation pair).
  */
 export function mount({ root, i18n, engine, document: doc = root?.ownerDocument, window: win = null,
+  listenEngines, hubs = [], beforeTabChange,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof engine?.state?.subscribe !== 'function') {
     throw new Error('INVALID_REQUEST');
@@ -83,18 +85,21 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     panels[id] = panel;
     tabs.append(tab);
   }
-  tabButtons.simultaneous.setAttribute('aria-disabled', 'true');
-  const planned = element(doc, 'p', { className: 'shell-planned' });
-  bind.text(planned, 'tabs.simultaneousPending');
-  panels.simultaneous.append(planned);
   const main = element(doc, 'main', { className: 'shell-main' });
   main.append(panels.sequential, panels.simultaneous);
 
-  let selected = null;
+  let selected = null, transition = 0, destroyed = false;
   function selectTab(id) {
     if (!TABS.includes(id)) return selected;
-    // P2 feature: keep the current tab and explain instead of running anything.
-    if (tabButtons[id].getAttribute('aria-disabled') === 'true') { showMessage('tabs.simultaneousPending'); return selected; }
+    if (destroyed) return selected;
+    if (beforeTabChange && selected !== null && id !== selected) {
+      void switchTab(id);
+      return selected;
+    }
+    transition++;
+    return applyTab(id);
+  }
+  function applyTab(id) {
     selected = id;
     for (const tabId of TABS) {
       const active = tabId === id;
@@ -102,6 +107,20 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       tabButtons[tabId].setAttribute('tabindex', active ? '0' : '-1');
       panels[tabId].hidden = !active;
     }
+    return selected;
+  }
+  // selectTab retains its synchronous selected-id contract. Await switchTab
+  // when the caller needs physical cleanup and the final selection.
+  async function switchTab(id) {
+    if (!TABS.includes(id) || destroyed) return selected;
+    const epoch = ++transition;
+    try {
+      await beforeTabChange?.(id);
+      if (!destroyed && epoch === transition) {
+        applyTab(id);
+        tabButtons[id].focus();
+      }
+    } catch { if (!destroyed && epoch === transition) showMessage('error.SESSION_CLOSED'); }
     return selected;
   }
   for (const id of TABS) {
@@ -207,6 +226,8 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   }
 
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });
+  const simView = listenEngines ? createSimView({ root: panels.simultaneous, i18n, engines: listenEngines, hubs,
+    document: doc, onSequential: () => switchTab('sequential') }) : null;
   const unsubscribe = store.subscribe(render);
   removers.push(engine.subscribeVoice?.(renderConnection) ?? (() => {}));
   listen(win, 'online', renderConnection);
@@ -221,6 +242,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     doc.title = i18n.t('app.name');
     bind.refresh();
     seqView.refresh();
+    simView?.refresh();
     render(snapshot);
     for (const listener of [...languageListeners]) attempt(() => listener(i18n.language));
   }
@@ -230,7 +252,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   return Object.freeze({
     root: app,
     i18n,
-    seqView,
+    seqView, simView,
     elements: Object.freeze({ header, providerBadge, modeBadge, connectionBadge, settingsButton, notice, noticeClose, message,
       tabs, tabButtons: Object.freeze({ ...tabButtons }),
       panels: Object.freeze({ sequential: panels.sequential, simultaneous: panels.simultaneous, settings, settingsBody, settingsClose }) }),
@@ -243,12 +265,14 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       languageListeners.add(listener);
       return () => languageListeners.delete(listener);
     },
-    selectTab,
+    selectTab, switchTab,
     showMessage,
     openSettings,
     closeSettings,
     render,
     destroy() {
+      destroyed = true; transition++;
+      simView?.destroy();
       unsubscribe();
       cancelTimer(noticeTimer);
       cancelTimer(messageTimer);

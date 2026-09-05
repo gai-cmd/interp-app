@@ -121,14 +121,14 @@ function fakeEngine() {
   };
   return engine;
 }
-function harness({ language = 'ko' } = {}) {
+function harness({ language = 'ko', ...options } = {}) {
   const doc = createDocument();
   const win = createWindow(doc);
   const root = doc.createElement('div');
   const timers = fakeTimers();
   const engine = fakeEngine();
   const i18n = createI18n({ dictionaries, language });
-  const shell = mount({ root, i18n, engine, document: doc, window: win, ...timers });
+  const shell = mount({ root, i18n, engine, document: doc, window: win, ...timers, ...options });
   const view = shell.seqView;
   const el = (name) => byClass(root, name);
   return { doc, win, root, timers, engine, state: engine.state, i18n, shell, view, el };
@@ -306,25 +306,47 @@ test('mount builds the shell in three languages, shows key badges and manages th
   assert.deepEqual(h.engine.calls, []);
 });
 
-test('the simultaneous tab is displayed as planned and blocked from running', () => {
+test('the simultaneous tab is enabled without starting work; selectTab stays synchronous', () => {
   const h = harness();
   const tab = h.shell.elements.tabButtons.simultaneous;
-  assert.equal(tab.getAttribute('aria-disabled'), 'true');
-  assert.equal(byClass(h.root, 'shell-planned').textContent, ko['tabs.simultaneousPending']);
+  assert.equal(tab.getAttribute('aria-disabled'), null);
   tab.dispatch('click');
-  assert.equal(h.shell.selectedTab, 'sequential');
-  assert.equal(h.shell.elements.panels.simultaneous.hidden, true);
-  assert.equal(h.shell.elements.panels.sequential.hidden, false);
-  assert.equal(tab.getAttribute('aria-selected'), 'false');
-  assert.equal(h.shell.elements.message.hidden, false);
-  assert.equal(h.shell.elements.message.textContent, ko['tabs.simultaneousPending']);
-  assert.equal(h.shell.selectTab('simultaneous'), 'sequential');
+  assert.equal(h.shell.selectedTab, 'simultaneous');
+  assert.equal(h.shell.elements.panels.simultaneous.hidden, false);
+  assert.equal(h.shell.elements.panels.sequential.hidden, true);
+  assert.equal(tab.getAttribute('aria-selected'), 'true');
+  assert.equal(h.shell.selectTab('sequential'), 'sequential');
   assert.equal(h.shell.selectTab('bogus'), 'sequential');
-  h.timers.run();
-  assert.equal(h.shell.elements.message.hidden, true);
   h.shell.elements.tabButtons.sequential.dispatch('keydown', { key: 'ArrowRight' });
   assert.equal(h.doc.activeElement, tab);
   assert.deepEqual(h.engine.calls, []);
+  h.shell.destroy();
+});
+
+test('tab cleanup is awaited, reselection discards late results, and failed cleanup keeps the current panel', async () => {
+  const pending = [];
+  const h = harness({ beforeTabChange: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+  assert.equal(h.shell.selectTab('simultaneous'), 'sequential');
+  assert.equal(h.shell.selectedTab, 'sequential');
+  // Selecting the current panel withdraws the pending navigation.
+  assert.equal(h.shell.selectTab('sequential'), 'sequential');
+  pending.shift().resolve();
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(h.shell.selectedTab, 'sequential');
+  const failed = h.shell.switchTab('simultaneous');
+  pending.shift().reject(new Error('SECRET'));
+  await failed;
+  assert.equal(h.shell.selectedTab, 'sequential');
+  assert.equal(h.shell.elements.message.textContent, ko['error.SESSION_CLOSED']);
+  const switched = h.shell.switchTab('simultaneous');
+  pending.shift().resolve();
+  assert.equal(await switched, 'simultaneous');
+  assert.equal(h.doc.activeElement, h.shell.elements.tabButtons.simultaneous);
+  const late = h.shell.switchTab('sequential');
+  h.shell.destroy();
+  pending.shift().resolve();
+  assert.equal(await late, 'simultaneous');
+  assert.equal(h.root.childNodes.length, 0);
 });
 
 test('store notices are displayed, then cleared by the UI through setNotice(null)', () => {

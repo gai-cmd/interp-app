@@ -258,3 +258,10 @@ export function createState({ defaults = APP_DEFAULTS, sessionId, now = () => Da
   };
   return Object.freeze(api);
 }
+
+// Cleanup and reconnect ownership count as busy even without a sequential turn.
+export function isAppBusy({ sequential, listening = [], activity, diagnostics, transitioning = false } = {}) {
+  return transitioning || sequential?.activeTurnId != null || sequential?.busy === true
+    || activity?.occupied === true || diagnostics?.running != null
+    || listening.some(value => value?.busy || !['idle', 'stopped', 'failed'].includes(value?.status ?? 'idle'));
+}

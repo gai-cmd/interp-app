@@ -11,7 +11,8 @@
 //      and hand the held fragment to the key store; loadPersonal('gemini');
 //   4. one createCapture and one createVoiceEngine shared by the sequential
 //      engine and diagnostics; mount the shell; diagnostics; settings; PWA.
-// Teardown: settings -> diagnostics -> shell -> engine -> config -> pwa.
+// P2: listening ownership and generation guards join the P1 lifecycle.
+// Teardown: settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
 import fallbackDictionary from './i18n/en.json' with { type: 'json' };
 import { createI18n, loadI18n } from './i18n/index.js';
@@ -28,7 +29,13 @@ import { mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
 import { resolveKey } from './ui/errors.js';
 import { withDeadline } from './engine/retry.js';
-import { TURN_PHASE } from './state.js';
+import { TURN_PHASE, isAppBusy } from './state.js';
+import { ProviderError } from './providers/contract.js';
+import { createActivity } from './engine/activity.js';
+import { createSimEngine } from './engine/sim.js';
+import { createHubListenEngine } from './engine/hub-listen.js';
+import { createHubClient } from './hub/client.js';
+import { REGISTERED_HUBS } from './hub/protocol.js';
 import { createPwa, createPwaControls, UPDATE_KEYS } from './pwa.js';
 
 // UI settings live in localStorage per device (§11.1); keys are ours alone.
@@ -97,7 +104,8 @@ export function captureSharedFragment({ location, history }) {
  *   setLanguage, close }. A failed start renders the failure as dictionary
  * text inside root and resolves null; nothing is logged.
  */
-async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fetch?.bind?.(win),
+// hubs is a trusted code registry, never a settings or QR value.
+async function bootApp({ window: win, root: givenRoot, hubs = REGISTERED_HUBS, fetch: fetcher = win?.fetch?.bind?.(win),
   setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win) } = {}) {
   const doc = win?.document;
   const nav = win?.navigator;
@@ -130,7 +138,64 @@ async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fet
 
   let config = null, engine = null, voiceEngine = null, capture = null, store = null;
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
-  let audioContext = null;
+  let audioContext = null, closing = null;
+  let simEngine = null, hubEngine = null, listenEngines = null;
+  const activity = createActivity(timing);
+  let lifecycleGeneration = 0, transitions = 0, cleanupFailed = false;
+  const listeningBusy = () => closed || doc.hidden || cleanupFailed || activity.occupied || transitions > 0
+    || simEngine?.snapshot().busy || hubEngine?.snapshot().busy;
+  const busy = () => isAppBusy({ sequential: engine?.snapshot(),
+    listening: [simEngine?.snapshot(), hubEngine?.snapshot()], activity: activity.snapshot(),
+    diagnostics: diagnostics?.snapshot(), transitioning: cleanupFailed || transitions > 0 || config?.sessionManager.occupied === true });
+
+  // Invalidate first; cleanup remains busy until every owner confirms closure.
+  async function stopWork() {
+    lifecycleGeneration++;
+    transitions++;
+    try {
+      const results = await Promise.allSettled([activity.close(), engine?.stop(), diagnostics?.cancel()]);
+      cleanupFailed = results.some(result => result.status === 'rejected');
+      if (cleanupFailed) throw new ProviderError('SESSION_CLOSED');
+    } finally {
+      transitions--;
+      pwa?.reloadIfPending();
+    }
+  }
+  function ownedListener(raw, kind) {
+    let lease = null;
+    const end = () => kind === 'sim' ? raw.stop() : raw.leave();
+    const stop = async () => {
+      const epoch = lifecycleGeneration;
+      if (lease) await lease.close();
+      else await end();
+      if (closed || epoch !== lifecycleGeneration) throw new ProviderError('ABORTED');
+    };
+    function start(request) {
+      if (closed || doc.hidden || cleanupFailed || transitions || engine.snapshot().busy
+        || diagnostics?.snapshot().running != null || pwa?.snapshot().applying) throw new ProviderError('SESSION_LIMIT');
+      const owned = activity.acquire(kind, { cancel: end, close: async () => {
+        await end();
+        if (kind === 'sim') await config.sessionManager.close();
+      } });
+      lease = owned;
+      try {
+        let handle;
+        if (kind === 'sim') {
+          const selection = config.keyStore.getSelection();
+          if (!selection || selection.keySource !== 'personal'
+            || !config.keyStore.getMetadata(selection.providerId, selection.keySource)) throw new ProviderError('CREDENTIAL_REQUIRED');
+          handle = raw.start(request, { ...selection, signal: owned.signal,
+            sessionId: `listen-${owned.generation}` });
+        } else handle = raw.join(request, { signal: owned.signal });
+        Promise.resolve(handle.done).finally(() => owned.close()).catch(() => {});
+        return handle;
+      } catch (error) {
+        owned.close().catch(() => {});
+        throw new ProviderError(redact(error).code);
+      }
+    }
+    return Object.freeze({ ...raw, start, join: start, stop, leave: stop });
+  }
   const removers = [];
   const listen = (target, type, handler, options) => {
     if (!target?.addEventListener) return;
@@ -174,15 +239,34 @@ async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fet
       onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
     voiceEngine = createVoiceEngine({ router: config.router, deviceTTS, getAudioContext, sessionManager: config.sessionManager, ...timing });
     engine = createSeqEngine({ config, capture, voiceEngine, ...timing,
-      isBusy: () => diagnostics?.snapshot().running != null || pwa?.snapshot().applying === true });
+      isBusy: () => listeningBusy() || diagnostics?.snapshot().running != null || pwa?.snapshot().applying === true });
     store = engine.state;
     notify = (key) => { if (!store.closed) attempt(() => store.setNotice(resolveKey(i18n, key))); };
 
-    shell = mount({ root, i18n, engine, document: doc, window: win, ...timing });
+    simEngine = createSimEngine({ router: config.router, sessionManager: config.sessionManager,
+      platform: createPlatform(win), getAudioContext, ...timing,
+      resolveFallback: (...args) => config.resolveFallback(PROVIDER_ID, 'live')?.(...args),
+      onLevel: level => shell?.simView?.onLevel(level) });
+    // P2-13 requires speak/cancel even on browsers without speech synthesis.
+    // Keep captions available through its existing unavailable-output contract.
+    const hubTTS = deviceTTS ?? Object.freeze({
+      speak: async () => ({ status: 'unavailable' }), cancel() {},
+    });
+    hubEngine = createHubListenEngine({ client: createHubClient({ hubs, WebSocket: win.WebSocket, ...timing }), deviceTTS: hubTTS, ...timing });
+    listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
+    shell = mount({ root, i18n, engine, listenEngines, hubs,
+      beforeTabChange: stopWork, document: doc, window: win, ...timing });
+    removers.push(config.keyStore.subscribe(() => {
+      if (busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
+      else lifecycleGeneration++;
+    }));
     diagnostics = createDiagnostics({ config, voiceEngine, capture, getAudioContext, ...timing,
-      isBusy: () => store.snapshot().activeTurnId !== null || pwa?.snapshot().applying === true });
-    const isBusy = () => (!store.closed && store.snapshot().activeTurnId !== null) || diagnostics.snapshot().running !== null;
-    pwa = createPwa({ window: win, navigator: nav, isBusy, ...timing });
+      isBusy: () => listeningBusy() || engine.snapshot().busy || pwa?.snapshot().applying === true });
+    pwa = createPwa({ window: win, navigator: nav, isBusy: busy, ...timing });
+    removers.push(activity.subscribe(() => pwa.reloadIfPending()));
+    removers.push(engine.subscribeWork(() => pwa.reloadIfPending()));
+    removers.push(diagnostics.subscribe(() => pwa.reloadIfPending()));
+    removers.push(config.sessionManager.subscribe(() => pwa.reloadIfPending()));
     const version = await pwa.getVersion();
     const standalone = pwa.snapshot().standalone;
     settingsView = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence: storage !== null,
@@ -217,9 +301,11 @@ async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fet
   listen(win, 'offline', () => notify('pwa.offline'));
   // Leaving the page ends active work; an unload (not bfcache) closes everything.
   listen(win, 'pagehide', (event) => {
-    attempt(() => engine.cancel());
-    attempt(() => diagnostics.cancel());
+    stopWork().catch(() => notify('error.SESSION_CLOSED'));
     if (event?.persisted !== true) close();
+  });
+  listen(doc, 'visibilitychange', () => {
+    if (doc.hidden) stopWork().catch(() => notify('error.SESSION_CLOSED'));
   });
   // Registration happens last so it never delays the first paint.
   pwa.register();
@@ -230,6 +316,8 @@ async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fet
     for (const remove of removers.splice(0)) remove();
     controls?.destroy();
     settingsView?.destroy();
+    await stopWork().catch(() => {});
+    await Promise.allSettled([simEngine?.close(), hubEngine?.close()]);
     await diagnostics?.close();
     shell?.destroy();
     if (engine) await engine.close();
@@ -238,14 +326,16 @@ async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fet
     pwa?.close();
     if (audioContext) { const context = audioContext; audioContext = null; attempt(() => Promise.resolve(context.close()).catch(() => {})); }
   }
-  async function close() {
-    if (closed) return;
+  function close() {
+    if (closing) return closing;
     closed = true;
-    await teardown();
+    closing = teardown();
+    return closing;
   }
 
   return Object.freeze({
     i18n, config, engine, capture, voiceEngine, shell, diagnostics, settingsView, controls, pwa, getAudioContext,
+    listenEngines, activity, stopWork,
     get closed() { return closed; },
     // UI language only (the interpretation pair is engine state).
     setLanguage(language) {

@@ -5,11 +5,14 @@ import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
 import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import { checkSource } from '../scripts/check-i18n.mjs';
-import { TURN_PHASE } from '../app/state.js';
+import { TURN_PHASE, isAppBusy } from '../app/state.js';
 import {
   AUDIO_CONTEXT_OPTIONS, INSTALL_HINT_STORAGE_KEY, UI_LANGUAGE_STORAGE_KEY, applyManifestLanguage,
   autoStart, captureSharedFragment, readUiLanguage, startApp, usableStorage, writeUiLanguage,
 } from '../app/main.js';
+import { createBrowser as listeningBrowser } from './fixtures/scenarios.mjs';
+import { createSeqEngine } from '../app/engine/seq.js';
+import { createAppConfig } from '../app/config.js';
 import { createSocketFixture } from './fixtures/live.mjs';
 import { response as geminiResponse } from './fixtures/gemini.mjs';
 
@@ -478,6 +481,7 @@ test('pagehide cancels active work; an unload (not bfcache) tears everything dow
   assert.equal((await turn.done).phase, TURN_PHASE.CANCELLED, 'bfcache entry cancels the turn');
   assert.equal(app.closed, false, 'the page may come back from bfcache');
   assert.equal(b.gemini.calls[0].signal.aborted, true);
+  await app.stopWork();
   b.gemini.script.push(() => new Promise(() => {}));
   const second = app.engine.submitText('사과 12개');
   await until(() => b.gemini.calls.length === 2);
@@ -618,4 +622,201 @@ test('automatic entry waits for DOM readiness and starts the first load', async 
   assert.ok(el(b, 'shell'));
   assert.equal(b.container.registrations.length, 1);
   await app.close();
+});
+
+// P2 lifecycle integration uses the real engines, router, sockets and views.
+const testHubs = [{ id: 'test', labelKey: 'hub.venue', url: 'wss://hub.example.test/ws' }];
+async function listeningApp(t, { personal = true, ...options } = {}) {
+  const b = listeningBrowser(options);
+  b.app = await startApp({ window: b.win, hubs: testHubs });
+  assert.ok(b.app);
+  t.after(async () => {
+    for (const socket of b.sockets) socket.finishClose();
+    await b.app.close();
+  });
+  if (personal) enterKey(b);
+  await b.app.shell.switchTab('simultaneous');
+  return b;
+}
+async function runDirect(b) {
+  const handle = b.app.listenEngines.direct.start({ targetLanguage: 'ja' });
+  assert.equal(b.microphone.streams.length, 1, 'permission starts in the gesture');
+  await until(() => b.audio.nodes.at(-1)?.port.onmessage);
+  b.microphone.feed(new Float32Array(4096).fill(0.1));
+  await until(() => b.sockets.length > 0);
+  const socket = b.sockets.at(-1);
+  socket.open(); socket.json({ setupComplete: {} });
+  await handle.ready;
+  assert.equal(b.app.listenEngines.direct.snapshot().status, 'running');
+  return { handle, socket };
+}
+
+test('P2 mounts without starting resources; direct listening blocks sequential work, diagnostics and updates through physical close', async t => {
+  const waiting = fakeWorker('r-2');
+  const b = await listeningApp(t, { controller: fakeWorker('r-1'), waiting });
+  assert.ok(b.app.shell.simView);
+  assert.equal(b.microphone.streams.length, 0);
+  assert.equal(b.sockets.length, 0);
+  const { socket } = await runDirect(b);
+  socket.close = () => { socket.closeCalls++; socket.readyState = 2; };
+  assert.equal(b.app.engine.state.snapshot().activeTurnId, null);
+  assert.throws(() => b.app.engine.submitText('test'), { code: 'INVALID_REQUEST' });
+  assert.throws(() => b.app.diagnostics.run('voice'), { code: 'INVALID_REQUEST' });
+  await b.app.pwa.applyUpdate();
+  assert.equal(waiting.calls.skipWaiting, 0);
+  b.container.dispatch('controllerchange');
+  assert.equal(b.win.location.reloads, 0);
+  b.app.shell.openSettings(); b.app.setLanguage('en'); b.app.listenEngines.direct.setMuted(true);
+  assert.equal(b.app.listenEngines.direct.snapshot().status, 'running');
+  b.app.shell.closeSettings();
+  const switched = b.app.shell.switchTab('sequential');
+  await until(() => socket.closeCalls > 0);
+  assert.equal(b.app.shell.selectedTab, 'simultaneous');
+  assert.equal(b.app.activity.occupied, true);
+  assert.ok(b.microphone.streams.every(stream => stream.stopped));
+  assert.throws(() => b.app.engine.submitText('test'), { code: 'INVALID_REQUEST' });
+  assert.equal(b.win.location.reloads, 0);
+  socket.finishClose();
+  assert.equal(await switched, 'sequential');
+  await until(() => !b.app.activity.occupied);
+  assert.equal(b.win.location.reloads, 1);
+  assert.equal(b.app.config.sessionManager.occupied, false);
+  assert.equal(b.gemini.calls.length, 0);
+});
+
+test('P2 discards pending language changes after a key change and ignores late captions', async t => {
+  const b = await listeningApp(t);
+  const { socket } = await runDirect(b);
+  socket.close = () => { socket.closeCalls++; socket.readyState = 2; };
+  const target = el(b, 'sim-target');
+  choose(target, 'en');
+  assert.equal(target.disabled, true);
+  b.app.config.keyStore.setPersonal('gemini', KEY + '-changed');
+  socket.json({ serverContent: { outputTranscription: { text: 'late', finished: true } } });
+  socket.finishClose();
+  await until(() => !target.disabled && !b.app.activity.occupied);
+  assert.equal(target.value, 'ja', 'old settings transaction cannot commit');
+  assert.equal(b.app.listenEngines.direct.snapshot().captions.captions.length, 0);
+  assert.equal(b.sockets.length, 1, 'key change never restarts automatically');
+  choose(target, 'en');
+  await until(() => !target.disabled);
+  assert.equal(target.value, 'en', 'a new explicit settings change can commit');
+});
+
+for (const event of ['visibilitychange', 'pagehide']) {
+  test(`P2 ${event} stops listening; returning requires manual start`, async t => {
+    const b = await listeningApp(t);
+    const { handle } = await runDirect(b);
+    if (event === 'visibilitychange') { b.doc.hidden = true; b.doc.dispatch(event); }
+    else b.win.dispatch(event, { persisted: true });
+    await handle.done;
+    await until(() => !b.app.activity.occupied);
+    assert.equal(b.app.listenEngines.direct.snapshot().status, 'stopped');
+    assert.ok(b.microphone.streams.every(stream => stream.stopped));
+    b.doc.hidden = false; b.doc.dispatch('visibilitychange');
+    await tick();
+    assert.equal(b.sockets.length, 1);
+    assert.equal(b.app.closed, false);
+  });
+}
+
+test('P2 hub reception requires no personal key or microphone and remains usable without device speech', async t => {
+  const b = listeningBrowser();
+  delete b.win.speechSynthesis; delete b.win.SpeechSynthesisUtterance;
+  b.app = await startApp({ window: b.win, hubs: testHubs });
+  t.after(() => b.app.close());
+  await b.app.shell.switchTab('simultaneous');
+  choose(el(b, 'sim-mode'), 'hub');
+  await until(() => el(b, 'sim-mode').value === 'hub');
+  const handle = b.app.listenEngines.hub.join({ hubId: 'test', roomCode: 'abc123', language: 'ja' });
+  await until(() => b.sockets.length === 1);
+  const socket = b.sockets[0];
+  socket.open(); socket.json({ type: 'hello', sessionId: 'room-session', settings: { allowedLangs: ['ja'] } });
+  await handle.ready;
+  assert.equal(b.app.listenEngines.hub.snapshot().status, 'running');
+  b.app.listenEngines.hub.setMuted(false);
+  socket.json({ type: 'cast.caption', lang: 'ja', segmentId: 's1', seq: 1, revision: 1, text: '字幕', final: true });
+  await until(() => b.app.listenEngines.hub.snapshot().translations.length === 1);
+  await until(() => b.app.listenEngines.hub.snapshot().output === 'unavailable');
+  assert.equal(b.app.config.keyStore.getSelection(), null);
+  assert.equal(b.microphone.streams.length, 0);
+  assert.equal(b.gemini.calls.length, 0);
+  assert.throws(() => b.app.engine.submitText('test'), { code: 'INVALID_REQUEST' });
+  assert.throws(() => b.app.diagnostics.run('playback'), { code: 'INVALID_REQUEST' });
+  await b.app.shell.switchTab('sequential');
+  assert.equal(socket.readyState, 3);
+  assert.equal(b.app.activity.occupied, false);
+  assert.equal(b.sockets.length, 1);
+});
+
+test('P2 busy includes reconnect, cleanup and playback without an active sequential turn', () => {
+  for (const status of ['preparing', 'connecting', 'running', 'reconnecting', 'stopping']) {
+    assert.equal(isAppBusy({ listening: [{ status }] }), true);
+  }
+  for (const value of [{ sequential: { busy: true } }, { activity: { occupied: true } },
+    { diagnostics: { running: {} } }, { transitioning: true }, { listening: [{ status: 'failed', busy: true }] }]) {
+    assert.equal(isAppBusy(value), true);
+  }
+  assert.equal(isAppBusy({ listening: [{ status: 'stopped' }] }), false);
+});
+
+test('P2 a late cancelled replay cannot overwrite a newer replay of the same turn', async t => {
+  const config = createAppConfig({ fetch: async () => geminiResponse() });
+  config.keyStore.setPersonal('gemini', KEY); config.keyStore.select('gemini', 'personal');
+  const pending = [];
+  const voice = { speak: () => new Promise(resolve => pending.push(resolve)), close: async () => {} };
+  const engine = createSeqEngine({ config, capture: { start() {}, cancel() {} }, voiceEngine: voice });
+  t.after(async () => { await engine.close(); await config.dispose(); });
+  engine.setVoice({ output: 'off' });
+  engine.setInterpretation({ sourceLanguage: 'ko', targetLanguage: 'en' });
+  const original = await engine.submitText('사과 12개').done;
+  assert.equal(original.phase, TURN_PHASE.COMPLETED);
+  const first = engine.replay(original.turnId);
+  const second = engine.replay(original.turnId);
+  pending[0]({ status: 'completed' }); await first.done;
+  assert.equal(engine.state.snapshot().activeTurnId, original.turnId);
+  assert.equal(engine.state.snapshot().turns[0].voice.status, 'off');
+  pending[1]({ status: 'completed' }); await second.done;
+  assert.equal(engine.state.snapshot().turns[0].voice.status, 'completed');
+  assert.equal(engine.snapshot().busy, false);
+});
+
+
+test('P2 direct credentials are checked before permission; a pending permission result is cleaned after unload', async t => {
+  const b = await listeningApp(t, { personal: false });
+  assert.throws(() => b.app.listenEngines.direct.start({ targetLanguage: 'ja' }), { code: 'CREDENTIAL_REQUIRED' });
+  assert.equal(b.microphone.streams.length, 0);
+  await b.app.stopWork();
+  enterKey(b);
+  let release;
+  const stream = await b.microphone.getUserMedia();
+  b.win.navigator.mediaDevices.getUserMedia = () => new Promise(resolve => { release = resolve; });
+  const handle = b.app.listenEngines.direct.start({ targetLanguage: 'ja' });
+  b.win.dispatch('pagehide', { persisted: false });
+  const closed = b.app.close();
+  assert.equal(b.app.close(), closed, 'all close callers await the same teardown');
+  release(stream);
+  await handle.done; await closed;
+  assert.equal(stream.stopped, true);
+  assert.equal(b.sockets.length, 0);
+  assert.equal(b.root.childNodes.length, 0);
+  assert.equal(b.doc.listenerCount, 0);
+  assert.equal(b.win.listenerCount, 0);
+});
+
+test('P2 reconnect waiting keeps update and auxiliary work blocked and visibility cancels the retry', async t => {
+  const b = await listeningApp(t);
+  const { socket, handle } = await runDirect(b);
+  socket.json({ goAway: { timeLeft: '10s' } });
+  await until(() => b.app.listenEngines.direct.snapshot().status === 'reconnecting');
+  assert.equal(b.app.engine.state.snapshot().activeTurnId, null);
+  assert.equal(b.app.activity.occupied, true);
+  assert.throws(() => b.app.diagnostics.run('voice'), { code: 'INVALID_REQUEST' });
+  b.container.dispatch('controllerchange');
+  assert.equal(b.win.location.reloads, 0);
+  b.doc.hidden = true; b.doc.dispatch('visibilitychange');
+  await handle.done; await until(() => !b.app.activity.occupied);
+  b.clock.advance(8000); await tick();
+  assert.equal(b.sockets.length, 1, 'cancelled recovery never opens a replacement');
+  assert.equal(b.app.listenEngines.direct.snapshot().status, 'stopped');
 });
