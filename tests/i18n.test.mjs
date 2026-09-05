@@ -191,3 +191,111 @@ test('checker CLI succeeds independently of working directory', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^I18N_OK languages=3 keys=\d+ files=\d+\n$/);
 });
+
+// P2 contracts are checked against the actual engine vocabulary, not key counts.
+const { LISTEN_STATUS, OUTPUT_STATUS, BROADCAST_STATUS } = await import('../app/engine/listen-state.js');
+const { GAP_CAUSES } = await import('../app/engine/caption-store.js');
+const { ProviderError } = await import('../app/providers/contract.js');
+const { listenStatusKey, outputStatusKey, broadcastStatusKey, gapKey, hubReasonKey,
+  listenErrorKey, errorCodeKey, errorKey, turnKey, resolveKey } = await import('../app/ui/errors.js');
+
+test('P2 machine states, gaps and normalized hub reasons resolve in every language', () => {
+  const reasons = ['broadcast-error', 'time-limit', 'stopped', 'room-closed', 'outside',
+    'denied', 'language-removed', 'language-changed'];
+  for (const language of SUPPORTED_LANGUAGES) {
+    const i18n = createI18n({ dictionaries, language });
+    for (const [values, map] of [[LISTEN_STATUS, listenStatusKey], [OUTPUT_STATUS, outputStatusKey],
+      [BROADCAST_STATUS, broadcastStatusKey], [GAP_CAUSES, gapKey], [reasons, hubReasonKey]]) {
+      for (const value of values) {
+        const key = map(value);
+        assert.notEqual(key, 'error.unknown', value);
+        assert.ok(Object.hasOwn(dictionaries[language], key), `${language}: ${key}`);
+        assert.equal(resolveKey(i18n, key), key);
+        assert.equal(i18n.t(key), dictionaries[language][key]);
+      }
+      for (const invalid of ['__proto__', 'constructor', 'PRIVATE_PROVIDER_TEXT', null, 429, {}]) {
+        assert.equal(map(invalid), 'error.unknown');
+      }
+    }
+    assert.equal(i18n.t(listenStatusKey('running')), i18n.t('connection.connected'));
+    assert.notEqual(i18n.t(listenStatusKey('running')), i18n.t('seq.completed'));
+    assert.notEqual(i18n.t(broadcastStatusKey('unknown')), i18n.t(broadcastStatusKey('receiving')));
+    assert.notEqual(i18n.t(gapKey('audio')), i18n.t(gapKey('reception')));
+  }
+});
+
+test('P2 screen and measurement guidance exists without relying on English fallback', () => {
+  const required = [
+    'sim.listenMode', 'sim.direct', 'sim.hub', 'sim.restart', 'sim.sourceAuto', 'sim.headphones',
+    'sim.seatAudio', 'sim.personalKey', 'sim.liveVoice', 'sim.enableSound', 'sim.mute',
+    'sim.settingsChanged', 'sim.manualResume', 'sim.sequentialFallback', 'sim.busy', 'sim.audioCut',
+    ...['partial', 'final', 'interrupted', 'recent', 'latest', 'empty', 'showSource'].map(k => `sim.captions.${k}`),
+    ...['venue', 'roomCode', 'roomCodePlaceholder', 'join', 'leave', 'reconnect', 'noKeyOrMicrophone',
+      'deviceSpeech', 'recentNotice', 'resumeSound', 'unregistered', 'languageUnavailable'].map(k => `hub.${k}`),
+    'voice.devicePrivacy', 'voice.deviceUnavailable',
+    ...['hub', 'liveScope', 'connectionOnly', 'metrics', 'notMeasured', 'unsupported', 'metricsPrivacy',
+      'timingBoundary', 'policyBudget', 'setupMs', 'reconnects', 'recoveryMs', 'closeFailures',
+      'inputSampleRate', 'sentFrames', 'inputQueueMax', 'droppedInputMs', 'firstPartialMs', 'firstFinalMs',
+      'revisions', 'duplicates', 'interrupted', 'possibleGaps', 'firstAudioReceivedMs',
+      'firstAudioScheduledMs', 'queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs', 'droppedAudioMs',
+      'ttsFirstRequestMs', 'ttsFirstStartMs', 'ttsWaitMs', 'skippedSentences', 'speechFailures']
+      .map(k => `diagnostics.${k}`),
+  ];
+  for (const language of SUPPORTED_LANGUAGES) {
+    for (const key of required) assert.ok(dictionaries[language][key]?.trim(), `${language}: ${key}`);
+  }
+});
+
+test('actual app message literals, including audio and engine notices, have translations', async () => {
+  const { readdir } = await import('node:fs/promises');
+  const files = await readdir(new URL('../app/', import.meta.url), { recursive: true });
+  for (const file of files.filter(file => file.endsWith('.js'))) {
+    const source = await readFile(new URL(`../app/${file}`, import.meta.url), 'utf8');
+    // Includes messageKey/return values missed by the UI-only static checker.
+    for (const [, key] of source.matchAll(/['"]((?:error|voice|sim|hub|diagnostics|connection|seq|settings|notice|mode)\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)['"]/g)) {
+      for (const language of SUPPORTED_LANGUAGES) {
+        assert.ok(Object.hasOwn(dictionaries[language], key), `${file}: ${language}: ${key}`);
+      }
+    }
+  }
+});
+
+test('numeric error codes survive P1 and P2 mapping while malformed and unknown codes stay safe', () => {
+  for (const language of SUPPORTED_LANGUAGES) {
+    const i18n = createI18n({ dictionaries, language });
+    const expected = dictionaries[language]['error.UNKNOWN_429'];
+    for (const key of [errorKey(new ProviderError('UNKNOWN_429')), errorCodeKey('UNKNOWN_429'),
+      turnKey({ phase: 'error', errorCode: 'UNKNOWN_429' }),
+      listenErrorKey({ mode: 'direct', errorCode: 'UNKNOWN_429' }),
+      listenErrorKey({ mode: 'hub', errorCode: 'UNKNOWN_429' })]) {
+      assert.equal(key, 'error.UNKNOWN_429');
+      assert.equal(i18n.t(resolveKey(i18n, key)), expected);
+    }
+    assert.equal(i18n.error('UNKNOWN_429'), expected);
+    for (const invalid of ['429_UNKNOWN', 'unknown_429', 'UNKNOWN 429', 'UNKNOWN_429\n',
+      'UNKNOWN/429', 'A'.repeat(41), null, {}, 'UNREGISTERED_429']) {
+      assert.equal(resolveKey(i18n, errorCodeKey(invalid)), 'error.unknown');
+    }
+  }
+});
+
+test('P2 broadcast errors discard provider detail and never interpolate raw fields', () => {
+  const secret = 'SYNTHETIC PRIVATE PROVIDER TEXT';
+  const snapshot = { mode: 'hub', reason: 'broadcast-error', errorCode: 'UNAVAILABLE' };
+  for (const field of ['detail', 'message', 'messageKey', 'cause', 'url']) {
+    Object.defineProperty(snapshot, field, { get() { throw new Error(secret); } });
+  }
+  assert.equal(listenErrorKey(snapshot), 'hub.broadcastError');
+  for (const language of SUPPORTED_LANGUAGES) {
+    const i18n = createI18n({ dictionaries, language });
+    assert.equal(i18n.t(listenErrorKey(snapshot)), dictionaries[language]['hub.broadcastError']);
+    for (const [key, value] of Object.entries(dictionaries[language])) {
+      if (/^(error|sim|hub|diagnostics)\./.test(key)) {
+        assert.doesNotMatch(value, /\{(?:detail|message|reason|error|url|key|roomCode|text)\}/);
+        assert.equal(i18n.t(key, { detail: secret, message: secret, reason: secret, error: secret }), value);
+      }
+    }
+    assert.equal(i18n.error(snapshot), dictionaries[language]['error.unknown']);
+    assert.equal(i18n.t(hubReasonKey(secret)), dictionaries[language]['error.unknown']);
+  }
+});

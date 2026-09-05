@@ -2,8 +2,10 @@
 // P1-14 snapshots (status, turn phase, voice outcome, notices, thrown engine
 // errors) to dictionary keys and display decisions. Views render the returned
 // keys with i18n.t() and textContent; no provider text or raw error is echoed.
+// P2 mappings are new implementation of design-p2 §§7–10 and 17; no legacy code is ported.
 import { PHASE_MESSAGE_KEYS, SEQ_STATUS, STATUS_MESSAGE_KEYS, TURN_PHASE } from '../state.js';
 import { normalizeError } from '../providers/contract.js';
+import { LISTEN_STATUS, OUTPUT_STATUS, BROADCAST_STATUS } from '../engine/listen-state.js';
 
 // Design values, not measurements: how long a notice stays before the UI
 // clears it, and the RMS treated as a full meter for the input level.
@@ -12,6 +14,7 @@ export const LEVEL_FULL_SCALE_RMS = 0.25;
 export const UNKNOWN_KEY = 'error.unknown';
 
 const keyPattern = /^[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/;
+const codePattern = /^[A-Z][A-Z0-9_]{0,39}$/;
 const terminal = new Set([TURN_PHASE.COMPLETED, TURN_PHASE.SILENCE, TURN_PHASE.UNRECOGNIZED,
   TURN_PHASE.ERROR, TURN_PHASE.CANCELLED]);
 
@@ -33,7 +36,7 @@ export function turnKey(turn, snapshot = null) {
   if (!turn) return UNKNOWN_KEY;
   if (turn.phase === TURN_PHASE.ERROR) {
     if (turn.messageKey) return turn.messageKey;
-    return /^[A-Z][A-Z0-9_]{0,39}$/.test(turn.errorCode ?? '') ? `error.${turn.errorCode}` : UNKNOWN_KEY;
+    return errorCodeKey(turn.errorCode);
   }
   if (turn.phase === TURN_PHASE.COMPLETED && snapshot?.activeTurnId === turn.turnId
     && snapshot.status === SEQ_STATUS.SPEAKING) return STATUS_MESSAGE_KEYS.speaking;
@@ -55,6 +58,49 @@ export function noticeKey(notice) {
 /** Thrown engine/store errors map to error.<CODE>; the raw error is dropped. */
 export function errorKey(error) {
   return `error.${normalizeError(error).code}`;
+}
+
+/** Normalized engine code only; views must resolve the key before rendering. */
+export function errorCodeKey(code) {
+  return typeof code === 'string' && codePattern.test(code) ? `error.${code}` : UNKNOWN_KEY;
+}
+
+// Connection readiness is not evidence of translated captions or audible speech.
+export function listenStatusKey(status) {
+  return LISTEN_STATUS.includes(status) ? `sim.status.${status}` : UNKNOWN_KEY;
+}
+
+export function outputStatusKey(status) {
+  return OUTPUT_STATUS.includes(status) ? `sim.output.${status.replace('-', '_')}` : UNKNOWN_KEY;
+}
+
+export function broadcastStatusKey(status) {
+  return BROADCAST_STATUS.includes(status) ? `hub.broadcast.${status}` : UNKNOWN_KEY;
+}
+
+export function gapKey(cause) {
+  return ['input', 'audio', 'reception'].includes(cause) ? `sim.gap.${cause}` : UNKNOWN_KEY;
+}
+
+const hubReasons = Object.freeze({
+  'broadcast-error': 'hub.broadcastError', 'time-limit': 'hub.timeLimit',
+  stopped: 'hub.broadcast.ended', 'room-closed': 'hub.roomClosed',
+  outside: 'hub.accessDenied', denied: 'hub.accessDenied',
+  'language-removed': 'hub.languageRemoved', 'language-changed': 'sim.settingsChanged',
+});
+
+/** Only normalized P2-10/13 reasons; fatal.detail and close reason are never read. */
+export function hubReasonKey(reason) {
+  return typeof reason === 'string' && Object.hasOwn(hubReasons, reason) ? hubReasons[reason] : UNKNOWN_KEY;
+}
+
+/** Hub fatal is a broadcast failure, not evidence of a provider quota category. */
+export function listenErrorKey(snapshot) {
+  if (snapshot?.mode === 'hub' && snapshot.reason != null) {
+    const key = hubReasonKey(snapshot.reason);
+    if (key !== UNKNOWN_KEY) return key;
+  }
+  return errorCodeKey(snapshot?.errorCode);
 }
 
 /** Header badge: provider label key and key-source mode key (never a key value). */
