@@ -1,0 +1,227 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile, writeFile } from 'node:fs/promises';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
+import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
+
+// P1-17 install assets: one manifest per UI language plus two PNG icons.
+// The icons are generated deterministically by `encodeIconPng` below; the
+// tests compare the committed bytes against a fresh render so the files can
+// never drift from the generator. Regenerate with `REGENERATE_ICONS=1 node
+// --test tests/manifest.test.mjs` after changing the artwork.
+
+const root = new URL('../', import.meta.url);
+const read = (path) => readFile(new URL(path, root));
+const readText = (path) => readFile(new URL(path, root), 'utf8');
+
+const ICON_SIZES = [192, 512];
+const iconPath = (size) => `icons/icon-${size}.png`;
+const manifestPath = (language) => `manifest.${language}.webmanifest`;
+const BACKGROUND = [0x1f, 0x5f, 0x8b]; // matches theme_color / index.html theme-color
+const FOREGROUND = [0xff, 0xff, 0xff];
+const SUPERSAMPLE = 4;
+
+// ---- deterministic icon generator (pure integer/float math, no randomness) ----
+
+// Signed-distance helpers in unit coordinates (0..1 across the icon).
+const roundedRectInside = (x, y, cx, cy, half, radius) => {
+  const dx = Math.abs(x - cx) - (half - radius);
+  const dy = Math.abs(y - cy) - (half - radius);
+  const ox = Math.max(dx, 0);
+  const oy = Math.max(dy, 0);
+  return Math.hypot(ox, oy) + Math.min(Math.max(dx, dy), 0) <= radius;
+};
+
+// Artwork: full-bleed background (safe for maskable purpose), a white rounded
+// card centred inside the 80% safe zone, and two background-coloured bars on
+// the card that read as two lines of text (source / translation).
+const isForeground = (x, y) => {
+  if (!roundedRectInside(x, y, 0.5, 0.5, 0.27, 0.08)) return false;
+  const barHalfHeight = 0.045;
+  const inBar = (cy, left, right) => x >= left && x <= right && Math.abs(y - cy) <= barHalfHeight;
+  if (inBar(0.41, 0.32, 0.68)) return false;
+  if (inBar(0.59, 0.32, 0.56)) return false;
+  return true;
+};
+
+const mix = (a, b, t) => Math.round(a + (b - a) * t);
+
+export function renderIconPixels(size) {
+  const rows = Buffer.alloc(size * (1 + size * 3));
+  let offset = 0;
+  for (let py = 0; py < size; py += 1) {
+    rows[offset] = 0; // PNG filter type 0 (None) for this scanline
+    offset += 1;
+    for (let px = 0; px < size; px += 1) {
+      let hits = 0;
+      for (let sy = 0; sy < SUPERSAMPLE; sy += 1) {
+        for (let sx = 0; sx < SUPERSAMPLE; sx += 1) {
+          const x = (px + (sx + 0.5) / SUPERSAMPLE) / size;
+          const y = (py + (sy + 0.5) / SUPERSAMPLE) / size;
+          if (isForeground(x, y)) hits += 1;
+        }
+      }
+      const coverage = hits / (SUPERSAMPLE * SUPERSAMPLE);
+      for (let channel = 0; channel < 3; channel += 1) {
+        rows[offset + channel] = mix(BACKGROUND[channel], FOREGROUND[channel], coverage);
+      }
+      offset += 3;
+    }
+  }
+  return rows;
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+const chunk = (type, data) => {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const typed = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typed));
+  return Buffer.concat([length, typed, crc]);
+};
+
+export function encodeIconPng(size) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour (RGB)
+  ihdr[10] = 0; // compression
+  ihdr[11] = 0; // filter
+  ihdr[12] = 0; // no interlace
+  const idat = deflateSync(renderIconPixels(size), { level: 9 });
+  return Buffer.concat([PNG_SIGNATURE, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
+}
+
+// ---- independent PNG reader used by the assertions ----
+
+function parsePng(bytes) {
+  assert.ok(bytes.subarray(0, 8).equals(PNG_SIGNATURE), 'PNG signature');
+  const chunks = [];
+  let offset = 8;
+  while (offset < bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.toString('latin1', offset + 4, offset + 8);
+    const data = bytes.subarray(offset + 8, offset + 8 + length);
+    const expected = crc32(bytes.subarray(offset + 4, offset + 8 + length));
+    assert.equal(bytes.readUInt32BE(offset + 8 + length), expected, `CRC of ${type}`);
+    chunks.push({ type, data });
+    offset += 12 + length;
+  }
+  assert.equal(offset, bytes.length, 'no trailing bytes');
+  assert.equal(chunks[0]?.type, 'IHDR');
+  assert.equal(chunks.at(-1)?.type, 'IEND');
+  const ihdr = chunks[0].data;
+  const header = {
+    width: ihdr.readUInt32BE(0), height: ihdr.readUInt32BE(4), bitDepth: ihdr[8], colorType: ihdr[9],
+    compression: ihdr[10], filter: ihdr[11], interlace: ihdr[12],
+  };
+  const idat = Buffer.concat(chunks.filter((entry) => entry.type === 'IDAT').map((entry) => entry.data));
+  return { header, pixels: inflateSync(idat) };
+}
+
+if (process.env.REGENERATE_ICONS === '1') {
+  for (const size of ICON_SIZES) await writeFile(new URL(iconPath(size), root), encodeIconPng(size));
+}
+
+const manifests = Object.fromEntries(await Promise.all(SUPPORTED_LANGUAGES.map(async (language) => {
+  const text = await readText(manifestPath(language));
+  return [language, { text, data: JSON.parse(text) }];
+})));
+const dictionaries = Object.fromEntries(await Promise.all(SUPPORTED_LANGUAGES.map(async (language) =>
+  [language, JSON.parse(await readText(`app/i18n/${language}.json`))])));
+
+const BASE = 'https://example.test/';
+const resolve = (value) => new URL(value, BASE);
+
+test('manifests exist for every UI language and parse as JSON objects', () => {
+  assert.deepEqual(Object.keys(manifests).sort(), [...SUPPORTED_LANGUAGES].sort());
+  for (const [language, { data }] of Object.entries(manifests)) {
+    assert.equal(typeof data, 'object', language);
+    assert.equal(data.lang, language);
+    assert.equal(data.dir, 'ltr');
+  }
+});
+
+test('id, scope, start_url and display are identical and consistent', () => {
+  const reference = manifests.ko.data;
+  assert.equal(typeof reference.id, 'string');
+  assert.equal(typeof reference.scope, 'string');
+  const scope = resolve(reference.scope).href;
+  for (const [language, { data }] of Object.entries(manifests)) {
+    assert.equal(data.id, reference.id, `${language} id`);
+    assert.equal(data.scope, reference.scope, `${language} scope`);
+    assert.equal(data.start_url, reference.start_url, `${language} start_url`);
+    assert.equal(data.display, 'standalone', `${language} display`);
+    assert.ok(resolve(data.start_url).href.startsWith(scope), `${language} start_url inside scope`);
+    assert.equal(resolve(data.id).origin, resolve(data.start_url).origin, `${language} id origin`);
+    assert.equal(data.theme_color, reference.theme_color);
+    assert.equal(data.background_color, reference.background_color);
+    assert.match(data.theme_color, /^#[0-9a-f]{6}$/);
+    assert.match(data.background_color, /^#[0-9a-f]{6}$/);
+  }
+});
+
+test('names are language-specific plain strings that match the i18n catalogue', () => {
+  const names = new Set();
+  for (const [language, { data }] of Object.entries(manifests)) {
+    const dictionary = dictionaries[language];
+    for (const field of ['name', 'short_name', 'description']) {
+      assert.equal(typeof data[field], 'string', `${language} ${field} is a string`);
+      assert.ok(data[field].trim().length > 0, `${language} ${field} not empty`);
+    }
+    assert.equal(data.name, dictionary['app.name'], `${language} name`);
+    assert.equal(data.short_name, dictionary['app.shortName'], `${language} short_name`);
+    assert.equal(data.description, dictionary['app.description'], `${language} description`);
+    assert.ok([...data.short_name].length <= 12, `${language} short_name fits launcher labels`);
+    names.add(data.name);
+  }
+  assert.equal(names.size, SUPPORTED_LANGUAGES.length, 'each language has its own name');
+});
+
+test('icon entries point at real files with matching sizes and no store links exist', async () => {
+  for (const [language, { text, data }] of Object.entries(manifests)) {
+    assert.ok(Array.isArray(data.icons) && data.icons.length >= 2, `${language} icons`);
+    const declared = new Map();
+    for (const icon of data.icons) {
+      assert.equal(icon.type, 'image/png', `${language} ${icon.src} type`);
+      assert.match(icon.sizes, /^\d+x\d+$/);
+      assert.ok(['any', 'maskable'].includes(icon.purpose), `${language} ${icon.src} purpose`);
+      assert.ok(resolve(icon.src).href.startsWith(resolve(data.scope).href), `${language} ${icon.src} inside scope`);
+      declared.set(icon.src, icon.sizes);
+      const bytes = await read(icon.src);
+      const { header } = parsePng(bytes);
+      assert.equal(`${header.width}x${header.height}`, icon.sizes, `${language} ${icon.src} declared size`);
+    }
+    for (const size of ICON_SIZES) assert.equal(declared.get(iconPath(size)), `${size}x${size}`, `${language} declares ${size}`);
+    assert.equal(data.related_applications, undefined, `${language} related_applications`);
+    assert.equal(data.prefer_related_applications, undefined, `${language} prefer_related_applications`);
+    assert.doesNotMatch(text, /apk|play\.google|apps\.apple|market:\/\//i, `${language} store links`);
+  }
+});
+
+test('icons are real PNGs of the exact pixel size and match the deterministic generator', async () => {
+  for (const size of ICON_SIZES) {
+    const bytes = await read(iconPath(size));
+    const { header, pixels } = parsePng(bytes);
+    assert.deepEqual(header, { width: size, height: size, bitDepth: 8, colorType: 2, compression: 0, filter: 0, interlace: 0 });
+    assert.equal(pixels.length, size * (1 + size * 3), `${size} decoded scanlines`);
+    assert.ok(pixels.equals(renderIconPixels(size)), `${size} pixel data matches render`);
+    assert.ok(bytes.equals(encodeIconPng(size)), `${size} bytes match generator`);
+    // Corners stay background-coloured so the maskable safe zone is respected.
+    const corner = pixels.subarray(1, 4);
+    assert.deepEqual([...corner], BACKGROUND);
+    const centre = 1 + (size / 2) * (1 + size * 3) + (size / 2) * 3;
+    assert.deepEqual([...pixels.subarray(centre, centre + 3)], FOREGROUND);
+  }
+});
+
+test('index.html links the Korean manifest and the 192px icon by the agreed names', async () => {
+  const html = await readText('index.html');
+  assert.match(html, /<link rel="manifest" href="\.\/manifest\.ko\.webmanifest">/);
+  assert.match(html, /href="\.\/icons\/icon-192\.png"/);
+  const themeColor = html.match(/<meta name="theme-color" content="([^"]+)">/)?.[1];
+  assert.equal(themeColor, manifests.ko.data.theme_color, 'theme-color meta matches manifest');
+});
