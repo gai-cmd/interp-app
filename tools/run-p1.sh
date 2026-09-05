@@ -11,7 +11,8 @@ run_tests() {
   node --test "${files[@]}" > docs/build/last-test.log 2>&1
 }
 blocked() { grep -qiE "^ERROR:.*(usage limit|rate limit|quota|429|too many requests)|requires a newer version|unexpected argument|Usage: codex exec" "$1"; }
-for f in docs/build/tasks/P1-*.md; do
+PREFIX="${1:-P1}"
+for f in docs/build/tasks/$PREFIX-*.md; do
   id=$(basename "$f" .md)
   case "$id" in *.fable|*.retry) continue;; esac
   [ -f "docs/build/$id.done" ] && continue
@@ -42,4 +43,4 @@ Claude-Session: https://claude.ai/code/session_01LuvfLUrfz3d8VPU49Ce22F" >/dev/n
   fi
   echo "$id FAILED-twice → handoff · $(grep -cE '^not ok' docs/build/last-test.log) failing tests"; exit 2
 done
-echo "P1 COMPLETE"
+echo "$PREFIX COMPLETE"
