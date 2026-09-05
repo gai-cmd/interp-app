@@ -1,0 +1,23 @@
+# Cloudflare Pages headers (design-v0.6 §11.2, §13.1). scripts/check-release.mjs
+# verifies that connect-src lists exactly 'self' plus the ENDPOINT_ORIGINS
+# exported by app/config.js and that no other directive names a remote host.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://generativelanguage.googleapis.com wss://generativelanguage.googleapis.com; img-src 'self' data:; media-src 'self' blob:; worker-src 'self'; font-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Permissions-Policy: microphone=(self), camera=(), geolocation=(), payment=(), usb=()
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Cross-Origin-Opener-Policy: same-origin
+
+# Entry files point at the current release and must be revalidated on every
+# load so a rollback (stage-release --point) takes effect immediately.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/sw.js
+  Cache-Control: no-cache
+
+# Release directories are never overwritten, so their files are immutable.
+/releases/*
+  Cache-Control: public, max-age=31536000, immutable
