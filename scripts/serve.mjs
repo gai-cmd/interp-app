@@ -101,8 +101,18 @@ async function main() {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', resolveListen);
   });
+  // Browsers resolve "localhost" to ::1 first on macOS; bind the IPv6 loopback
+  // too (best effort) so http://localhost:<port> works alongside 127.0.0.1.
+  const server6 = await createDevServer();
+  const bound6 = await new Promise((resolveListen) => {
+    server6.once('error', () => resolveListen(false));
+    server6.listen(port, '::1', () => resolveListen(true));
+  });
   process.stdout.write(`DEV_HTTP http://127.0.0.1:${port}\n`);
-  const stop = () => { server.close(); server.closeAllConnections(); };
+  const stop = () => {
+    server.close(); server.closeAllConnections();
+    if (bound6) { server6.close(); server6.closeAllConnections(); }
+  };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
 }
