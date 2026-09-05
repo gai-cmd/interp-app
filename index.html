@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#1f5f8b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <!-- Title and every visible string are set at runtime from app/i18n (P1-04); nothing is hardcoded here. -->
+  <title></title>
+  <link rel="stylesheet" href="./styles.css">
+  <!-- Install assets are P1-17 files; the links stay unresolved until they ship. -->
+  <link rel="manifest" href="./manifest.ko.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+</head>
+<body>
+  <div id="app" class="app"></div>
+  <!-- P1-19 bootstrap: cleans the URL fragment, builds config/engine and calls mount() from app/ui/shell.js. -->
+  <script type="module" src="./app/main.js"></script>
+</body>
+</html>

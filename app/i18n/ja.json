@@ -193,5 +193,9 @@
   "error.UNKNOWN_PROVIDER": "処理を完了できませんでした。設定を確認して再試行してください。",
   "error.INVALID_REQUEST": "処理を完了できませんでした。設定を確認して再試行してください。",
   "error.BUDGET_REQUIRED": "処理を完了できませんでした。設定を確認して再試行してください。",
-  "error.PROVIDER_ERROR": "処理を完了できませんでした。設定を確認して再試行してください。"
+  "error.PROVIDER_ERROR": "処理を完了できませんでした。設定を確認して再試行してください。",
+  "seq.replayDevice": "端末の音声で読み直す",
+  "settings.noKey": "キー未設定",
+  "language.swapShort": "入替",
+  "seq.submitHint": "Ctrl/⌘+Enterで送信"
 }
