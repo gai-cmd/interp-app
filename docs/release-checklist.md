@@ -155,3 +155,9 @@
 | 수동 게이트 | 헤드리스 Chrome 152 스모크 통과. 나머지 미검증 |
 | 배포 구분 | 없음(배포 미실행) |
 | 미검증·보류 | 개인 모드 실키, PWA, 공용 제한, 이용 조건, 실기기 키 잔존 |
+
+## 출시 기록 (추가)
+
+| 날짜 | 릴리스 ID | 호스트 | URL | 검사 | 비고 |
+|---|---|---|---|---|---|
+| 2026-09-05 21:37 JST | p1-20260905 | GitHub Pages (`gai-cmd/interp-app`, 브랜치 `gh-pages`) | https://gai-cmd.github.io/interp-app/ | check-release RELEASE_OK 52 · 배포 후 curl: `/`, `sw.js`, manifest, `releases/…/app/main.js`, `i18n/ko.json` 모두 200·정확한 MIME · 헤드리스 Chrome 152 콜드 로드 스모크 통과(셸·SW 등록·설정·키 비저장·콘솔 0) | **테스트 배포**(§19 판정: 공개 출시 아님). GitHub Pages는 `_headers`(CSP·Permissions-Policy)를 적용하지 않음 → 헤더까지 필요하면 Cloudflare Pages로 이전. manifest `id`는 `/interp-app/`로 고정. 실기기(Android/iOS)·실키 검증은 미실시 |
