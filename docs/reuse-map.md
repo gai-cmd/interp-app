@@ -114,3 +114,31 @@ P2-04는 기존 transport의 동시통역 송신 bufferedAmount 한도와 오류
 ### 검증 범위
 
 `tests/fixtures/gemini-live.mjs`는 합성 PCM·전사, 종료를 수동 확인하는 주입 Live client와 기존 가짜 시계를 제공한다. 개별 검사는 모델별 setup, 실제 기존 transport와의 소켓 단일 소유권, 프레임·base64·24kHz·크기 검증, 원문 부재, 역할별 ID·반복 전사, 침묵·finished·턴 경계, 중단 우선순위, 콜백 도중 close, setup 도중 abort, 늦은 응답, 물리적 close와 timeout 구분, 오류 비밀 제거, 숨은 재시도 부재를 다룬다. Node Buffer를 제거한 상태에서도 PCM 경로를 실행한다. 실키·실기기·장시간 운영 성공을 주장하지 않는다. 완료 명령의 실제 결과는 최종 완료 메시지에 기록한다.
+
+## P2-06 연속 캡처·송신 큐 — 2026-09-05
+
+지정 경로에 이미 있던 미추적 `stream-capture.js` 초안을 유지하여 검증하고 프레임 상수를 명시했다. 원본 `ambient-state.js` 전체 SHA-256을 다시 계산하여 위 지문과 일치함을 확인했다. `jpSimStart`의 캡처 그래프·512샘플 묶음 개념과 P1 `capture.js`의 자원 수명주기를 재사용한다. 실제 실행에서는 기존 `capture-worklet.js`, `resampler.js`, `wav.js`의 `float32ToPCM16`, `platform.js`를 상대 경로로 사용한다. 원본의 요청 sampleRate 가정·Blob worklet·Electron IPC·base64 송신과 PTT의 WAV 누적은 이식하지 않았다. `uplink-queue.js`는 상세 설계에 따른 신규 구현이다. 다른 번역·음성·xlsx 원본은 이번 과제의 이식 대상이 아니다.
+
+### 호출 계약
+
+- `createStreamCapture({ platform?, onFrame?, onLevel? }).start({ signal?, turnId?, sessionId?, generation? })`는 사용자 제스처에서 호출한다. 생성만으로 마이크를 열지 않는다. 반환값은 `{ done, stop, cancel }`이며 팩터리에도 활성 캡처의 stop/cancel을 제공한다.
+- `onFrame(pcm, metadata)`는 동기 콜백이다. PCM은 독립된 `Uint8Array` 1,024바이트이며 PCM16 LE·mono·16kHz다. 실제 AudioContext 샘플레이트로 상태 유지 리샘플러를 사용하며 정확히 512샘플씩 내보낸다. metadata에는 실행 ID·세대, 1부터 시작하는 sequence와 입출력 샘플레이트가 있다. 콜백은 `queue.enqueue(pcm)`에 연결하고 async sendAudio를 직접 연결하지 않는다.
+- `onLevel`은 RMS·peak·입력 샘플레이트·입력 길이와 기존 `seq.inputLevel` 사전 키를 전달한다. 무음도 정상 스트리밍 입력이다. 2초 동안 유효 worklet 입력이 없으면 시작 전 입력 없음과 도중 정지를 구분하여 종료한다. 준비 단계만 30초 제한이며 녹음 전체 길이 제한은 없다.
+- stop/cancel은 남은 불완전 프레임과 리샘플러 필터 이력을 버린다. 마지막 프레임을 패딩하거나 WAV로 만들지 않는다. done에는 emittedFrames와 discardedTailSamples 등 메타데이터만 남는다. discardedTailSamples는 조립 버퍼의 잔여 수이며 필터 이력까지 합친 값은 아니다.
+- 권한·resume·worklet 로딩 중 취소, 장치 종료·mute, 페이지 숨김·pagehide, context 중단, processor 오류에서 트랙·그래프·타이머를 정리한다. 늦은 권한 결과의 트랙도 중지하며 새로운 캡처를 종료시키지 않는다. 오류 원문은 버리고 기존 오류 사전 키만 전달한다.
+- `createUplinkQueue({ sendAudio, signal?, clock?, onDrop?, onError? })`는 **연결마다 새로** 생성한다. `sendAudio: pcm => liveSession.sendAudio(pcm)` 형태로 기존 어댑터를 주입한다. clock은 단조 `now()`와 setTimeout/clearTimeout이며 기본은 performance.now와 브라우저 타이머다.
+- 초기에는 준비되지 않은 상태다. open 완료 후 `setReady(true)`로 활성화한다. `enqueue(pcm)`는 동기로 복사·적재하고 boolean을 반환한다. 연결 전 입력은 바로 버린다. `setReady(false)`는 대기 큐를 비우며 이후 입력도 버린다. `cancel()`은 멱등적인 영구 종료다. 이전 연결의 큐를 새 sendAudio로 교체하여 재사용하지 않는다.
+- 큐 상한 8프레임은 **송신 중인 최대 1프레임을 포함**한다. 넘치면 가장 오래된 미전송 프레임을 버린다. 실제 단조 시각 기준 송신 시작 간격을 최소 32ms로 유지하고, 큐 진입 후 256ms 이상 지난 프레임도 버린다. 늦은 타이머에서 밀린 송신을 반복 실행하지 않는다. 송신 Promise가 정지해도 동시에 하나만 유지하며 대기는 최대 7프레임이다.
+- `onDrop({ reason, frames, durationMs })`는 overflow·stale·not-ready·cancelled를 구분하는 입력 누락 통지다. `getStats()`는 queuedFrames·inFlight·maxFrames·sentFrames·droppedFrames·droppedMs 집계만 제공한다. sentFrames는 sendAudio 성공 횟수이며 제공자 수신 확인이 아니다. 이미 송신 중인 프레임은 폐기 집계에 포함하지 않으며 취소 이후 늦은 성공도 반영하지 않는다. 실패하면 큐를 취소하고 정규화한 ProviderError를 onError에 한 번 전달한다.
+
+### 설계 구체화·후속 인계
+
+설계 목표 변경이나 선행 의존성 누락은 없다. 8프레임에 송신 중 프레임을 포함하는 보수적인 상한, 256ms 대기 만료, 실제 시각 기준 32ms 송신 간격, 불완전 꼬리 폐기를 이번 과제에서 구체화했다. P1 기존 테스트의 단언은 변경하지 않았다. 추가 패키지·UI 문자열·자격증명 접근·네트워크 URL·로그·영구 저장은 없다.
+
+P2-09는 캡처 onFrame을 현재 연결의 큐에 연결하고, 재연결/goAway 시 이전 큐를 즉시 취소한 뒤 기존 세션 관리자로 물리적 종료를 확인해야 한다. 큐 취소는 이미 브라우저로 넘어간 데이터의 회수나 소켓 종료 증거가 아니다. P2-04 Live client의 12KiB 오디오 송신 버퍼 제한과 정규화 오류를 그대로 사용하며 큐는 소켓을 열거나 복구 예산을 생성하지 않는다. 입력 누락 통지는 P2-08 상태·P2-14 사전·P2-16 화면에서 자막/출력 누락과 별도로 연결해야 한다. 수명주기 취소 신호도 캡처와 큐 양쪽에 전달한다.
+
+실제 장치의 worklet 메시지 전달 지연은 이 큐의 진입 시각 이전 구간이므로 256ms 정책을 장치부터 제공자까지의 보장 지연으로 해석하지 않는다. 실기기 권한·오디오·장시간 지연 검증은 후속 기기 시험에 남는다.
+
+### 자동 검증
+
+합성 16/44.1/48kHz 톤의 주파수·진폭 보존과 불규칙 입력 블록, 정확한 프레임 크기, 30초 초과 무음 스트리밍, 불완전 꼬리 폐기, 권한·resume·worklet 지연 취소, 입력 정지·페이지·장치·processor 오류를 시험한다. 큐는 준비 전/복구 중 폐기, PCM 복사, 8프레임 상한·최고값·입력 누락 ms, 단일 미완료 Promise, 타이머 지연·만료, 취소 후 늦은 성공/실패, 안전한 오류 정규화를 가상 시계로 검증한다. 실행 명령과 최종 통과 수는 완료 메시지에 기록한다.
