@@ -197,5 +197,10 @@
   "seq.replayDevice": "기기 음성으로 다시 읽기",
   "settings.noKey": "키 없음",
   "language.swapShort": "교환",
-  "seq.submitHint": "Ctrl/⌘+Enter로 보내기"
+  "seq.submitHint": "Ctrl/⌘+Enter로 보내기",
+  "settings.keyStored": "저장됨",
+  "settings.sharedUntil": "공용 키 사용 종료",
+  "settings.records": "기록",
+  "settings.app": "앱",
+  "settings.notices": "이용 안내"
 }

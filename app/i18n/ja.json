@@ -197,5 +197,10 @@
   "seq.replayDevice": "端末の音声で読み直す",
   "settings.noKey": "キー未設定",
   "language.swapShort": "入替",
-  "seq.submitHint": "Ctrl/⌘+Enterで送信"
+  "seq.submitHint": "Ctrl/⌘+Enterで送信",
+  "settings.keyStored": "保存済み",
+  "settings.sharedUntil": "共用キーの終了",
+  "settings.records": "記録",
+  "settings.app": "アプリ",
+  "settings.notices": "ご利用案内"
 }

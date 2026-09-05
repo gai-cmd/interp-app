@@ -197,5 +197,10 @@
   "seq.replayDevice": "Read again with device voice",
   "settings.noKey": "No key",
   "language.swapShort": "Swap",
-  "seq.submitHint": "Ctrl/⌘+Enter to send"
+  "seq.submitHint": "Ctrl/⌘+Enter to send",
+  "settings.keyStored": "Saved",
+  "settings.sharedUntil": "Shared key ends",
+  "settings.records": "Records",
+  "settings.app": "App",
+  "settings.notices": "Notices"
 }
