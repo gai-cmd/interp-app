@@ -13,6 +13,7 @@ run_tests() {
 blocked() { grep -qiE "^ERROR:.*(usage limit|rate limit|quota|429|too many requests)|requires a newer version|unexpected argument|Usage: codex exec" "$1"; }
 for f in docs/build/tasks/P1-*.md; do
   id=$(basename "$f" .md)
+  case "$id" in *.fable|*.retry) continue;; esac
   [ -f "docs/build/$id.done" ] && continue
   t0=$(date +%s)
   tools/astra-task.sh "$id" "$f" >/dev/null
