@@ -820,3 +820,118 @@ test('P2 reconnect waiting keeps update and auxiliary work blocked and visibilit
   assert.equal(b.sockets.length, 1, 'cancelled recovery never opens a replacement');
   assert.equal(b.app.listenEngines.direct.snapshot().status, 'stopped');
 });
+
+// P2-19: the bootstrap graph must parse without JSON module syntax.
+test('bootstrap graph uses JS modules and the minimal fallback matches English JSON exactly', async () => {
+  const { default: fallback } = await import('../app/i18n/boot-fallback.js');
+  assert.deepEqual(Object.keys(fallback).sort(), ['error.ABORTED', 'error.NETWORK_ERROR', 'error.unknown']);
+  assert.ok(Object.isFrozen(fallback));
+  for (const [key, value] of Object.entries(fallback)) assert.equal(value, dictionaries.en[key]);
+  const visited = new Set();
+  async function visit(url) {
+    if (visited.has(url.href)) return;
+    visited.add(url.href);
+    const source = await readFile(url, 'utf8');
+    assert.doesNotMatch(source, /\b(?:with|assert)\s*\{\s*type\s*:\s*['"]json['"]/);
+    for (const [, specifier] of source.matchAll(/^[ \t]*(?:import|export)\s+(?:[^;]*?\sfrom\s*)?['"]([^'"]+)['"]/gm)) {
+      assert.ok(specifier.startsWith('.'), specifier);
+      assert.ok(specifier.endsWith('.js'), specifier);
+      await visit(new URL(specifier, url));
+    }
+  }
+  await visit(new URL('../app/main.js', import.meta.url));
+  assert.ok([...visited].some(url => url.endsWith('/i18n/boot-fallback.js')));
+});
+
+test('dictionary loading rejects HTTP, JSON and invalid dictionary failures and aborts siblings', async () => {
+  const { loadI18n } = await import('../app/i18n/index.js');
+  for (const bad of [
+    { ok: false },
+    { ok: true, json() { throw new Error('SECRET body'); } },
+    ...[null, [], {}, { 'error.unknown': ' ' }, { 'error.unknown': 'valid', bad: 4 }]
+      .map(value => ({ ok: true, json: async () => value })),
+  ]) {
+    const signals = [];
+    await assert.rejects(loadI18n({ fetch: async (url, { signal }) => {
+      signals.push(signal);
+      return url.pathname.endsWith('/ja.json') ? bad : new Promise(() => {});
+    } }), error => error.message === 'I18N_LOAD_FAILED' && !leaks(error) && !error.cause);
+    assert.equal(signals.length, 3);
+    assert.ok(signals.every(signal => signal.aborted));
+  }
+});
+
+test('dictionary cancellation settles ignored signals during fetch or JSON reading and discards late results', async () => {
+  const { loadI18n } = await import('../app/i18n/index.js');
+  for (const phase of ['before', 'fetch', 'body']) {
+    const controller = new AbortController();
+    const signals = [], late = [];
+    if (phase === 'before') controller.abort(new Error('SECRET abort reason'));
+    const pending = loadI18n({ signal: controller.signal, fetch: async (url, { signal }) => {
+      signals.push(signal);
+      const language = url.pathname.match(/(ko|en|ja)\.json$/)[1];
+      const response = { ok: true, json: () => phase === 'body'
+        ? new Promise(resolve => late.push(() => resolve(dictionaries[language]))) : dictionaries[language] };
+      return phase === 'fetch' ? new Promise(resolve => late.push(() => resolve(response))) : response;
+    } });
+    const rejected = assert.rejects(pending, error => error.message === 'I18N_LOAD_FAILED' && !leaks(error));
+    await tick();
+    controller.abort(new Error('SECRET abort reason'));
+    await rejected;
+    assert.equal(signals.length, phase === 'before' ? 0 : 3);
+    assert.ok(signals.every(signal => signal.aborted));
+    for (const finish of late) finish();
+    await tick();
+  }
+});
+
+test('startup cancellation and body timeout leave no shell, registration, listeners or late mount', async () => {
+  for (const reason of ['signal', 'pre-aborted', 'pagehide', 'timeout']) {
+    const b = createBrowser({ hash: fragment() });
+    const controller = new AbortController();
+    const requests = [], late = [];
+    b.win.fetch = async (url, { signal }) => {
+      requests.push(signal);
+      return { ok: true, json: () => new Promise(resolve => late.push(() =>
+        resolve(dictionaries[url.pathname.match(/(ko|en|ja)\.json$/)[1]]))) };
+    };
+    if (reason === 'pre-aborted') controller.abort('SECRET');
+    const pending = startApp({ window: b.win, signal: controller.signal });
+    await tick();
+    if (reason === 'signal') controller.abort('SECRET');
+    if (reason === 'pagehide') b.win.dispatch('pagehide');
+    if (reason === 'timeout') b.timers.run();
+    assert.equal(await pending, null);
+    assert.equal(b.root.textContent, dictionaries.en[reason === 'timeout' ? 'error.NETWORK_ERROR' : 'error.ABORTED']);
+    assert.equal(b.win.location.hash, '');
+    assert.ok(requests.every(signal => signal.aborted));
+    assert.equal(b.win.listenerCount, 0);
+    assert.equal(b.timers.pending.length, 0);
+    for (const finish of late) finish();
+    await tick();
+    assert.equal(b.root.getAttribute('role'), 'alert');
+    assert.equal(b.container.registrations.length, 0);
+    assert.equal(b.audio.contexts.length, 0);
+    assert.equal(b.gemini.calls.length, 0);
+  }
+});
+
+test('offline dictionary miss shows fallback and a fresh start can recover; cached dictionaries still boot', async () => {
+  const b = createBrowser();
+  b.win.navigator.onLine = false;
+  const cachedFetch = b.win.fetch;
+  b.win.fetch = async () => { throw new Error('SECRET offline'); };
+  assert.equal(await startApp({ window: b.win }), null);
+  assert.equal(b.root.textContent, dictionaries.en['error.NETWORK_ERROR']);
+  b.win.fetch = cachedFetch;
+  const app = await startApp({ window: b.win });
+  assert.ok(app, 'offline hint must not block cache-backed fetch');
+  assert.equal(b.root.hasAttribute('role'), false);
+  assert.equal(b.root.hasAttribute('lang'), false);
+  assert.equal(app.i18n.language, 'ko');
+  assert.equal(app.setLanguage('ja'), 'ja');
+  assert.equal(app.i18n.t('common.start'), dictionaries.ja['common.start']);
+  assert.equal(app.setLanguage('en'), 'en');
+  assert.equal(app.i18n.t('common.start'), dictionaries.en['common.start']);
+  await app.close();
+});

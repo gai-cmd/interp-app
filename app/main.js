@@ -14,7 +14,7 @@
 // P2: listening ownership and generation guards join the P1 lifecycle.
 // Teardown: settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
-import fallbackDictionary from './i18n/en.json' with { type: 'json' };
+import fallbackDictionary from './i18n/boot-fallback.js';
 import { createI18n, loadI18n } from './i18n/index.js';
 import { bootstrapSharedKey } from './security/bootstrap.js';
 import { redact } from './security/redact.js';
@@ -105,7 +105,7 @@ export function captureSharedFragment({ location, history }) {
  * text inside root and resolves null; nothing is logged.
  */
 // hubs is a trusted code registry, never a settings or QR value.
-async function bootApp({ window: win, root: givenRoot, hubs = REGISTERED_HUBS, fetch: fetcher = win?.fetch?.bind?.(win),
+async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs = REGISTERED_HUBS, fetch: fetcher = win?.fetch?.bind?.(win),
   setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win) } = {}) {
   const doc = win?.document;
   const nav = win?.navigator;
@@ -114,7 +114,21 @@ async function bootApp({ window: win, root: givenRoot, hubs = REGISTERED_HUBS, f
     throw new Error('INVALID_REQUEST');
   }
   const timing = { setTimeout: schedule, clearTimeout: cancelTimer };
-  const loadMessages = (options) => withDeadline((signal) => loadI18n({ ...options, signal }), { ...timing, timeoutMs: BOOT_TIMEOUT_MS });
+  const loadMessages = async (options) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    // Own cancellation while dictionaries load, before the shell owns pagehide.
+    win.addEventListener?.('pagehide', abort);
+    bootSignal?.addEventListener('abort', abort, { once: true });
+    if (bootSignal?.aborted) abort();
+    try {
+      return await withDeadline((signal) => loadI18n({ ...options, signal }),
+        { ...timing, signal: controller.signal, timeoutMs: BOOT_TIMEOUT_MS });
+    } finally {
+      win.removeEventListener?.('pagehide', abort);
+      bootSignal?.removeEventListener('abort', abort);
+    }
+  };
   const showFailure = (i18n, code) => showBootFailure(root, i18n, code);
 
   // 1. The fragment leaves the URL before i18n is fetched or storage is read.
@@ -133,7 +147,7 @@ async function bootApp({ window: win, root: givenRoot, hubs = REGISTERED_HUBS, f
   let i18n;
   try {
     i18n = await loadMessages({ fetch: fetcher, languages: nav.languages ?? [], ...(remembered ? { language: remembered } : {}) });
-  } catch { showFailure(null, 'NETWORK_ERROR'); return null; }
+  } catch (error) { showFailure(null, error?.code === 'ABORTED' ? 'ABORTED' : 'NETWORK_ERROR'); return null; }
   applyManifestLanguage(doc, i18n.language);
 
   let config = null, engine = null, voiceEngine = null, capture = null, store = null;
@@ -348,8 +362,8 @@ async function bootApp({ window: win, root: givenRoot, hubs = REGISTERED_HUBS, f
   });
 }
 
-// The fallback is the existing English dictionary, loaded with the module graph,
-// independent of runtime fetch/storage/SW. No raw exception reaches the DOM.
+// Only minimal English failure messages belong in the bootstrap module graph.
+// Tests keep this subset identical to en.json. No raw exception reaches the DOM.
 function showBootFailure(root, i18n, code = 'unknown') {
   if (!root) return;
   const messages = i18n ?? createI18n({ dictionaries: { en: fallbackDictionary }, language: 'en' });

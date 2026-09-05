@@ -72,17 +72,40 @@ export function createI18n({ dictionaries, language, languages = [] } = {}) {
   });
 }
 
-/** Fetch only fixed, same-module JSON assets; fetch is injectable for Node tests. */
+/** Fetch only fixed, same-module JSON assets; fetch is injectable for Node tests.
+ * The caller supplies the startup deadline. Abort races cover fetch and body
+ * readers that ignore signals; failed loads cancel all sibling requests.
+ */
 export async function loadI18n({ fetch: fetcher = globalThis.fetch, signal, ...options } = {}) {
+  const controller = new AbortController();
+  const failure = () => new Error('I18N_LOAD_FAILED');
+  let rejectAbort;
+  const cancelled = new Promise((_, reject) => { rejectAbort = reject; });
+  const abort = () => { controller.abort(); rejectAbort(failure()); };
+  signal?.addEventListener('abort', abort, { once: true });
   try {
-    const entries = await Promise.all(SUPPORTED_LANGUAGES.map(async (language) => {
-      const response = await fetcher(new URL(`./${language}.json`, import.meta.url), { credentials: 'omit', ...(signal ? { signal } : {}) });
-      if (!response.ok) throw new Error('I18N_LOAD_FAILED');
-      return [language, await response.json()];
+    if (signal?.aborted) throw failure();
+    const loading = Promise.all(SUPPORTED_LANGUAGES.map(async (language) => {
+      if (controller.signal.aborted) throw failure();
+      const response = await fetcher(new URL(`./${language}.json`, import.meta.url),
+        { credentials: 'omit', signal: controller.signal });
+      if (controller.signal.aborted || !response.ok) throw failure();
+      const dictionary = await response.json();
+      if (controller.signal.aborted || !dictionary || Array.isArray(dictionary)
+          || typeof dictionary !== 'object'
+          || typeof dictionary['error.unknown'] !== 'string'
+          || !dictionary['error.unknown'].trim()
+          || Object.values(dictionary).some(value => typeof value !== 'string' || !value.trim())) throw failure();
+      return [language, dictionary];
     }));
+    const entries = await Promise.race([loading, cancelled]);
+    if (controller.signal.aborted) throw failure();
     return createI18n({ ...options, dictionaries: Object.fromEntries(entries) });
   } catch {
     // Do not retain fetch errors, URLs, response bodies, or causes.
-    throw new Error('I18N_LOAD_FAILED');
+    controller.abort();
+    throw failure();
+  } finally {
+    signal?.removeEventListener('abort', abort);
   }
 }
