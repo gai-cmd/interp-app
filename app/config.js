@@ -1,6 +1,7 @@
 // New implementation of design-v0.6 §§8.1, 11.2, 15 and 20: the composition
 // root that wires reviewed providers, the key store and the router. Importing
 // this module touches no browser globals; environment objects are injected.
+import { REGISTERED_HUBS, HUB_ENDPOINTS } from './hub/config.js';
 import { ProviderError } from './providers/contract.js';
 import { createRegistry } from './providers/registry.js';
 import { createRouter } from './providers/router.js';
@@ -11,7 +12,7 @@ import { GEMINI_ENDPOINTS, GEMINI_PROVIDER_ID, registerGemini, resolveGeminiFall
 
 // Fixed at review time. P1-18 builds CSP connect-src from this list; the QR
 // payload, settings UI and runtime options cannot add or replace entries.
-export const ENDPOINT_ALLOWLIST = Object.freeze([...GEMINI_ENDPOINTS]);
+export const ENDPOINT_ALLOWLIST = Object.freeze([...new Set([...GEMINI_ENDPOINTS, ...HUB_ENDPOINTS])]);
 export const ENDPOINT_ORIGINS = Object.freeze([...new Set(ENDPOINT_ALLOWLIST.map((endpoint) => new URL(endpoint).origin))]);
 
 // P1 ships one real provider; test-only providers are never registered here.
@@ -59,7 +60,7 @@ export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, c
   const sessionManager = createSessionManager({ timeoutMs: VOICE_POLICY.turnTimeoutMs, setTimeout, clearTimeout });
   const fallbacks = Object.freeze({ [GEMINI_PROVIDER_ID]: resolveGeminiFallback });
   return Object.freeze({
-    registry, keyStore, router, sessionManager, providers,
+    registry, keyStore, router, sessionManager, providers, hubs: REGISTERED_HUBS,
     endpoints: ENDPOINT_ALLOWLIST, endpointOrigins: ENDPOINT_ORIGINS, defaults: APP_DEFAULTS,
     resolveFallback(providerId, capability = 'translate') {
       if (providerId === GEMINI_PROVIDER_ID && capability === 'live') return resolveGeminiLiveFallback;

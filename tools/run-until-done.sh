@@ -10,7 +10,9 @@ while true; do
   # 3 = all profiles limited · wait for the earliest "try again at HH:MM" (fallback 30 min)
   last=$(ls -t docs/build/$PREFIX-*.log 2>/dev/null | head -1)
   # formats seen: "try again at 10:22 PM" and "try again at Sep 6th, 2026 3:47 AM"
-  at=$(grep -io 'try again at [^.]*[AP]M' docs/build/$PREFIX-*.log 2>/dev/null | sed 's/.*try again at //I' | sort -u | tail -1)
+  # only the newest transcript (the task that just got blocked) · older logs carry stale times
+  newest=$(ls -t docs/build/$PREFIX-*.log 2>/dev/null | head -2)
+  at=$(grep -ih -o 'try again at [^.]*[AP]M' $newest 2>/dev/null | sed 's/.*try again at //I' | tail -1)
   wait=1800
   if [ -n "$at" ]; then
     hm=$(echo "$at" | grep -oE '[0-9]{1,2}:[0-9]{2} [AP]M' | tail -1)

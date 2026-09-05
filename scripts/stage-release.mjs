@@ -1,7 +1,7 @@
 // Release packaging (design-v0.6 §13.1-13.2): copy the explicit allowlist of
 // static files into <out>/releases/<id>/ and (re)write the root entry files.
 // This is a copy step, not a build: no code is transformed beyond rewriting
-// the versioned paths in index.html and the RELEASE line in sw.js.
+// the versioned paths in index.html, the RELEASE line and CSP connect-src.
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -106,7 +106,28 @@ export function shellFor(id, versionedFiles) {
 
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 
+/** Use the immutable selected release, including when rolling back. */
+async function releaseHeaders(template, releaseDir) {
+  let origins;
+  try {
+    ({ ENDPOINT_ORIGINS: origins } = await import(pathToFileURL(join(releaseDir, 'app/config.js')).href));
+    if (!Array.isArray(origins) || !origins.length || origins.some((origin) => {
+      const url = new URL(origin);
+      return !['https:', 'wss:'].includes(url.protocol) || url.origin !== origin
+        || url.username || url.password || /[\s;*]/.test(origin);
+    })) throw 0;
+  } catch { throw fail('RELEASE_CONFIG_INVALID'); }
+  const policies = template.match(/^\s+Content-Security-Policy:.*$/gm) ?? [];
+  if (policies.length !== 1 || (policies[0].match(/\bconnect-src\b/g) ?? []).length !== 1) {
+    throw fail('RELEASE_HEADERS_INVALID');
+  }
+  return template.replace(policies[0], () => policies[0].replace(/\bconnect-src\s+[^;\r\n]*/,
+    () => `connect-src 'self' ${[...new Set(origins)].join(' ')}`));
+}
+
 async function writeRootFiles({ root, out, id, versionedFiles }) {
+  const headers = await releaseHeaders(await readFile(join(root, HEADERS_FILE), 'utf8'),
+    join(out, RELEASES_DIRECTORY, id));
   const written = [];
   const entry = rewriteEntry(await readFile(join(root, ENTRY_FILE), 'utf8'), id);
   if (/\b(?:href|src)=(["'])\.\/(?:app\/|styles\.css)/.test(entry)) throw fail('RELEASE_ENTRY_INVALID');
@@ -119,7 +140,7 @@ async function writeRootFiles({ root, out, id, versionedFiles }) {
     const source = join(root, file);
     await assertRegularFile(source);
     await mkdir(dirname(join(out, file)), { recursive: true });
-    await writeFile(join(out, file), await readFile(source));
+    await writeFile(join(out, file), file === HEADERS_FILE ? headers : await readFile(source));
     written.push(file);
   }
   return written;
