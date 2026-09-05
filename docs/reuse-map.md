@@ -142,3 +142,29 @@ P2-09는 캡처 onFrame을 현재 연결의 큐에 연결하고, 재연결/goAwa
 ### 자동 검증
 
 합성 16/44.1/48kHz 톤의 주파수·진폭 보존과 불규칙 입력 블록, 정확한 프레임 크기, 30초 초과 무음 스트리밍, 불완전 꼬리 폐기, 권한·resume·worklet 지연 취소, 입력 정지·페이지·장치·processor 오류를 시험한다. 큐는 준비 전/복구 중 폐기, PCM 복사, 8프레임 상한·최고값·입력 누락 ms, 단일 미완료 Promise, 타이머 지연·만료, 취소 후 늦은 성공/실패, 안전한 오류 정규화를 가상 시계로 검증한다. 실행 명령과 최종 통과 수는 완료 메시지에 기록한다.
+
+## P2-07 연속 PCM 재생·따라잡기 — 2026-09-05
+
+`app/audio/stream-player.js`는 원본 `ambient-state.js`의 `jpGeminiSpeak`에서 24kHz PCM 변환과 AudioContext 예약 개념을 이식했다. 파일 전체 SHA-256을 재계산하여 위 지문과 일치함을 확인했다. 실제 LE 변환은 기존 `app/audio/wav.js`의 `pcm16ToFloat32`를 상대 경로로 재사용한다. P1 `pcm-player.js`의 자원 해제 방식을 참고하되 유한 턴·120초 watchdog·overflow 영구 종료는 이식하지 않았다. React·Electron·base64·자유 페르소나·전체 PCM 보관도 없다. 다른 번역·Live·xlsx 원본은 이번 파일의 이식 대상이 아니다.
+
+### 호출 계약과 후속 연결
+
+- `createStreamPlayer({ context, signal?, onState?, onDrop?, now?, setTimeout?, clearTimeout?, maxQueueSeconds?, maxSources?, muted? })`를 연결 세대마다 생성한다. AudioContext는 호출자가 소유하며 재생기는 close/suspend하지 않는다. 사용자 제스처에서 `resume()`을 호출한다. 동시 resume 요청은 같은 Promise를 공유한다. 거부 시 blocked 출력을 유지하고 사용자 재시도를 허용한다.
+- P2-01 정규화 `audio`의 `audio` 바이트를 `enqueue(pcm)`에, `complete`를 `turnComplete()`에, `interrupted`를 `interrupt()`에 연결한다. 기존 P2-03에서 complete는 제공자 turnComplete를 뜻한다. subtitle final·generationComplete·PCM 청크 끝은 경계가 아니다. 지원 입력은 PCM16 LE·mono·24kHz의 ArrayBuffer/Uint8Array/DataView이며 빈 데이터·홀수 길이·다른 타입은 안전한 출력 실패로 종료한다. sampleRate 검증은 기존 어댑터 계약을 사용한다.
+- AudioContext 현재 시각에서 약 60ms 여유로 연속 예약한다. 현재 시각부터 예약 끝까지 3초 이상이면 delayed다. 초기 여유·청크 사이 여유까지 포함하여 최대 8초이며 소스는 최대 256개다. 옵션으로 낮출 수 있지만 상한을 높이지는 못한다. 초과 청크는 디코딩·AudioBuffer 할당 전에 거부한다.
+- overflow에서 재생 중·예약 소스를 모두 stop/disconnect하고 buffer/onended 참조를 해제한다. 이후 PCM을 저장하지 않고 다음 turnComplete까지 버린다. 2초 후에는 다음 새 청크부터 강제 재개하며 `onDrop({ reason: 'forced-boundary', durationMs: 0 })`로 중간 잘림을 알린다. 이 0은 경계 통지 자체의 추가 폐기량이며 이미 폐기한 음성은 별도 집계한다. 타이머 지연 시 브라우저가 콜백을 실행할 때 복귀하며 2초 벽시계 실행 보장을 주장하지 않는다.
+- `setMuted(true)`는 예약과 복귀 타이머를 비우며 mute 중 새 PCM도 버린다. 소리를 다시 켜도 과거 음성은 없다. interrupt 역시 큐·타이머를 비우되 재생기 전체를 종료하지 않아 다음 새 음성을 받을 수 있다. `cancel()`/`close()`/signal abort는 멱등 영구 종료다. done은 안전한 상태 결과로 resolve하며 오류 원문·abort reason을 보존하지 않는다.
+- suspended/interrupted context에서는 출력 blocked와 함께 큐를 비우고 PCM을 버린다. closed context·잘못된 PCM·노드 생성/예약 오류는 unavailable 및 기존 `error.VOICE_FAILED` 키로 출력만 종료한다. 세션·자막 수신을 실패시키거나 기기 TTS/다른 제공자를 호출하지 않는다. 취소 키는 기존 `error.ABORTED`다.
+- `onState(snapshot)`는 출력 상태 변경을 통지한다. 재생 중 최대 한 개의 50ms 관찰 타이머로 새 청크가 없어도 delayed 해제를 알리고 늦은 ended 이벤트의 소스를 회수한다. 오디오 진행 판정은 AudioContext 시각으로만 한다. 빈 큐와 종료 후 관찰 타이머는 없다. onended도 즉시 해제하며 늦은 콜백은 무시한다.
+- `onDrop({ reason, durationMs })`는 overflow/catching-up/forced-boundary/muted/blocked/interrupted/cancelled/failed를 구분한다. durationMs는 입력 청크 또는 예약 음성의 남은 샘플 길이이고 초기 무음 예약 여유는 제외한다. 이미 출력된 것으로 AudioContext가 판단한 부분도 물리적 청취 증명은 아니다. 콜백 예외는 내부 자원 정리를 막지 않는다.
+- `snapshot()`은 queuedSeconds/sourceCount/state, firstReceivedAt(단조 ms), firstScheduledAt(AudioContext 초), actualFirstSoundAt(항상 null), droppedMs와 forcedBoundaries 누계만 보관한다. 오디오·자막·키·URL·이벤트 이력을 측정값에 넣지 않는다. 두 시계 값을 직접 빼거나 예약 시각을 실청취 시각으로 표시하면 안 된다. P2-18에서 필요한 분포와 지연 시간 집계는 제한된 측정 모듈로 수집한다.
+
+### 설계 구체화와 범위
+
+설계 목표 변경과 선행 의존성 누락은 없다. 소스 상한 256개, 큐 시간에 초기 예약 여유 포함, 50ms 상태 관찰, 출력 실패의 done 결과와 콜백 API를 구체화했다. 신규 UI 문자열은 없으며 상태·누락 원인은 기계 식별자로 전달한다. P2-14·16에서 세 언어 사전의 지연·따라잡기·음성 건너뛰기·중간 잘림 문구에 연결해야 한다. P2-09는 이전 세대의 player를 cancel하고 현재 연결의 정규화 이벤트만 전달해야 한다. 재생기 취소는 Live 소켓 종료 확인을 대신하지 않는다.
+
+변경 파일은 `app/audio/stream-player.js`, `tests/stream-player.test.mjs`, `tests/fixtures/stream-audio.mjs`, 본 문서 네 개뿐이다. P1 파일·기존 테스트 단언은 변경하지 않았다. 외부 패키지·빌드 도구·네트워크·로그·저장소 접근은 없고 커밋하지 않았다.
+
+### 자동 검증 범위
+
+합성 PCM과 독립된 가상 단조/AudioContext 시계를 사용한다. LE offset·복사·연속 예약, 3초 상태 해제, 8초 및 256개 경계의 할당 전 거부, 실제 제공자 턴을 기다리는 복귀·2초 강제 복귀, 300초 연속 재생과 늦은 ended 회수, mute/interrupted/abort, suspended 130초와 반복 수신, resume 거부·진행 중 취소, closed context·잘못된 PCM·생성/connect/start 실패 및 오류 비밀 제거를 검사한다. 실제 스피커 첫소리·Safari/모바일·장시간 운영 성공은 이 모의 검사로 판정하지 않는다. 완료 명령과 최종 통과 수는 최종 보고에 기록한다.
