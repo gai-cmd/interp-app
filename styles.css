@@ -449,3 +449,17 @@ textarea { width: 100%; resize: vertical; }
   .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
   .pwa-install, .pwa-update { justify-self: start; }
 }
+
+/* P2-16 simultaneous listening: bounded viewport with explicit scroll anchoring. */
+.sim { display: grid; gap: var(--gap); min-width: 0; }
+.sim-controls { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: end; }
+.sim-field { display: grid; gap: 0.25rem; flex: 1 1 12rem; min-width: 0; }
+.sim-field select, .sim-room { width: 100%; min-width: 0; min-height: var(--touch); font: inherit; }
+.sim-hints, .sim-output, .sim-recent { color: var(--text-muted); }
+.sim-hints p { margin: 0.25rem 0; }
+.sim-captions { overflow-y: auto; overflow-anchor: none; max-height: 60vh; min-height: 8rem;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: var(--gap); }
+.sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--translation-bg); border-radius: var(--radius); }
+.sim-caption[data-status="partial"] { border-inline-start: 3px dashed var(--accent); }
+.sim-caption[data-status="interrupted"] { border-inline-start: 3px solid var(--danger); }
+.sim-level { width: 100%; min-height: 1rem; }
