@@ -202,5 +202,6 @@
   "settings.sharedUntil": "공용 키 사용 종료",
   "settings.records": "기록",
   "settings.app": "앱",
-  "settings.notices": "이용 안내"
+  "settings.notices": "이용 안내",
+  "pwa.closeOtherTabs": "다른 탭에서도 앱이 열려 있어요. 다른 탭을 닫은 뒤 업데이트하세요."
 }

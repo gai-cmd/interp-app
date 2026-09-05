@@ -202,5 +202,6 @@
   "settings.sharedUntil": "Shared key ends",
   "settings.records": "Records",
   "settings.app": "App",
-  "settings.notices": "Notices"
+  "settings.notices": "Notices",
+  "pwa.closeOtherTabs": "The app is open in another tab. Close the other tabs, then update."
 }

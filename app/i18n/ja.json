@@ -202,5 +202,6 @@
   "settings.sharedUntil": "共用キーの終了",
   "settings.records": "記録",
   "settings.app": "アプリ",
-  "settings.notices": "ご利用案内"
+  "settings.notices": "ご利用案内",
+  "pwa.closeOtherTabs": "ほかのタブでもアプリが開いています。ほかのタブを閉じてから更新してください。"
 }
