@@ -2,3 +2,4 @@ docs/build/*.log
 node_modules/
 .DS_Store
 .moai/
+docs/build/*.done
