@@ -8,13 +8,13 @@
  * shutdown, safe errors; no ws/Buffer, logging, overlap, or hidden retries.
  */
 import { ProviderError, assertActive, normalizeError } from '../contract.js';
-import { normalizeGeminiError } from './errors.js';
+import { normalizeGeminiError, normalizeGeminiLiveClose } from './errors.js';
 
 // Local transport contract until P1-12/13 supply capability setup/registration.
 export const LIVE_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 export const LIVE_LIMITS = Object.freeze({ setupTimeoutMs: 10000, closeTimeoutMs: 5000,
   decodeTimeoutMs: 10000, maxMessageBytes: 1048576, maxQueueBytes: 2097152,
-  maxQueueMessages: 128, maxSendBytes: 1048576 });
+  maxQueueMessages: 128, maxSendBytes: 1048576, maxAudioBufferedBytes: 12288 });
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
@@ -72,6 +72,11 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
   function connect(setup, context) {
     let ws, ready = false, stopped = false, physicallyClosed = false, retiring = false;
     let failure, closePromise, setupTimer, closeTimer, decodeTimer, goAwayTimer;
+    // Eight 32ms PCM frames including base64/JSON overhead, rounded to 12KiB.
+    // This is a transport policy, not a measured latency or provider limit.
+    // P2-03 sends realtimeInput.audio; P1 voice sends clientContent. Latch the
+    // audio policy so finishInput/control sends cannot bypass backpressure.
+    let audioInput = false;
     let queue = [], queuedBytes = 0, processing = false;
     let resolveOpen, rejectOpen, resolveClosed;
     const opening = new Promise((resolve, reject) => { resolveOpen = resolve; rejectOpen = reject; });
@@ -116,7 +121,9 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
         if (!object(message) || Object.keys(message).length !== 1
           || !['clientContent', 'realtimeInput'].some((key) => object(message[key]))) throw new ProviderError('INVALID_REQUEST');
         const text = encode(message);
-        if (ws.bufferedAmount + new TextEncoder().encode(text).byteLength > LIVE_LIMITS.maxSendBytes) {
+        audioInput ||= Object.hasOwn(message.realtimeInput ?? {}, 'audio');
+        const limit = audioInput ? LIVE_LIMITS.maxAudioBufferedBytes : LIVE_LIMITS.maxSendBytes;
+        if (ws.bufferedAmount + new TextEncoder().encode(text).byteLength > limit) {
           stop(new ProviderError('UNAVAILABLE')); throw new ProviderError('UNAVAILABLE');
         }
         try { ws.send(text); }
@@ -201,7 +208,7 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
       error() { if (active()) stop(new ProviderError('NETWORK_ERROR')); },
       close(event) {
         if (!stopped) {
-          failure = new ProviderError(event.code === 1000 ? 'SESSION_CLOSED' : 'NETWORK_ERROR');
+          failure = normalizeGeminiLiveClose(event);
           stopped = true;
           emit({ type: 'error', error: failure });
         }

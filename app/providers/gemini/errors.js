@@ -1,4 +1,8 @@
-// New implementation of design-v0.6 §9; no legacy raw error/logging code is ported.
+// REST normalization: new implementation of design-v0.6 §9.
+// Live close patterns adapted from ~/jarvis2/interp-web/lib/live.js (LiveLane._onClosed).
+// SHA-256: 8afc7818740a45bb69e349450f4290b9574adcd24cb8ee294060ec08056febfe
+// Ported on: 2026-09-05. Changes: bounded recognition, no raw details or retries,
+// no daily-quota inference. Authentication boundary only.
 import { ProviderError, normalizeError } from '../contract.js';
 
 // Input: parsed REST body plus HTTP status/headers, or a structured Live error.
@@ -48,4 +52,21 @@ export function normalizeGeminiError(input, { now = Date.now } = {}) {
     if (waits.length) result.retryAfterMs = Math.max(...waits);
     return result;
   } catch { return new ProviderError('PROVIDER_ERROR'); }
+}
+
+// Authenticated Gemini socket boundary only; never use for hub fatal.detail.
+// Recognize bounded status prefixes and legacy model/quota phrases, not arbitrary
+// numbers or quota IDs buried in prose. Raw reasons never leave this function.
+// Daily/minute/token/session classification requires structured QuotaFailure.
+export function normalizeGeminiLiveClose(event) {
+  let code = event?.code === 1000 ? 'SESSION_CLOSED' : 'NETWORK_ERROR';
+  if (event?.code === 1011 || event?.code === 1012 || event?.code === 1013) code = 'UNAVAILABLE';
+  const reason = event?.reason;
+  if (typeof reason !== 'string' || new TextEncoder().encode(reason).byteLength > 123) return new ProviderError(code);
+  if (/^(?:RESOURCE_EXHAUSTED|429)(?:\b|:)/i.test(reason)
+    || /^exceeded your current quota\b/i.test(reason)) code = 'UNKNOWN_429';
+  else if (/^(?:UNAVAILABLE|503)(?:\b|:)/i.test(reason)) code = 'UNAVAILABLE';
+  else if (/^MODEL_NOT_SUPPORTED(?:\b|:)/.test(reason)
+    || /^models?\b[^\r\n]{0,90}\b(?:not found|not supported|deprecated|retired)\b/i.test(reason)) code = 'MODEL_UNSUPPORTED';
+  return new ProviderError(code);
 }

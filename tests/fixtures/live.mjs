@@ -6,7 +6,7 @@ export function deferred() {
   return { promise, resolve, reject };
 }
 export function createSocketFixture({ autoClose = true, throwSend = false, throwClose = false,
-  throwConstruct = false, inspectURL } = {}) {
+  throwConstruct = false, inspectURL, accumulateSends = false } = {}) {
   const sockets = [];
   class WebSocket {
     constructor(url) {
@@ -33,6 +33,7 @@ export function createSocketFixture({ autoClose = true, throwSend = false, throw
     send(text) {
       if (throwSend || this.readyState !== 1) throw new Error('SECRET send');
       this.sent.push(JSON.parse(text));
+      if (accumulateSends) this.bufferedAmount += new TextEncoder().encode(text).byteLength;
     }
     close() {
       this.closeCalls++;
@@ -47,6 +48,9 @@ export function createSocketFixture({ autoClose = true, throwSend = false, throw
   }
   return { WebSocket, sockets };
 }
+export const audioFrame = () => ({ realtimeInput: { audio: {
+  data: 'AA=='.slice(0, 0) + 'A'.repeat(1366) + '==', mimeType: 'audio/pcm;rate=16000',
+} } });
 export class DelayedBlob extends Blob {
   constructor(text, gate) { super([text]); this.gate = gate; }
   async arrayBuffer() { await this.gate.promise; return super.arrayBuffer(); }
