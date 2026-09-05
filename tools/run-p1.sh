@@ -12,13 +12,19 @@ run_tests() {
 }
 blocked() { grep -qiE "^ERROR:.*(usage limit|rate limit|quota|429|too many requests)|requires a newer version|unexpected argument|Usage: codex exec" "$1"; }
 PREFIX="${1:-P1}"
+HOMES=("$HOME/.codex-astra2" "$HOME/.codex")   # Codex profiles, tried in order when a usage limit hits
 for f in docs/build/tasks/$PREFIX-*.md; do
   id=$(basename "$f" .md)
   case "$id" in *.fable|*.retry) continue;; esac
   [ -f "docs/build/$id.done" ] && continue
   t0=$(date +%s)
-  tools/astra-task.sh "$id" "$f" >/dev/null
-  if blocked "docs/build/$id.log"; then echo "$id ASTRA-BLOCKED $(grep -iE 'usage limit|rate limit|quota|429' docs/build/$id.log | head -1 | cut -c1-140)"; exit 3; fi
+  ok=0
+  for home in "${HOMES[@]}"; do
+    ASTRA_HOME="$home" tools/astra-task.sh "$id" "$f" >/dev/null
+    if blocked "docs/build/$id.log"; then echo "$id limited on $(basename "$home") · trying next profile"; continue; fi
+    ok=1; break
+  done
+  if [ $ok -eq 0 ]; then echo "$id ASTRA-BLOCKED on all profiles $(grep -iE 'usage limit|try again' docs/build/$id.log | head -1 | cut -c1-140)"; exit 3; fi
   if run_tests; then
     $GITC add -A >/dev/null; $GITC commit -qm "$id: $(grep -m1 '^## ' "$f" | sed 's/^## //' | cut -c1-60)
 
@@ -30,8 +36,13 @@ Claude-Session: https://claude.ai/code/session_01LuvfLUrfz3d8VPU49Ce22F" >/dev/n
   fi
   # retry once with the failure attached
   { cat "$f"; echo; echo "# 이전 시도 실패 · 아래 테스트 출력을 보고 고쳐라 (같은 규칙 · 같은 파일 범위)"; echo '```'; tail -80 docs/build/last-test.log; echo '```'; } > "docs/build/tasks/$id.retry.md"
-  tools/astra-task.sh "$id-retry" "docs/build/tasks/$id.retry.md" >/dev/null
-  if blocked "docs/build/$id-retry.log"; then echo "$id ASTRA-BLOCKED on retry"; exit 3; fi
+  ok=0
+  for home in "${HOMES[@]}"; do
+    ASTRA_HOME="$home" tools/astra-task.sh "$id-retry" "docs/build/tasks/$id.retry.md" >/dev/null
+    if blocked "docs/build/$id-retry.log"; then continue; fi
+    ok=1; break
+  done
+  if [ $ok -eq 0 ]; then echo "$id ASTRA-BLOCKED on retry (all profiles)"; exit 3; fi
   if run_tests; then
     $GITC add -A >/dev/null; $GITC commit -qm "$id (retry): $(grep -m1 '^## ' "$f" | sed 's/^## //' | cut -c1-60)
 
