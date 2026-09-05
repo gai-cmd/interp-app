@@ -222,12 +222,13 @@ export const frames = Object.freeze({
 
 // Device speech double (P1-10 device TTS): voices for the three languages;
 // utterances end on the next tick unless a test holds them.
-function createSpeech(record) {
-  const voices = [
-    { voiceURI: 'fake-ko', lang: 'ko-KR', name: 'Fake KO', localService: true, default: true },
-    { voiceURI: 'fake-en', lang: 'en-US', name: 'Fake EN', localService: true, default: true },
-    { voiceURI: 'fake-ja', lang: 'ja-JP', name: 'Fake JA', localService: true, default: true },
-  ];
+export const DEVICE_VOICES = Object.freeze([
+  { voiceURI: 'fake-ko', lang: 'ko-KR', name: 'Fake KO', localService: true, default: true },
+  { voiceURI: 'fake-en', lang: 'en-US', name: 'Fake EN', localService: true, default: true },
+  { voiceURI: 'fake-ja', lang: 'ja-JP', name: 'Fake JA', localService: true, default: true },
+]);
+function createSpeech(record, voices = [...DEVICE_VOICES]) {
+  const listeners = new Map();
   class SpeechSynthesisUtterance {
     constructor(text) { this.text = text; this.lang = ''; this.voice = null; this.onstart = null; this.onend = null; this.onerror = null; }
   }
@@ -240,7 +241,10 @@ function createSpeech(record) {
       else synth.pending = utterance;
     },
     cancel() { record.cancels += 1; },
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, listener) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)).add(listener); },
+    removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
+    voicesChanged() { for (const listener of [...(listeners.get('voiceschanged') ?? [])]) listener(); },
+    get listenerCount() { return [...listeners.values()].reduce((total, set) => total + set.size, 0); },
   };
   return { synth, SpeechSynthesisUtterance };
 }
@@ -323,7 +327,8 @@ export const live = Object.freeze({
  * fixture (URLs recorded, never thrown on); everything else is refused.
  */
 export function createBrowser({ hash = '', storage: storageInit = {}, withStorage = true, languages = ['ko-KR', 'en-US'],
-  controller = null, waiting = null, clients = 1, clock = createVirtualClock(), online = true } = {}) {
+  controller = null, waiting = null, clients = 1, clock = createVirtualClock(), online = true,
+  deviceVoices = [...DEVICE_VOICES] } = {}) {
   const ops = [];
   const { doc, root, manifest } = createDocument();
   const gemini = { calls: [], script: [] };
@@ -343,7 +348,8 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
   const speech = { utterances: [], cancels: 0 };
   const microphoneRecord = { streams: [], nodes: audio.nodes };
   const { AudioContext, AudioWorkletNode } = createAudio(audio);
-  const { synth, SpeechSynthesisUtterance } = createSpeech(speech);
+  // Chrome fills speechSynthesis.getVoices() asynchronously: a cold load sees [] first.
+  const { synth, SpeechSynthesisUtterance } = createSpeech(speech, deviceVoices);
   const microphone = createMicrophone(microphoneRecord);
   const win = new FakeElement(doc, 'window');
   win.document = doc;

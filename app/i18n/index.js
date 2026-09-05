@@ -73,10 +73,10 @@ export function createI18n({ dictionaries, language, languages = [] } = {}) {
 }
 
 /** Fetch only fixed, same-module JSON assets; fetch is injectable for Node tests. */
-export async function loadI18n({ fetch: fetcher = globalThis.fetch, ...options } = {}) {
+export async function loadI18n({ fetch: fetcher = globalThis.fetch, signal, ...options } = {}) {
   try {
     const entries = await Promise.all(SUPPORTED_LANGUAGES.map(async (language) => {
-      const response = await fetcher(new URL(`./${language}.json`, import.meta.url), { credentials: 'omit' });
+      const response = await fetcher(new URL(`./${language}.json`, import.meta.url), { credentials: 'omit', ...(signal ? { signal } : {}) });
       if (!response.ok) throw new Error('I18N_LOAD_FAILED');
       return [language, await response.json()];
     }));

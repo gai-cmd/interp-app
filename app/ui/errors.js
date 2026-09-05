@@ -33,7 +33,7 @@ export function turnKey(turn, snapshot = null) {
   if (!turn) return UNKNOWN_KEY;
   if (turn.phase === TURN_PHASE.ERROR) {
     if (turn.messageKey) return turn.messageKey;
-    return /^[A-Z_]{1,40}$/.test(turn.errorCode ?? '') ? `error.${turn.errorCode}` : UNKNOWN_KEY;
+    return /^[A-Z][A-Z0-9_]{0,39}$/.test(turn.errorCode ?? '') ? `error.${turn.errorCode}` : UNKNOWN_KEY;
   }
   if (turn.phase === TURN_PHASE.COMPLETED && snapshot?.activeTurnId === turn.turnId
     && snapshot.status === SEQ_STATUS.SPEAKING) return STATUS_MESSAGE_KEYS.speaking;
@@ -59,7 +59,7 @@ export function errorKey(error) {
 
 /** Header badge: provider label key and key-source mode key (never a key value). */
 export function keySelectionKeys(selection) {
-  if (!selection) return { providerKey: null, modeKey: 'error.CREDENTIAL_REQUIRED' };
+  if (!selection) return { providerKey: null, modeKey: 'settings.noKey' };
   return { providerKey: `providers.${selection.providerId}`,
     modeKey: selection.keySource === 'shared' ? 'mode.shared' : 'mode.personal' };
 }

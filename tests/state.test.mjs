@@ -235,3 +235,14 @@ test('the conversation is memory only, bounded, cleared on demand and gone after
     assert.throws(call, code('SESSION_CLOSED'));
   }
 });
+
+
+test('numeric error codes are accepted but malformed codes never enter state', () => {
+  const { store, turn } = setup();
+  store.beginTurn({ turnId: 'turn-1', input: 'text', sourceText: 'hello' });
+  for (const errorCode of ['429', '_CODE', 'unknown_429', 'UNKNOWN-429', 'CODE secret', 'A'.repeat(41), 'CODE\n']) {
+    assert.throws(() => store.failTurn('turn-1', { errorCode }), code('INVALID_REQUEST'));
+  }
+  store.failTurn('turn-1', { errorCode: 'UNKNOWN_429' });
+  assert.equal(turn().errorCode, 'UNKNOWN_429');
+});

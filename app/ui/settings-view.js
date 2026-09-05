@@ -318,7 +318,8 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     getOptions: checkOptions });
 
   // Records stay OFF in P1 (§14.1): memory note and clearing with confirmation.
-  const recordsSection = section('settings-records', 'records.off');
+  const recordsSection = section('settings-records', 'settings.records');
+  note(recordsSection, 'records.off');
   note(recordsSection, 'records.memory');
   const clearButton = button(recordsSection, 'records.clear', 'btn-secondary settings-records-clear', () => showClearConfirm(!confirmingClear));
   const clearConfirm = element(doc, 'div', { className: 'settings-confirm', attributes: { role: 'group' } });
@@ -340,7 +341,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   }
 
   // App: run form and version; install and update controls are added by P1-19.
-  const appSection = section('settings-app', 'app.name');
+  const appSection = section('settings-app', 'settings.app');
   const appMode = element(doc, 'p', { className: 'settings-app-mode' });
   bind.text(appMode, app?.standalone === true ? 'pwa.standalone' : 'pwa.web');
   const appVersion = element(doc, 'p', { className: 'settings-app-version' });
@@ -353,7 +354,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   note(appSection, 'pwa.nameLanguage');
 
   // Guidance: provider terms, data handling, eligibility and quota facts (§11.4).
-  const noticeSection = section('settings-notices', 'quota.title');
+  const noticeSection = section('settings-notices', 'settings.notices');
   for (const key of ['notice.data', 'notice.eligibility', 'notice.accuracy', 'quota.unknown', 'quota.noPaidSwitch']) note(noticeSection, key);
   const quotaScope = note(noticeSection, 'quota.project', 'settings-note settings-quota-scope');
 
@@ -383,7 +384,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     keyManage.hidden = !direct;
     const personal = direct ? metadata('personal') : null;
     keyStatus.textContent = i18n.t(!direct ? 'settings.hubKey' : !personal ? 'settings.noKey'
-      : personal.remembered ? 'settings.rememberKey' : 'settings.keyMemory');
+      : personal.remembered ? 'settings.keyStored' : 'settings.keyMemory');
     keyStatus.setAttribute('data-key', !direct ? 'hub' : !personal ? 'none' : personal.remembered ? 'remembered' : 'memory');
     deleteButton.disabled = personal === null;
     if (deleteButton.disabled && confirmingDelete) showDeleteConfirm(false);
@@ -401,7 +402,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     sharedEvent.textContent = shared ? i18n.t('settings.event', { event: shared.eventName }) : '';
     const until = shared && Number.isFinite(shared.usageEndsAt) ? attempt(() => i18n.formatDate(new Date(shared.usageEndsAt), { dateStyle: 'medium', timeStyle: 'short' })) : null;
     sharedUntil.hidden = !until;
-    sharedUntil.textContent = until ?? '';
+    sharedUntil.textContent = until ? `${i18n.t('settings.sharedUntil')}: ${until}` : '';
     sharedEnd.hidden = shared === null;
     sharedForm.hidden = shared !== null;
   }
@@ -443,7 +444,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
         .map((voice) => ({ voiceURI: voice.voiceURI, name: typeof voice.name === 'string' ? voice.name : voice.voiceURI,
           lang: typeof voice.lang === 'string' ? voice.lang : '' }));
       const ids = ['', ...list.map((voice) => voice.voiceURI)];
-      if (Array.from(deviceSelect.childNodes).map((option) => option.getAttribute('value')).join('\n') !== ids.join('\n')) {
+      if (deviceSelect.childNodes.length !== ids.length || Array.from(deviceSelect.childNodes).map((option) => option.getAttribute('value')).join('\n') !== ids.join('\n')) {
         for (const option of Array.from(deviceSelect.childNodes)) option.remove();
         const auto = element(doc, 'option', { attributes: { value: '' } });
         deviceSelect.append(auto);

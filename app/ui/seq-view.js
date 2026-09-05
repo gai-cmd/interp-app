@@ -74,7 +74,8 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
     sourceSelect.append(option);
   }
   const swapButton = element(doc, 'button', { className: 'btn btn-secondary seq-swap', attributes: { type: 'button' } });
-  bind.text(swapButton, 'language.swap');
+  bind.text(swapButton, 'language.swapShort');
+  bind.attribute(swapButton, 'aria-label', 'language.swap');
   const targetLabel = element(doc, 'label', { className: 'seq-pair-label', attributes: { for: 'seq-target' } });
   bind.text(targetLabel, 'language.target');
   const targetSelect = element(doc, 'select', { className: 'seq-select', attributes: { id: 'seq-target' } });
@@ -180,7 +181,10 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
   bind.attribute(textarea, 'placeholder', 'seq.textPlaceholder');
   const submitButton = element(doc, 'button', { className: 'btn btn-primary seq-submit', attributes: { type: 'submit' } });
   bind.text(submitButton, 'seq.translate');
-  form.append(textLabel, textarea, submitButton);
+  const submitHint = element(doc, 'p', { className: 'seq-hint', attributes: { id: 'seq-submit-hint' } });
+  bind.text(submitHint, 'seq.submitHint');
+  textarea.setAttribute('aria-describedby', 'seq-submit-hint');
+  form.append(textLabel, textarea, submitHint, submitButton);
   function submit() {
     const value = typeof textarea.value === 'string' ? textarea.value : '';
     if (!value.trim()) { attempt(() => textarea.focus()); return; }
@@ -251,7 +255,7 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
     const buttons = {
       retry: button('turn-retry', 'common.retry', (turnId) => call(() => engine.retry(turnId))),
       play: button('turn-play', 'seq.play', (turnId) => call(() => engine.replay(turnId, { output: replayOutput(snapshot) }))),
-      deviceReplay: button('turn-device', 'voice.device', (turnId) => call(() => engine.replay(turnId, { output: 'device' }))),
+      deviceReplay: button('turn-device', 'seq.replayDevice', (turnId) => call(() => engine.replay(turnId, { output: 'device' }))),
       stopPlayback: button('turn-stop', 'seq.stopPlayback', () => call(() => engine.cancel())),
     };
     article.append(meta, sourceBlock, translationBlock, voice, actions);

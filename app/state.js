@@ -195,7 +195,7 @@ export function createState({ defaults = APP_DEFAULTS, sessionId, now = () => Da
     },
     failTurn(turnId, { errorCode = null, messageKey: key } = {}) {
       open();
-      if (!messageKey(key) || (errorCode !== null && !/^[A-Z_]{1,40}$/.test(errorCode))) invalid();
+      if (!messageKey(key) || (errorCode !== null && !/^[A-Z][A-Z0-9_]{0,39}$/.test(errorCode))) invalid();
       return endTurn(turnId, { phase: TURN_PHASE.ERROR, errorCode,
         messageKey: key ?? (errorCode ? `error.${errorCode}` : 'error.unknown') });
     },

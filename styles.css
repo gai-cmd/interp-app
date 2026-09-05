@@ -354,3 +354,98 @@ textarea { width: 100%; resize: vertical; }
   .seq-level-bar { background: CanvasText; }
   .shell-tab[aria-selected="true"] { outline: 2px solid CanvasText; }
 }
+
+/* Settings, diagnostics and PWA share the shell's light/dark tokens. */
+.settings, .settings-section, .settings-field, .settings-key-form,
+.settings-shared-form, .diag-checks, .pwa-controls {
+  display: grid;
+  gap: var(--gap);
+  min-width: 0;
+}
+.settings-section {
+  margin-bottom: var(--gap);
+  padding: var(--gap);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.settings-section h3 { margin: 0; font-size: 1.125rem; }
+.settings-label, .diag-check-label { font-weight: 600; }
+.settings-note, .settings-terms, .diag-scope, .diag-user-start,
+.diag-check-model, .pwa-install-hint, .pwa-update-hint {
+  margin: 0;
+  color: var(--text-muted);
+}
+.settings-key-input, .settings-shared-input, .settings-select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--touch);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.settings-actions, .settings-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  min-width: 0;
+}
+.settings-confirm {
+  flex-basis: 100%;
+  padding: var(--gap);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+.settings-confirm-text { flex-basis: 100%; }
+.settings-remember, .settings-mode-option {
+  grid-template-columns: var(--touch) minmax(0, 1fr);
+  align-items: center;
+}
+.settings-checkbox, .settings-radio {
+  width: var(--touch);
+  height: var(--touch);
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.settings-remember label, .settings-mode-option label {
+  display: flex;
+  align-items: center;
+  min-height: var(--touch);
+  cursor: pointer;
+}
+.settings-key-status, .settings-shared-status { margin: 0; font-weight: 600; }
+.diag-capabilities { width: 100%; table-layout: fixed; border-collapse: collapse; margin: var(--gap) 0; }
+.diag-capabilities th, .diag-capabilities td {
+  padding: 0.5rem;
+  text-align: start;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.diag-check {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+  padding: var(--gap);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+}
+.diag-check-state { justify-self: start; }
+.diag-check-message { margin: 0; }
+.diag-check[data-state="failed"] { border-color: var(--danger); border-style: dashed; }
+.diag-check[data-state="running"] { border-color: var(--accent); border-width: 2px; }
+.pwa-controls { width: 100%; }
+.pwa-install, .pwa-update { justify-self: stretch; white-space: normal; }
+
+@media (min-width: 40rem) {
+  .shell-settings-header, .shell-settings-body { max-width: 48rem; margin-inline: auto; }
+  .diag-check { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+  .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
+  .pwa-install, .pwa-update { justify-self: start; }
+}

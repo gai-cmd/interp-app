@@ -30,7 +30,7 @@ export const DIAGNOSTIC_MESSAGE_KEYS = Object.freeze(['seq.silence', 'seq.unreco
 const network = new Set(['text', 'ptt', 'voice', 'live']);
 const identifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
 const language = (value) => typeof value === 'string' && /^(ko|en|ja)$/.test(value);
-const errorCode = (value) => typeof value === 'string' && /^[A-Z_]{1,40}$/.test(value) ? value : null;
+const errorCode = (value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(value) ? value : null;
 const resultKey = ({ providerId, keySource, kind }) => `${providerId ?? '-'}|${keySource ?? '-'}|${kind}`;
 const otherLanguage = (target) => ['ko', 'en', 'ja'].find((value) => value !== target);
 
@@ -64,9 +64,9 @@ export function tonePCM({ ms = DIAGNOSTICS_POLICY.toneMs, hz = DIAGNOSTICS_POLIC
  * another; the router refuses credentials outside the current selection.
  */
 export function createDiagnostics({ config, voiceEngine, capture = null, getAudioContext = null,
-  sessionId = 'diagnostics', now = () => Date.now(), setTimeout = globalThis.setTimeout,
+  isBusy = () => false, sessionId = 'diagnostics', now = () => Date.now(), setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout, random = Math.random } = {}) {
-  if (typeof config?.router?.call !== 'function' || typeof config.registry?.get !== 'function'
+  if (typeof isBusy !== 'function' || typeof config?.router?.call !== 'function' || typeof config.registry?.get !== 'function'
     || typeof config.keyStore?.subscribe !== 'function' || typeof config.sessionManager?.replace !== 'function'
     || (voiceEngine !== undefined && typeof voiceEngine?.speak !== 'function')
     || (capture !== null && typeof capture?.start !== 'function')
@@ -317,6 +317,8 @@ export function createDiagnostics({ config, voiceEngine, capture = null, getAudi
     },
     run(kind, options = {}) {
       if (closed) throw new ProviderError('SESSION_CLOSED');
+      // The composition root guards sequential work and update application.
+      if (isBusy()) throw new ProviderError('INVALID_REQUEST');
       if (!DIAGNOSTIC_KINDS.includes(kind) || !options || typeof options !== 'object') throw new ProviderError('INVALID_REQUEST');
       let route = null;
       if (network.has(kind)) {

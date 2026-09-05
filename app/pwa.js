@@ -32,10 +32,9 @@ export const UPDATE_RESULT = Object.freeze({ APPLIED: 'applied', NONE: 'none', U
 // Dictionary keys for each install situation (§6.1 step 9, §13.3).
 export const INSTALL_KEYS = Object.freeze({ installed: 'pwa.installed', prompt: 'pwa.install',
   ios: 'pwa.iosInstall', browser: 'pwa.browserInstall', unavailable: 'pwa.installUnavailable' });
-// Keys the update flow shows. No dedicated "close other tabs" key exists yet
-// (P1-19 report); pwa.updateAvailable stands in until the dictionary has one.
+// Keys the update flow shows for each deferral reason.
 export const UPDATE_KEYS = Object.freeze({ available: 'pwa.updateAvailable', active: 'pwa.updateAvailable',
-  otherTabs: 'pwa.updateAvailable' });
+  otherTabs: 'pwa.closeOtherTabs' });
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
@@ -211,12 +210,13 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
       notify();
       try {
         const count = await api.countClients();
-        if (count === null || count > PWA_POLICY.maxClientsForUpdate) {
+        if (count === null || count !== PWA_POLICY.maxClientsForUpdate) {
           return Object.freeze({ result: UPDATE_RESULT.OTHER_TABS, count });
         }
         // Re-check: a turn may have started while the count was pending.
         if (isBusy() || !waiting) return Object.freeze({ result: waiting ? UPDATE_RESULT.ACTIVE : UPDATE_RESULT.NONE });
         const reply = await ask(waiting, 'interp:apply-update');
+        if (reply?.type === 'interp:update-deferred') return Object.freeze({ result: UPDATE_RESULT.OTHER_TABS });
         if (reply?.type !== 'interp:updating') return Object.freeze({ result: UPDATE_RESULT.FAILED });
         requested = true;
         return Object.freeze({ result: UPDATE_RESULT.APPLIED, release: versionOf({ type: 'interp:release', release: reply.release }) });

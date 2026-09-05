@@ -8,7 +8,7 @@ import { checkSource } from '../scripts/check-i18n.mjs';
 import { TURN_PHASE } from '../app/state.js';
 import {
   AUDIO_CONTEXT_OPTIONS, INSTALL_HINT_STORAGE_KEY, UI_LANGUAGE_STORAGE_KEY, applyManifestLanguage,
-  captureSharedFragment, readUiLanguage, startApp, usableStorage, writeUiLanguage,
+  autoStart, captureSharedFragment, readUiLanguage, startApp, usableStorage, writeUiLanguage,
 } from '../app/main.js';
 import { createSocketFixture } from './fixtures/live.mjs';
 import { response as geminiResponse } from './fixtures/gemini.mjs';
@@ -241,8 +241,8 @@ test('main.js: exports only, guarded browser entry, no logging, existing diction
   assert.deepEqual(checkSource(source, dictionaries.en), []);
   assert.equal(/console\.|innerHTML|outerHTML|insertAdjacentHTML|innerText|\beval\(|document\.write/.test(source), false);
   assert.match(source, /typeof window !== 'undefined'/, 'the entry call is guarded');
-  assert.ok(source.indexOf('captureSharedFragment({ location') < source.indexOf('loadI18n({ fetch'), 'fragment first, i18n second');
-  assert.ok(source.indexOf('loadI18n({ fetch') < source.indexOf('createAppConfig({'), 'config after i18n');
+  assert.ok(source.indexOf('captureSharedFragment({ location') < source.indexOf('loadMessages({ fetch'), 'fragment first, i18n second');
+  assert.ok(source.indexOf('loadMessages({ fetch') < source.indexOf('createAppConfig({'), 'config after i18n');
   const keyPattern = /^[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/;
   const literals = [...source.matchAll(/(['"`])([^'"`\r\n]+)\1/g)].map((match) => match[2]).filter((value) => keyPattern.test(value));
   assert.ok(literals.length > 0);
@@ -556,4 +556,66 @@ test('captureSharedFragment strips first and delivers once', () => {
   assert.equal(none.deliver({ receiveSharedFragment: () => { throw new Error('unexpected'); } }), false);
   assert.throws(() => captureSharedFragment({ location: { hash: '#a', pathname: '/' }, history: { replaceState() { throw new Error('SECRET'); } } }),
     (error) => error.code === 'URL_CLEANUP_FAILED');
+});
+
+test('boot failure is visible without exposing errors when i18n fetch rejects or hangs', async () => {
+  for (const hang of [false, true]) {
+    const b = createBrowser({ hash: fragment() });
+    let timeout, cleared = 0;
+    const requests = [];
+    b.win.fetch = (_url, options) => {
+      requests.push(options);
+      return hang ? new Promise(() => {}) : Promise.reject(new Error('SECRET fetch'));
+    };
+    const pending = startApp({ window: b.win,
+      setTimeout(fn) { timeout = fn; return 1; }, clearTimeout() { cleared++; } });
+    if (hang) { await tick(); timeout(); }
+    assert.equal(await pending, null);
+    assert.equal(b.win.location.hash, '');
+    assert.equal(b.root.textContent, dictionaries.en['error.NETWORK_ERROR']);
+    assert.equal(b.root.getAttribute('role'), 'alert');
+    assert.equal(b.root.getAttribute('lang'), 'en');
+    assert.equal(b.container.registrations.length, 0);
+    assert.equal(b.audio.contexts.length, 0);
+    assert.ok(cleared > 0);
+    if (hang) assert.ok(requests.every((request) => request.signal.aborted));
+    assert.doesNotMatch(b.root.textContent, /SECRET/);
+  }
+});
+
+test('initialization failures clean gesture listeners and show dictionary text; SW and audio failures do not blank the shell', async () => {
+  const broken = createBrowser();
+  Object.defineProperty(broken.win, 'speechSynthesis', { get() { throw new Error('SECRET getter'); } });
+  assert.equal(await startApp({ window: broken.win }), null);
+  assert.equal(broken.doc.listenerCount, 0);
+  assert.equal(broken.root.textContent, ko['error.unknown']);
+  assert.equal(broken.root.getAttribute('role'), 'alert');
+
+  const b = createBrowser();
+  Object.defineProperty(b.win, 'localStorage', { get() { throw new Error('SECRET storage'); } });
+  b.container.register = async () => { throw new Error('SECRET worker'); };
+  b.win.AudioContext = class { constructor() { throw new Error('SECRET audio'); } };
+  const app = await startApp({ window: b.win });
+  assert.ok(app);
+  b.doc.dispatch('pointerdown');
+  assert.equal(app.getAudioContext(), null);
+  assert.ok(el(b, 'shell'));
+  await tick();
+  assert.equal(app.pwa.snapshot().registered, false);
+  await app.close();
+});
+
+
+test('automatic entry waits for DOM readiness and starts the first load', async () => {
+  const b = createBrowser();
+  b.doc.readyState = 'loading';
+  const pending = autoStart(b.win);
+  assert.equal(b.ops.filter((op) => op.startsWith('fetch')).length, 0);
+  b.doc.readyState = 'interactive';
+  b.doc.dispatch('DOMContentLoaded');
+  const app = await pending;
+  assert.ok(app);
+  assert.ok(el(b, 'shell'));
+  assert.equal(b.container.registrations.length, 1);
+  await app.close();
 });

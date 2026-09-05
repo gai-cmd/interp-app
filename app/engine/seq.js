@@ -35,10 +35,10 @@ const silence = Object.freeze({ sourceText: '', translatedText: '', detectedLang
  * Live socket and, when shared use ends, clear the in-memory conversation.
  * Records stay OFF (§14.1). close() ends everything; the engine is then dead.
  */
-export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS = null, getAudioContext,
+export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS = null, getAudioContext, isBusy = () => false,
   sessionId = globalThis.crypto.randomUUID(), setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout, now = () => Date.now(), random = Math.random } = {}) {
-  if (typeof config?.router?.call !== 'function' || typeof config.keyStore?.subscribe !== 'function'
+  if (typeof isBusy !== 'function' || typeof config?.router?.call !== 'function' || typeof config.keyStore?.subscribe !== 'function'
     || typeof config.resolveFallback !== 'function' || typeof capture?.start !== 'function'
     || (voiceEngine !== undefined && typeof voiceEngine?.speak !== 'function')
     || (voiceEngine === undefined && typeof getAudioContext !== 'function')) {
@@ -50,6 +50,8 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
     sessionManager: config.sessionManager, ...timing });
   let active = null, serial = 0, closed = false;
   const ensureOpen = () => { if (closed) throw new ProviderError('SESSION_CLOSED'); };
+  // The composition root guards diagnostics and update application.
+  const ensureStart = () => { ensureOpen(); if (isBusy()) throw new ProviderError('INVALID_REQUEST'); };
   const record = (turnId) => store.snapshot().turns.find((turn) => turn.turnId === turnId) ?? null;
   const stale = (turn) => turn.signal.aborted || store.snapshot().generation !== turn.generation;
 
@@ -168,7 +170,7 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
     get sessionId() { return store.snapshot().sessionId; },
     // From a user gesture: cancels playback synchronously, then opens the mic.
     startRecording() {
-      ensureOpen();
+      ensureStart();
       abortActive();
       const turnId = `turn-${++serial}`;
       store.beginTurn({ turnId, input: 'voice' });
@@ -194,7 +196,7 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
       return Object.freeze({ turnId: turn.turnId, done: turn.done });
     },
     submitText(text) {
-      ensureOpen();
+      ensureStart();
       if (!validText(text)) throw new ProviderError('INVALID_REQUEST');
       abortActive();
       const turnId = `turn-${++serial}`;
@@ -204,7 +206,7 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
     },
     // Reprocesses the same record from its source text; no duplicate turn.
     retry(turnId) {
-      ensureOpen();
+      ensureStart();
       const current = record(turnId);
       if (!current || !terminal.has(current.phase) || !current.sourceText) throw new ProviderError('INVALID_REQUEST');
       abortActive();
@@ -213,7 +215,7 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
     },
     // Re-reads a completed translation, typically with device speech (§9.3).
     replay(turnId, { output = 'device' } = {}) {
-      ensureOpen();
+      ensureStart();
       const current = record(turnId);
       if (!current || current.phase !== TURN_PHASE.COMPLETED || !['provider', 'device'].includes(output)) throw new ProviderError('INVALID_REQUEST');
       abortActive();
@@ -245,6 +247,7 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
       ensureOpen();
       store.setVoice(options);
     },
+    subscribeVoice(listener) { return voice.subscribe?.(listener) ?? (() => {}); },
     snapshot() {
       return Object.freeze({ closed, activeTurnId: active?.turnId ?? null,
         recording: Boolean(active?.captureSession), voice: voice.snapshot?.() ?? null });

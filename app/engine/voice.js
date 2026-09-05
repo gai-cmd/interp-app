@@ -67,12 +67,28 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
   let lease = null, leaseSignature = null, active = null, queue = Promise.resolve(), serial = 0, closed = false;
   let cooling = null, cooldown = null, suspended = null, lastLiveError = null;
 
+  const listeners = new Set();
+  function snapshot() {
+    return Object.freeze({ live: suspended ? 'suspended' : cooling ? 'cooling' : 'ready',
+      suspendedCode: suspended, lastLiveError, retries: policy.retries,
+      sessionOpen: lease !== null && manager.isCurrent(lease.generation),
+      generation: lease?.generation ?? null, active: active !== null, firstAudio: active?.firstAudio === true });
+  }
+  function notify() {
+    const value = snapshot();
+    for (const listener of [...listeners]) {
+      try { listener(value); } catch { /* Consumer-owned failure. */ }
+    }
+  }
+
+  const unsubscribeManager = manager.subscribe?.(notify) ?? (() => {});
+
   function onEvent(event) {
-    if (event.type === 'closed') { if (lease && event.generation === lease.generation) lease = null; return; }
+    if (event.type === 'closed') { if (lease && event.generation === lease.generation) lease = null; notify(); return; }
     const turn = active;
     if (!turn || turn.settled || turn.generation !== event.generation) return;
     if (event.type === 'audio') {
-      if (!turn.firstAudio) { turn.firstAudio = true; clearTimeout(turn.firstTimer); policy.activity(); }
+      if (!turn.firstAudio) { turn.firstAudio = true; clearTimeout(turn.firstTimer); policy.activity(); notify(); }
       turn.player?.enqueue(event.audio);
     } else if (event.type === 'transcript' && typeof event.text === 'string') {
       turn.said += event.text.slice(0, Math.max(0, VOICE_POLICY.maxTranscriptChars - turn.said.length));
@@ -82,20 +98,22 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
   function recordLiveFailure(error) {
     const code = error.code;
     lastLiveError = code;
-    if (turnLocal.has(code)) return;
-    if (!Object.hasOwn(coolable, code)) { suspended = code; return; }
-    if (cooling) return;
+    if (turnLocal.has(code)) { notify(); return; }
+    if (!Object.hasOwn(coolable, code)) { suspended = code; notify(); return; }
+    if (cooling) { notify(); return; }
     const wait = new ProviderError(coolable[code]);
     if (Number.isFinite(error.retryAfterMs) && error.retryAfterMs >= 0) wait.retryAfterMs = error.retryAfterMs;
     const controller = new AbortController();
     cooldown = controller;
     cooling = policy.wait(wait, { closed: true, signal: controller.signal }).then(() => {
-      if (cooldown === controller) { cooling = null; cooldown = null; }
+      if (cooldown === controller) { cooling = null; cooldown = null; notify(); }
     }, (failure) => {
       if (cooldown !== controller) return;
       cooling = null; cooldown = null;
       if (failure.code === 'BUDGET_EXHAUSTED') suspended = 'BUDGET_EXHAUSTED';
+      notify();
     });
+    notify();
   }
 
   async function openSession(turn, route, request) {
@@ -114,6 +132,7 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
       const next = await opening;
       lease = next; leaseSignature = signature;
       policy.opened();
+      notify();
       return next;
     } finally { turn.signal.removeEventListener('abort', abort); }
   }
@@ -233,6 +252,7 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
     const abort = () => turn.controller.abort();
     context.signal?.addEventListener('abort', abort, { once: true });
     active = turn;
+    notify();
     try {
       const allowDevice = request.allowDeviceFallback !== false && deviceTTS !== null;
       if (output === 'device') return finish(await deviceTurn(turn, request, { fallback: false }));
@@ -251,6 +271,7 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
       context.signal?.removeEventListener('abort', abort);
       if (active === turn) active = null;
       turn.finish();
+      notify();
     }
   }
 
@@ -275,6 +296,7 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
       const pending = cooldown;
       cooling = null; cooldown = null;
       pending?.abort();
+      notify();
     },
     async close() {
       closed = true;
@@ -286,12 +308,15 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
       try { deviceTTS?.cancel?.(); } catch { /* Device speech is best effort. */ }
       await manager.close().catch(() => {});
       lease = null;
+      notify();
+      unsubscribeManager();
+      listeners.clear();
     },
-    snapshot() {
-      return Object.freeze({ live: suspended ? 'suspended' : cooling ? 'cooling' : 'ready',
-        suspendedCode: suspended, lastLiveError, retries: policy.retries,
-        sessionOpen: lease !== null && manager.isCurrent(lease.generation),
-        generation: lease?.generation ?? null, active: active !== null, firstAudio: active?.firstAudio === true });
+    snapshot,
+    subscribe(listener) {
+      if (typeof listener !== 'function') throw new ProviderError('INVALID_REQUEST');
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   });
 }

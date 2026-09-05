@@ -20,8 +20,8 @@
 //   update may apply (after interpretation ends and no other tab is open,
 //   P1-19) and posts 'interp:apply-update'; only then does the worker skip
 //   waiting and claim its clients on activate.
-// - Activate deletes caches of other releases with the same prefix and
-//   leaves every other cache alone.
+// - Activate preserves older release caches: an older tab may still need
+//   them. Retention/garbage collection needs a separate release policy.
 //
 // Message protocol (page -> worker; replies go to event.ports[0] when a
 // MessageChannel port is supplied, else to event.source):
@@ -77,10 +77,6 @@ async function fromShell(key, request) {
 }
 
 async function cleanup() {
-  const names = await self.caches.keys();
-  await Promise.all(names
-    .filter((name) => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
-    .map((name) => self.caches.delete(name)));
   if (applyRequested) await self.clients.claim();
 }
 
@@ -115,9 +111,13 @@ self.addEventListener('message', (event) => {
       .then((clients) => reply({ type: 'interp:clients', count: clients.length }));
     if (typeof event.waitUntil === 'function') event.waitUntil(counting);
   } else if (type === 'interp:apply-update') {
-    applyRequested = true;
-    reply({ type: 'interp:updating', release: RELEASE.id });
-    const skipping = self.skipWaiting();
+    const skipping = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clients) => {
+      // A tab may have opened since the page's earlier count request.
+      if (clients.length !== 1) { reply({ type: 'interp:update-deferred' }); return; }
+      applyRequested = true;
+      reply({ type: 'interp:updating', release: RELEASE.id });
+      await self.skipWaiting();
+    }).catch(() => reply({ type: 'interp:update-deferred' }));
     if (typeof event.waitUntil === 'function') event.waitUntil(skipping);
   }
 });

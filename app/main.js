@@ -13,7 +13,8 @@
 //      engine and diagnostics; mount the shell; diagnostics; settings; PWA.
 // Teardown: settings -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
-import { loadI18n } from './i18n/index.js';
+import fallbackDictionary from './i18n/en.json' with { type: 'json' };
+import { createI18n, loadI18n } from './i18n/index.js';
 import { bootstrapSharedKey } from './security/bootstrap.js';
 import { redact } from './security/redact.js';
 import { createAppConfig } from './config.js';
@@ -26,6 +27,7 @@ import { createDiagnostics } from './engine/diagnostics.js';
 import { mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
 import { resolveKey } from './ui/errors.js';
+import { withDeadline } from './engine/retry.js';
 import { TURN_PHASE } from './state.js';
 import { createPwa, createPwaControls, UPDATE_KEYS } from './pwa.js';
 
@@ -33,6 +35,8 @@ import { createPwa, createPwaControls, UPDATE_KEYS } from './pwa.js';
 export const UI_LANGUAGE_STORAGE_KEY = 'interp-app.ui.v1.language';
 export const INSTALL_HINT_STORAGE_KEY = 'interp-app.ui.v1.install-hint';
 export const ROOT_ID = 'app';
+// Application startup deadline, not a provider retry budget.
+export const BOOT_TIMEOUT_MS = 10000;
 // Live voice audio is 24 kHz PCM (P1-10 player); the context is created once.
 export const AUDIO_CONTEXT_OPTIONS = Object.freeze({ sampleRate: 24000 });
 export const PROVIDER_ID = 'gemini';
@@ -93,7 +97,7 @@ export function captureSharedFragment({ location, history }) {
  *   setLanguage, close }. A failed start renders the failure as dictionary
  * text inside root and resolves null; nothing is logged.
  */
-export async function startApp({ window: win, root: givenRoot, fetch: fetcher = win?.fetch?.bind?.(win),
+async function bootApp({ window: win, root: givenRoot, fetch: fetcher = win?.fetch?.bind?.(win),
   setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win) } = {}) {
   const doc = win?.document;
   const nav = win?.navigator;
@@ -102,14 +106,15 @@ export async function startApp({ window: win, root: givenRoot, fetch: fetcher = 
     throw new Error('INVALID_REQUEST');
   }
   const timing = { setTimeout: schedule, clearTimeout: cancelTimer };
-  const showFailure = (i18n, code) => { root.textContent = i18n ? i18n.t(resolveKey(i18n, `error.${code}`)) : ''; };
+  const loadMessages = (options) => withDeadline((signal) => loadI18n({ ...options, signal }), { ...timing, timeoutMs: BOOT_TIMEOUT_MS });
+  const showFailure = (i18n, code) => showBootFailure(root, i18n, code);
 
   // 1. The fragment leaves the URL before i18n is fetched or storage is read.
   let shared;
   try {
     shared = captureSharedFragment({ location: win.location, history: win.history });
   } catch (error) {
-    const i18n = await loadI18n({ fetch: fetcher, languages: nav.languages ?? [] }).catch(() => null);
+    const i18n = await loadMessages({ fetch: fetcher, languages: nav.languages ?? [] }).catch(() => null);
     showFailure(i18n, redact(error).code);
     return null;
   }
@@ -119,60 +124,63 @@ export async function startApp({ window: win, root: givenRoot, fetch: fetcher = 
   const remembered = readUiLanguage(storage);
   let i18n;
   try {
-    i18n = await loadI18n({ fetch: fetcher, languages: nav.languages ?? [], ...(remembered ? { language: remembered } : {}) });
-  } catch { return null; }
+    i18n = await loadMessages({ fetch: fetcher, languages: nav.languages ?? [], ...(remembered ? { language: remembered } : {}) });
+  } catch { showFailure(null, 'NETWORK_ERROR'); return null; }
   applyManifestLanguage(doc, i18n.language);
 
-  // 3. Configuration; storage is offered only when it is actually usable.
-  const config = createAppConfig({ fetch: fetcher, WebSocket: win.WebSocket, Blob: win.Blob, storage: storage ?? undefined, ...timing });
-  const startupNotices = [];
-  try { shared.deliver(config.keyStore); } catch (error) { startupNotices.push(`error.${redact(error).code}`); }
-  if (storage) {
-    try { config.keyStore.loadPersonal(PROVIDER_ID); } catch (error) {
-      // A corrupt stored value is removed; the user re-enters the key.
-      attempt(() => config.keyStore.deleteKey(PROVIDER_ID, 'personal'));
-      startupNotices.push(`error.${redact(error).code}`);
-    }
-  }
-
-  // 4. Audio: one 24 kHz context, created and resumed inside a user gesture.
+  let config = null, engine = null, voiceEngine = null, capture = null, store = null;
+  let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   let audioContext = null;
-  function getAudioContext() {
-    const Context = win.AudioContext ?? win.webkitAudioContext;
-    if (typeof Context !== 'function') return null;
-    if (!audioContext || audioContext.state === 'closed') {
-      audioContext = attempt(() => new Context({ ...AUDIO_CONTEXT_OPTIONS })) ?? attempt(() => new Context()) ?? null;
-    }
-    if (audioContext && audioContext.state !== 'running') attempt(() => Promise.resolve(audioContext.resume()).catch(() => {}));
-    return audioContext;
-  }
   const removers = [];
   const listen = (target, type, handler, options) => {
     if (!target?.addEventListener) return;
     target.addEventListener(type, handler, options);
     removers.push(() => attempt(() => target.removeEventListener(type, handler, options)));
   };
-  for (const type of GESTURE_EVENTS) listen(doc, type, () => { getAudioContext(); }, { capture: true, passive: true });
-
-  const deviceTTS = typeof win.speechSynthesis?.speak === 'function' && typeof win.SpeechSynthesisUtterance === 'function'
-    ? createDeviceTTS({ speechSynthesis: win.speechSynthesis, SpeechSynthesisUtterance: win.SpeechSynthesisUtterance, ...timing })
-    : null;
-  const getDeviceVoices = typeof win.speechSynthesis?.getVoices === 'function'
-    ? () => attempt(() => win.speechSynthesis.getVoices()) ?? [] : null;
-
-  // 5. One capture and one voice engine shared by the sequential engine and diagnostics.
-  let shell = null;
-  const capture = createCapture({ platform: createPlatform(win),
-    onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
-  const voiceEngine = createVoiceEngine({ router: config.router, deviceTTS, getAudioContext, sessionManager: config.sessionManager, ...timing });
-  const engine = createSeqEngine({ config, capture, voiceEngine, ...timing });
-  const store = engine.state;
-  const notify = (key) => { if (!store.closed) attempt(() => store.setNotice(resolveKey(i18n, key))); };
-
-  let settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
+  let getAudioContext, notify;
   try {
+    // 3. Configuration; storage is offered only when it is actually usable.
+    config = createAppConfig({ fetch: fetcher, WebSocket: win.WebSocket, Blob: win.Blob, storage: storage ?? undefined, ...timing });
+    const startupNotices = [];
+    try { shared.deliver(config.keyStore); } catch (error) { startupNotices.push(`error.${redact(error).code}`); }
+    if (storage) {
+      try { config.keyStore.loadPersonal(PROVIDER_ID); } catch (error) {
+        // A corrupt stored value is removed; the user re-enters the key.
+        attempt(() => config.keyStore.deleteKey(PROVIDER_ID, 'personal'));
+        startupNotices.push(`error.${redact(error).code}`);
+      }
+    }
+
+    // 4. Audio: one 24 kHz context, created and resumed inside a user gesture.
+    getAudioContext = function () {
+      const Context = win.AudioContext ?? win.webkitAudioContext;
+      if (typeof Context !== 'function') return null;
+      if (!audioContext || audioContext.state === 'closed') {
+        audioContext = attempt(() => new Context({ ...AUDIO_CONTEXT_OPTIONS })) ?? attempt(() => new Context()) ?? null;
+      }
+      if (audioContext && audioContext.state !== 'running') attempt(() => Promise.resolve(audioContext.resume()).catch(() => {}));
+      return audioContext;
+    };
+    for (const type of GESTURE_EVENTS) listen(doc, type, () => { getAudioContext(); }, { capture: true, passive: true });
+
+    const deviceTTS = typeof win.speechSynthesis?.speak === 'function' && typeof win.SpeechSynthesisUtterance === 'function'
+      ? createDeviceTTS({ speechSynthesis: win.speechSynthesis, SpeechSynthesisUtterance: win.SpeechSynthesisUtterance, ...timing })
+      : null;
+    const getDeviceVoices = typeof win.speechSynthesis?.getVoices === 'function'
+      ? () => attempt(() => win.speechSynthesis.getVoices()) ?? [] : null;
+
+    // 5. One capture and one voice engine shared by the sequential engine and diagnostics.
+    capture = createCapture({ platform: createPlatform(win),
+      onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
+    voiceEngine = createVoiceEngine({ router: config.router, deviceTTS, getAudioContext, sessionManager: config.sessionManager, ...timing });
+    engine = createSeqEngine({ config, capture, voiceEngine, ...timing,
+      isBusy: () => diagnostics?.snapshot().running != null || pwa?.snapshot().applying === true });
+    store = engine.state;
+    notify = (key) => { if (!store.closed) attempt(() => store.setNotice(resolveKey(i18n, key))); };
+
     shell = mount({ root, i18n, engine, document: doc, window: win, ...timing });
-    diagnostics = createDiagnostics({ config, voiceEngine, capture, getAudioContext, ...timing });
+    diagnostics = createDiagnostics({ config, voiceEngine, capture, getAudioContext, ...timing,
+      isBusy: () => store.snapshot().activeTurnId !== null || pwa?.snapshot().applying === true });
     const isBusy = () => (!store.closed && store.snapshot().activeTurnId !== null) || diagnostics.snapshot().running !== null;
     pwa = createPwa({ window: win, navigator: nav, isBusy, ...timing });
     const version = await pwa.getVersion();
@@ -181,9 +189,11 @@ export async function startApp({ window: win, root: givenRoot, fetch: fetcher = 
       app: { ...(version ? { version } : {}), standalone }, getDeviceVoices,
       onUiLanguageChange: (language) => { if (storage) writeUiLanguage(storage, language); applyManifestLanguage(doc, language); } });
     controls = createPwaControls({ root: settingsView.elements.appActions, document: doc, i18n, shell, pwa, notify });
-  } catch (error) {
+    listen(win.speechSynthesis, 'voiceschanged', () => settingsView.render());
+    for (const key of startupNotices) notify(key);
+  } catch {
     await teardown();
-    showFailure(i18n, redact(error).code);
+    showFailure(i18n, 'unknown');
     return null;
   }
 
@@ -211,7 +221,6 @@ export async function startApp({ window: win, root: givenRoot, fetch: fetcher = 
     attempt(() => diagnostics.cancel());
     if (event?.persisted !== true) close();
   });
-  for (const key of startupNotices) notify(key);
   // Registration happens last so it never delays the first paint.
   pwa.register();
 
@@ -223,8 +232,9 @@ export async function startApp({ window: win, root: givenRoot, fetch: fetcher = 
     settingsView?.destroy();
     await diagnostics?.close();
     shell?.destroy();
-    await engine.close();
-    await config.dispose();
+    if (engine) await engine.close();
+    else await voiceEngine?.close();
+    await config?.dispose();
     pwa?.close();
     if (audioContext) { const context = audioContext; audioContext = null; attempt(() => Promise.resolve(context.close()).catch(() => {})); }
   }
@@ -248,7 +258,39 @@ export async function startApp({ window: win, root: givenRoot, fetch: fetcher = 
   });
 }
 
-// Browser entry: nothing above runs on import; Node tests import the exports only.
+// The fallback is the existing English dictionary, loaded with the module graph,
+// independent of runtime fetch/storage/SW. No raw exception reaches the DOM.
+function showBootFailure(root, i18n, code = 'unknown') {
+  if (!root) return;
+  const messages = i18n ?? createI18n({ dictionaries: { en: fallbackDictionary }, language: 'en' });
+  root.setAttribute('role', 'alert');
+  root.setAttribute('lang', messages.language);
+  root.textContent = messages.t(resolveKey(messages, `error.${code}`));
+}
+
+export async function startApp(options = {}) {
+  const root = options.root ?? attempt(() => options.window.document.getElementById(ROOT_ID));
+  if (!root) throw new Error('INVALID_REQUEST');
+  root.removeAttribute('role');
+  root.removeAttribute('lang');
+  root.textContent = '';
+  try { return await bootApp(options); }
+  catch { showBootFailure(root); return null; }
+}
+
+// Browser entry: deferred modules normally run after parsing. Also support
+// an embedding that imports the entry before #app has been parsed.
+export function autoStart(win) {
+  const run = () => startApp({ window: win }).catch(() => {
+    showBootFailure(attempt(() => win.document.getElementById(ROOT_ID)));
+  });
+  if (win.document.readyState !== 'loading') return run();
+  return new Promise((resolve) => {
+    win.document.addEventListener('DOMContentLoaded', () => resolve(run()), { once: true });
+  });
+}
+
+// Browser entry: Node tests import the exports only.
 if (typeof window !== 'undefined' && window.document && typeof window.document.getElementById === 'function') {
-  startApp({ window }).catch(() => {});
+  autoStart(window);
 }

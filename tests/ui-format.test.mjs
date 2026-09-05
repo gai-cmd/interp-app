@@ -158,7 +158,7 @@ test('errors.js maps status, phase, error, voice and actions to safe dictionary 
   assert.equal(errorKey(new ProviderError('SESSION_CLOSED')), 'error.SESSION_CLOSED');
   assert.equal(errorKey(new Error('SECRET')), 'error.PROVIDER_ERROR');
   assert.equal(errorKey(null), 'error.PROVIDER_ERROR');
-  assert.deepEqual(keySelectionKeys(null), { providerKey: null, modeKey: 'error.CREDENTIAL_REQUIRED' });
+  assert.deepEqual(keySelectionKeys(null), { providerKey: null, modeKey: 'settings.noKey' });
   assert.deepEqual(keySelectionKeys({ providerId: 'gemini', keySource: 'shared' }), { providerKey: 'providers.gemini', modeKey: 'mode.shared' });
   const idle = { activeTurnId: null, status: SEQ_STATUS.IDLE, voice: { output: 'provider' } };
   assert.deepEqual(turnActions(base, idle), { retry: false, play: true, deviceReplay: false, stopPlayback: false });
@@ -243,7 +243,7 @@ test('mount builds the shell in three languages, shows key badges and manages th
   assert.equal(h.shell.elements.panels.sequential.hidden, false);
   assert.equal(h.shell.elements.panels.simultaneous.hidden, true);
   assert.equal(h.shell.elements.panels.settings.hidden, true);
-  assert.equal(h.shell.elements.modeBadge.textContent, ko['error.CREDENTIAL_REQUIRED']);
+  assert.equal(h.shell.elements.modeBadge.textContent, ko['settings.noKey']);
   assert.equal(h.shell.elements.providerBadge.hidden, true);
   assert.equal(byClass(h.root, 'seq-ptt').textContent, ko['seq.holdToTalk']);
   assert.equal(byClass(h.root, 'seq-text').getAttribute('placeholder'), ko['seq.textPlaceholder']);
@@ -481,7 +481,7 @@ test('bubbles render provider text with textContent and offer retry, play, devic
   assert.equal(byClass(turn(), 'turn-time').hasAttribute('datetime'), true);
   const device = byClass(turn(), 'turn-device');
   assert.equal(clickable(device), true);
-  assert.equal(device.textContent, ko['voice.device']);
+  assert.equal(device.textContent, ko['seq.replayDevice']);
   device.dispatch('click');
   assert.deepEqual(h.engine.calls.at(-1), ['replay', turnId, { output: 'device' }]);
   assert.equal(h.state.snapshot().status, SEQ_STATUS.SPEAKING);

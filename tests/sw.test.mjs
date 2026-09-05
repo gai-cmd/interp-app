@@ -177,17 +177,17 @@ test('an evicted shell entry falls back to the network without being re-cached',
   assert.equal(await cache.match(url), undefined);
 });
 
-test('activate deletes other shell caches only and claims clients only after an explicit update request', async () => {
+test('activate preserves older shell caches and claims clients only after an explicit update request', async () => {
   const worker = createWorker();
   await worker.caches.open('interp-shell-old-1');
   await worker.caches.open('interp-shell-old-2');
   await worker.caches.open('records-p3');
   await worker.dispatch('install');
   await worker.dispatch('activate');
-  assert.deepEqual((await worker.caches.keys()).sort(), [CACHE, 'records-p3']);
+  assert.deepEqual((await worker.caches.keys()).sort(), [CACHE, 'interp-shell-old-1', 'interp-shell-old-2', 'records-p3'].sort());
   assert.equal(worker.calls.claim, 0);
 
-  const updating = createWorker({ clients: [{}, {}] });
+  const updating = createWorker({ clients: [{}] });
   await updating.dispatch('install');
   const port = { messages: [], postMessage(message) { this.messages.push(structuredClone(message)); } };
   await updating.dispatch('message', { data: { type: 'interp:apply-update' }, ports: [port], source: null });
@@ -229,4 +229,16 @@ test('the repository copy is the inert dev release and contains no logging, eval
   const result = await worker.dispatch('fetch', { request: worker.request(`${SCOPE}app/main.js`) });
   assert.equal(result.handled, false);
   assert.equal(worker.calls.skipWaiting + worker.calls.claim, 0);
+});
+
+
+test('worker rechecks other tabs before applying an update', async () => {
+  for (const clients of [[], [{}, {}]]) {
+    const worker = createWorker({ clients });
+    const messages = [];
+    await worker.dispatch('message', { data: { type: 'interp:apply-update' },
+      ports: [{ postMessage(value) { messages.push(structuredClone(value)); } }] });
+    assert.equal(worker.calls.skipWaiting, 0);
+    assert.deepEqual(messages, [{ type: 'interp:update-deferred' }]);
+  }
 });

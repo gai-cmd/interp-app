@@ -388,7 +388,7 @@ test('two providers show a picker; a hub-only provider blocks key entry; persona
   h.el('settings-key-form').dispatch('submit');
   assert.equal(storage.map.get('interp-app.personal-key.v1.alpha'), 'REMEMBERED-SECRET-KEY');
   assert.equal(elements.keyStatus.getAttribute('data-key'), 'remembered');
-  assert.equal(elements.keyStatus.textContent, ko['settings.rememberKey']);
+  assert.equal(elements.keyStatus.textContent, ko['settings.keyStored']);
   assert.equal(h.capRow('translate').getAttribute('data-state'), 'untested', 'a new key invalidates the old result');
   assert.equal(h.adapter.calls.length, 1, 'still no automatic check');
   assert.equal(/SECRET/.test(domText(h.root)), false);

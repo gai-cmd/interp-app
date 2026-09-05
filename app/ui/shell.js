@@ -208,6 +208,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
 
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });
   const unsubscribe = store.subscribe(render);
+  removers.push(engine.subscribeVoice?.(renderConnection) ?? (() => {}));
   listen(win, 'online', renderConnection);
   listen(win, 'offline', renderConnection);
   // Leaving the page ends the active turn so no late audio plays on return.

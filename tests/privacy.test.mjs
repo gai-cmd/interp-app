@@ -301,27 +301,51 @@ test('test fixtures, test sources and build logs contain no key-shaped secret; t
   assert.equal(root.some((name) => /^\.env/.test(name) || /\.(?:pem|key|p12)$/.test(name)), false);
 });
 
-// Product gap found by this regression (report for the P1-05/P1-12 owners):
-// when the Live socket closes abruptly (network drop, code 1006) the session
-// manager aborts the in-flight speak in the same task as the adapter's error,
-// so the engine sees ABORTED, records the line as "cancelled" and neither
-// falls back to device speech (before audio) nor reports it partial (after
-// audio). Nothing leaks, but the user reads a cancellation they never made.
-test('network drop on the Live socket falls back to device speech before audio and reports partial after audio',
-  { todo: 'session-manager/voice engine treat a closed-event abort as a user cancel; fix belongs to P1-05/P1-12' }, async (t) => {
-    const console_ = captureConsole();
-    t.after(console_.restore);
-    const b = await boot();
-    b.enterPersonalKey();
-    b.gemini.script.push(rest.translation({ translatedText: 'りんご12個' }));
-    const first = b.submitText('사과 12개');
-    await until(() => b.sockets.length === 1);
-    live.ready(b.sockets[0]);
-    await until(() => b.sockets[0].sent.length === 2);
-    b.sockets[0].finishClose(1006, `${SECRET_MARK} dropped`);
-    const dropped = await first.done;
-    assert.equal(leaks(observable(b)), false);
-    await b.close();
-    assert.deepEqual(console_.calls, []);
-    assert.deepEqual([dropped.voice.status, dropped.voice.engine, dropped.voice.fallback], ['completed', 'device', true]);
-  });
+// A remote close must not masquerade as a user cancellation.
+test('network drop on the Live socket falls back to device speech before audio and reports partial after audio', async (t) => {
+  const console_ = captureConsole();
+  t.after(console_.restore);
+  for (const afterAudio of [false, true]) {
+    for (const cancel of [false, true]) {
+      await t.test(`${cancel ? 'user cancel' : 'remote close'} ${afterAudio ? 'after' : 'before'} audio`, async (t) => {
+        const b = await boot();
+        t.after(() => b.close());
+        b.enterPersonalKey();
+        b.gemini.script.push(rest.translation({ translatedText: 'りんご12個' }));
+        const first = b.submitText('사과 12개');
+        await until(() => b.sockets.length === 1);
+        const ws = b.sockets[0];
+        live.ready(ws);
+        await until(() => ws.sent.length === 2);
+        assert.equal(b.el('shell-connection').getAttribute('data-connection'), 'connected');
+        if (afterAudio) {
+          ws.json(live.chunk());
+          await until(() => b.audio.scheduled === 1);
+        }
+        if (cancel) b.app.engine.cancel();
+        ws.finishClose(1006, `${SECRET_MARK} dropped`);
+        const dropped = await first.done;
+        assert.equal(dropped.phase, TURN_PHASE.COMPLETED);
+        assert.equal(dropped.translatedText, 'りんご12個');
+        assert.equal(b.el('shell-connection').getAttribute('data-connection'), 'idle');
+        assert.equal(leaks(observable(b)), false);
+        assert.equal(ws.sent.length, 2, 'no automatic text resend');
+        assert.equal(b.sockets.length, 1, 'no automatic reconnect');
+        if (cancel) {
+          assert.equal(dropped.voice.status, 'cancelled');
+          assert.equal(b.speech.utterances.length, 0);
+        } else if (afterAudio) {
+          assert.equal(dropped.voice.status, 'partial');
+          assert.equal(dropped.voice.errorCode, 'SESSION_CLOSED');
+          assert.equal(dropped.voice.deviceFallbackAvailable, true);
+          assert.equal(b.speech.utterances.length, 0);
+        } else {
+          assert.deepEqual([dropped.voice.status, dropped.voice.engine, dropped.voice.fallback], ['completed', 'device', true]);
+          assert.equal(b.app.voiceEngine.snapshot().lastLiveError, 'SESSION_CLOSED');
+          assert.equal(b.speech.utterances.length, 1);
+        }
+      });
+    }
+  }
+  assert.deepEqual(console_.calls, []);
+});

@@ -5,8 +5,9 @@ import { SEQ_STATUS, TURN_PHASE } from '../app/state.js';
 import { SEQ_POLICY } from '../app/engine/seq.js';
 import { DEFAULT_MODEL, FALLBACK_MODEL } from '../app/providers/gemini/config.js';
 import { validateWav } from '../app/audio/wav.js';
+import { startApp } from '../app/main.js';
 import {
-  boot, captureConsole, frames, leaks, live, rest, secrets, sharedFragment, sleep, tick, until, visible,
+  DEVICE_VOICES, boot, captureConsole, createBrowser, frames, leaks, live, rest, secrets, sharedFragment, sleep, tick, until, visible,
 } from './fixtures/scenarios.mjs';
 
 // P1-20 integration regression (design-v0.6 §17.4): the real app boots in a
@@ -123,11 +124,60 @@ test('403 ends the turn after exactly one request; a per-minute 429 waits Retry-
   });
 });
 
-// Product gap found by this regression (report for the P1-14 owner): the
-// store, the diagnostics engine and the UI mapping accept error codes matching
-// /^[A-Z_]{1,40}$/, which excludes the contract code UNKNOWN_429. The turn is
-// recorded as INVALID_REQUEST and the user reads the wrong message.
-test('unclassified 429: the turn ends after one request with UNKNOWN_429 and no automatic wait', { todo: 'app/state.js failTurn rejects codes with digits (UNKNOWN_429); fix belongs to P1-14' }, async (t) => {
+test('invalid key: a rejected key ends the turn with error.INVALID_KEY, never enters speaking and opens no socket', async (t) => {
+  await scenario(t, {}, async (b) => {
+    b.enterPersonalKey();
+    assert.equal(b.store.snapshot().voice.output, 'provider');
+    const statuses = [];
+    b.store.subscribe((snapshot) => statuses.push(snapshot.status));
+    b.gemini.script.push(rest.error(400, { rpc: 'INVALID_ARGUMENT', reason: 'API_KEY_INVALID' }));
+    const turnId = b.submitForm('사과 12개 주세요');
+    await b.idle();
+    const turn = b.turn(turnId);
+    assert.deepEqual([turn.phase, turn.errorCode, turn.messageKey, turn.voice], [TURN_PHASE.ERROR, 'INVALID_KEY', 'error.INVALID_KEY', null]);
+    assert.equal(statuses.includes(SEQ_STATUS.SPEAKING), false, 'no speaking state without a translation');
+    assert.equal(b.sockets.length, 0);
+    assert.equal(b.gemini.calls.length, 1);
+    const bubble = b.bubble(turnId);
+    assert.equal(bubble.childNodes[0].childNodes[1].textContent, ko['error.INVALID_KEY']);
+    assert.equal(bubble.getAttribute('data-phase'), TURN_PHASE.ERROR);
+    // Bubble buttons are DOM children even when hidden, so textContent of the
+    // article always carries their labels; visibility is what the user sees.
+    const [retry, play, device, stop] = bubble.childNodes[4].childNodes;
+    assert.deepEqual([visible(retry), visible(play), visible(device), visible(stop)], [true, false, false, false]);
+    assert.equal(stop.textContent, ko['seq.stopPlayback']);
+    assert.equal(b.el('shell-mode').textContent, ko['mode.personal'], 'the key stays selected; the user replaces it');
+    assert.equal(b.app.config.keyStore.getMetadata('gemini', 'personal')?.remembered, false, 'a rejected key is not deleted on its own');
+  });
+});
+
+// Regression for the cold-load voice-list race: on a cold load Chrome's speechSynthesis.getVoices()
+// returns [] until voiceschanged fires. The auto option must exist even
+// while the voice list is empty, and the late list must refresh the select.
+test('cold load: the app boots when the device voice list is still empty', async (t) => {
+  const console_ = captureConsole();
+  t.after(console_.restore);
+  const voices = [];
+  const browser = createBrowser({ deviceVoices: voices });
+  const app = await startApp({ window: browser.win, setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout });
+  assert.deepEqual(console_.calls, []);
+  assert.ok(app, `startApp resolved null; #app shows: ${browser.root.textContent}`);
+  t.after(() => app.close());
+  const select = app.settingsView.elements.deviceSelect;
+  assert.equal(select.childNodes.length, 1);
+  assert.equal(select.childNodes[0].textContent, ko['language.auto']);
+  voices.push(...DEVICE_VOICES);
+  browser.synth.voicesChanged();
+  assert.equal(select.childNodes.length, 4);
+  assert.equal(browser.sockets.length, 0);
+  assert.ok(browser.root.childNodes[0]?.classes.has('shell'));
+  await until(() => browser.container.registrations.length === 1);
+  await app.close();
+  assert.equal(browser.synth.listenerCount, 0);
+});
+
+// Numeric contract codes survive state, diagnostics and rendering.
+test('unclassified 429: the turn ends after one request with UNKNOWN_429 and no automatic wait', async (t) => {
   await scenario(t, {}, async (b) => {
     b.enterPersonalKey();
     b.setVoiceOutput('off');
@@ -139,6 +189,10 @@ test('unclassified 429: the turn ends after one request with UNKNOWN_429 and no 
     assert.equal(b.gemini.calls.length, 1, 'an unclassified 429 does not wait or retry (§9.2)');
     assert.deepEqual([unknown.phase, unknown.errorCode, unknown.messageKey], [TURN_PHASE.ERROR, 'UNKNOWN_429', 'error.UNKNOWN_429']);
     assert.equal(b.bubble(unknown.turnId).childNodes[0].childNodes[1].textContent, ko['error.UNKNOWN_429']);
+    b.gemini.script.push(rest.unknown429());
+    const checked = await b.app.diagnostics.run('text').done;
+    assert.equal(checked.errorCode, 'UNKNOWN_429');
+    assert.equal(checked.messageKey, 'error.UNKNOWN_429');
   });
 });
 
@@ -326,7 +380,7 @@ test('voice partial failure: a Live failure before any audio falls back to devic
     assert.equal(bubble.childNodes[3].textContent, ko['voice.partialFailure']);
     const deviceButton = bubble.childNodes[4].childNodes[2];
     assert.equal(visible(deviceButton), true, 'the device re-read button is offered');
-    assert.equal(deviceButton.textContent, ko['voice.device']);
+    assert.equal(deviceButton.textContent, ko['seq.replayDevice']);
     b.clickTurn(second.turnId, 'turn-device');
     await b.idle();
     const reread = b.turn(second.turnId);
@@ -449,5 +503,23 @@ test('key change mid-turn: saving a new personal key aborts the request and clos
     const third = await b.submitText('사과 12개').done;
     assert.equal(third.phase, TURN_PHASE.COMPLETED);
     assert.equal(b.gemini.calls[2].headers['x-goog-api-key'], `${secrets.personal}-NEW`, 'the next request uses the new key');
+  });
+});
+
+test('sequential work and diagnostics never overlap capture or playback', async (t) => {
+  await scenario(t, {}, async (b) => {
+    b.enterPersonalKey();
+    const recording = b.app.engine.startRecording();
+    assert.throws(() => b.app.diagnostics.run('playback'), (error) => error.code === 'INVALID_REQUEST');
+    assert.equal(b.audio.scheduled, 0);
+    await b.app.engine.cancel();
+    await recording.done;
+    const check = b.app.diagnostics.run('microphone');
+    assert.throws(() => b.app.engine.startRecording(), (error) => error.code === 'INVALID_REQUEST');
+    assert.throws(() => b.app.engine.submitText('hello'), (error) => error.code === 'INVALID_REQUEST');
+    await check.cancel();
+    assert.equal((await check.done).state, 'cancelled');
+    b.setVoiceOutput('off');
+    assert.equal((await b.submitText('사과 12개').done).phase, TURN_PHASE.COMPLETED);
   });
 });
