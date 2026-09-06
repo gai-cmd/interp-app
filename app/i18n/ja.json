@@ -299,5 +299,15 @@
   "diagnostics.ttsFirstStartMs": "最初のデバイス音声開始イベントまで（ms）",
   "diagnostics.ttsWaitMs": "デバイス音声の待機時間（ms）",
   "diagnostics.skippedSentences": "読み上げを省略した文の数",
-  "diagnostics.speechFailures": "デバイス音声の失敗回数"
+  "diagnostics.speechFailures": "デバイス音声の失敗回数",
+  "share.open": "共有 (QR)",
+  "share.title": "アプリを共有",
+  "share.close": "閉じる",
+  "share.imageAlt": "公開アプリのQRコード",
+  "share.urlLabel": "サイトURL",
+  "share.copy": "コピー",
+  "share.hint": "QRを読み取るとこのアプリが開きます · ホーム画面に追加",
+  "share.deployment": "このQRは現在のアドレスではなく公開サイト https://gai-cmd.github.io/interp-app/ を開きます。",
+  "share.copied": "URLをコピーしました。",
+  "share.copyFailed": "コピーできませんでした。URLを選択して手動でコピーしてください。"
 }

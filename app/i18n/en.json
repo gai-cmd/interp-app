@@ -299,5 +299,15 @@
   "diagnostics.ttsFirstStartMs": "Time to first device speech start event (ms)",
   "diagnostics.ttsWaitMs": "Device speech wait (ms)",
   "diagnostics.skippedSentences": "Speech sentences skipped",
-  "diagnostics.speechFailures": "Device speech failures"
+  "diagnostics.speechFailures": "Device speech failures",
+  "share.open": "Share (QR)",
+  "share.title": "Share this app",
+  "share.close": "Close",
+  "share.imageAlt": "QR code for the deployed app",
+  "share.urlLabel": "Site URL",
+  "share.copy": "Copy",
+  "share.hint": "Scan the QR code to open this app · Add to Home Screen",
+  "share.deployment": "This QR opens the deployed site https://gai-cmd.github.io/interp-app/ rather than the current address.",
+  "share.copied": "URL copied.",
+  "share.copyFailed": "Could not copy. Select the URL and copy it manually."
 }

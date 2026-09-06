@@ -299,5 +299,15 @@
   "diagnostics.ttsFirstStartMs": "첫 기기 음성 시작 이벤트까지(ms)",
   "diagnostics.ttsWaitMs": "기기 음성 대기(ms)",
   "diagnostics.skippedSentences": "생략한 음성 문장 수",
-  "diagnostics.speechFailures": "기기 음성 실패 횟수"
+  "diagnostics.speechFailures": "기기 음성 실패 횟수",
+  "share.open": "공유 (QR)",
+  "share.title": "사이트 공유",
+  "share.close": "닫기",
+  "share.imageAlt": "앱 배포 주소 QR 코드",
+  "share.urlLabel": "사이트 URL",
+  "share.copy": "복사",
+  "share.hint": "QR을 스캔하면 이 앱이 열립니다 · 홈 화면에 추가",
+  "share.deployment": "이 QR은 현재 주소가 아닌 배포 사이트 https://gai-cmd.github.io/interp-app/ 를 엽니다.",
+  "share.copied": "URL을 복사했습니다.",
+  "share.copyFailed": "복사하지 못했습니다. 아래 URL을 선택해 직접 복사하세요."
 }
