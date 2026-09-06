@@ -27,9 +27,12 @@ const decode = (base64) => Uint8Array.from(atob(base64), (char) => char.charCode
 async function scenario(t, options, run) {
   const console_ = captureConsole();
   t.after(console_.restore);
-  // P3-02e: the first screen is simultaneous interpretation; these sequential
-  // scenarios run as a device that remembered the sequential tab.
+  // P3-02e: the first screen is simultaneous interpretation, and since the
+  // owner's 2026-09-06 change every launch opens there whatever was used last.
+  // These are sequential scenarios, so they switch tab the way a person does.
   const b = await boot({ ...options, storage: { [UI_TAB_STORAGE_KEY]: 'sequential', ...(options.storage ?? {}) } });
+  await b.app.shell.switchTab('sequential');
+  assert.equal(b.app.shell.selectedTab, 'sequential');
   try { await run(b); } finally { await b.close(); }
   assert.deepEqual(console_.calls, [], 'nothing was logged');
   assert.equal(leaks(b.store.snapshot()), false, 'no key in the final state');

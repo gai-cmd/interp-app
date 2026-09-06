@@ -823,8 +823,9 @@ test('P2 direct credentials are checked before permission; a pending permission 
   assert.equal(b.win.listenerCount, 0);
 });
 
-// P3-02e: first screen, remembered tab, key badge, key retention note.
-test('P3-02e the first visit opens simultaneous interpretation; the last tab is remembered per device; the key badge opens the key entry', async t => {
+// P3-02e: first screen, key badge, key retention note. Owner, 2026-09-06:
+// every launch opens on simultaneous interpretation, whatever was used last.
+test('P3-02e every launch opens simultaneous interpretation; the key badge opens the key entry', async t => {
   const b = await start(); t.after(() => b.app.close());
   assert.equal(b.app.shell.selectedTab, 'simultaneous');
   assert.equal(b.app.shell.elements.panels.simultaneous.hidden, false);
@@ -832,8 +833,10 @@ test('P3-02e the first visit opens simultaneous interpretation; the last tab is 
   assert.equal(b.storage.has(UI_TAB_STORAGE_KEY), false, 'the default is not written');
   await b.app.shell.switchTab('sequential');
   assert.equal(b.storage.get(UI_TAB_STORAGE_KEY), 'sequential');
+  // The last tab is still recorded, but it no longer decides the first screen:
+  // interpretation is what the app is for, so that is where it opens.
   const remembered = await start({ storage: { [UI_TAB_STORAGE_KEY]: 'sequential' } }); t.after(() => remembered.app.close());
-  assert.equal(remembered.app.shell.selectedTab, 'sequential');
+  assert.equal(remembered.app.shell.selectedTab, 'simultaneous');
   const corrupt = await start({ storage: { [UI_TAB_STORAGE_KEY]: 'settings' } }); t.after(() => corrupt.app.close());
   assert.equal(corrupt.app.shell.selectedTab, 'simultaneous');
   const bare = await start({ withStorage: false }); t.after(() => bare.app.close());

@@ -508,7 +508,10 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     shell = mount({ root, i18n, engine: gatedEngine, listenEngines, hubs,
       beforeTabChange: stopWork, document: doc, window: win, ...timing,
       // The last tab is remembered per device; the first visit opens simultaneous interpretation.
-      initialTab: readUiTab(storage) ?? DEFAULT_TAB,
+      // Owner, 2026-09-06: every launch opens on simultaneous interpretation.
+      // The last tab is still recorded (readUiTab keeps its callers and the
+      // stored value stays valid), but it no longer decides the first screen.
+      initialTab: DEFAULT_TAB,
       onTabChange: (tab) => { if (storage) writeUiTab(storage, tab); onTabChanged?.(tab); } });
     // P3-15: every UI language change (header toggle, settings select,
     // app.setLanguage) is persisted and reflected in the manifest link here.

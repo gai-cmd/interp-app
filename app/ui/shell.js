@@ -23,7 +23,8 @@ import { createSheetGroup } from './sheet.js';
 
 export const TABS = Object.freeze(['sequential', 'simultaneous']);
 // P3-02e: simultaneous interpretation is the first screen (owner report
-// 2026-09-06); the app remembers the last selected tab through initialTab.
+// 2026-09-06). initialTab still exists for callers that want to open
+// elsewhere, but the app always launches on this one (owner, same day).
 export const DEFAULT_TAB = 'simultaneous';
 // Settings targets a caller may ask the dialog to focus (P3-02e: key entry;
 // P3-15: the display section, until P3-20 gives the display button its own sheet).
