@@ -755,6 +755,47 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 /* P3-02c caption board: inline in the tab, or a captions-only full screen.
    The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
+/* P3-20: the display controls, mounted both in the header's 화면 sheet and in
+   the settings screen. One rule set serves both mounts, so the two entry points
+   look the same as well as behaving the same. Radios keep a full touch target
+   and wrap instead of clipping at XL text. */
+.display-controls { display: grid; gap: var(--gap); min-width: 0; }
+.display-title { margin: 0; font-size: 1.125rem; }
+.display-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.display-legend { flex: 1 0 100%; padding: 0; font-weight: 700; }
+.display-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch);
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.display-input { min-width: 1.25rem; min-height: 1.25rem; }
+.display-option:has(.display-input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.display-option:has(.display-input:disabled) { color: var(--text-muted); cursor: not-allowed; }
+.display-hint { flex: 1 0 100%; margin: 0; color: var(--text-muted); }
+.display-captions-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+.display-captions-slider { flex: 1 1 8rem; min-width: 0; min-height: var(--touch); }
+.display-captions-smaller, .display-captions-larger { min-width: var(--touch); min-height: var(--touch); }
+.display-captions-value { min-width: 5ch; font-variant-numeric: tabular-nums; }
+.display-preview { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.display-preview-title { margin: 0 0 var(--space-2); font-size: 1rem; }
+.display-preview-sample { margin: 0; font-size: var(--caption-size, 1.5rem); overflow-wrap: anywhere; }
+.display-not-saved { color: var(--warning); }
+
 /* P3-18: the caption board's own size and contrast controls sit next to the
    board, because the caption scale (§1.10) is separate from the app-wide text
    size and is read at a distance. The row wraps so XL text and Japanese never

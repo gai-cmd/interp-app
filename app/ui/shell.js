@@ -221,7 +221,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   // returns to whatever had it before (P3-16).
   const sheetGroup = createSheetGroup({ document: doc, background: inertTargets });
   const settingsSheet = sheetGroup.register({ id: 'shell-settings', element: settings,
-    openers: [settingsButton, modeBadge, displayButton], initialFocus: settingsClose,
+    openers: [settingsButton, modeBadge], initialFocus: settingsClose,
     // Notified after focus landed on the close button, so a listener that wants
     // a specific entry (P3-02e 'key') wins over the default focus.
     onOpened(target) {
@@ -234,11 +234,30 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     settingsSheet.open(SETTINGS_TARGETS.includes(target) ? target : null);
   }
   function closeSettings() { settingsSheet.close(); }
-  // The display entry point (P3-15); P3-20 replaces the target with its sheet.
-  function openDisplay() { openSettings('display'); }
+
+  // P3-20: the header's display entry point is its own sheet, not a jump into
+  // the settings dialog. The controls inside are mounted by the app into
+  // displayBody and are the SAME component the settings screen mounts, driven
+  // by one appearance state, so the two entry points cannot disagree.
+  const display = element(doc, 'section', { className: 'shell-display sheet', attributes: { id: 'shell-display',
+    role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'shell-display-title' } });
+  const displayHeader = element(doc, 'div', { className: 'shell-display-header sheet-header' });
+  const displayTitle = element(doc, 'h2', { className: 'sheet-title', attributes: { id: 'shell-display-title' } });
+  bind.text(displayTitle, 'display.title');
+  const displayClose = element(doc, 'button', { className: 'btn btn-secondary shell-display-close', attributes: { type: 'button' } });
+  bind.text(displayClose, 'common.close');
+  displayHeader.append(displayTitle, displayClose);
+  const displayBody = element(doc, 'div', { className: 'shell-display-body sheet-body' });
+  display.append(displayHeader, displayBody);
+  const displaySheet = sheetGroup.register({ id: 'shell-display', element: display,
+    openers: [displayButton], initialFocus: displayClose });
+  function openDisplay() { displaySheet.open(); }
+  function closeDisplay() { displaySheet.close(); }
+
   listen(settingsButton, 'click', () => openSettings());
   listen(modeBadge, 'click', () => openSettings('key'));
   listen(displayButton, 'click', openDisplay);
+  listen(displayClose, 'click', closeDisplay);
   listen(settingsClose, 'click', closeSettings);
 
   // P2-25: new UI implementation; no translation, Live or QR generation code is ported.
@@ -310,7 +329,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     if (key === 'share.copyFailed') attempt(() => { shareURL.focus(); shareURL.select(); });
   });
 
-  app.append(header, notice, message, tabs, main, settings, share);
+  app.append(header, notice, message, tabs, main, settings, display, share);
 
   // Header layout (P3-15). Desktop puts the tab row inside the header between
   // the title and the badges; below 64rem it is its own row under the header
@@ -325,10 +344,10 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     app.setAttribute('data-layout', layout);
     if (desktop) {
       header.append(title, tabs, badges, actions);
-      app.append(header, notice, message, main, settings, share);
+      app.append(header, notice, message, main, settings, display, share);
     } else {
       header.append(title, badges, actions);
-      app.append(header, notice, message, tabs, main, settings, share);
+      app.append(header, notice, message, tabs, main, settings, display, share);
     }
     if (active && active !== doc.activeElement && attempt(() => app.contains(active))) attempt(() => active.focus());
     return layout;
@@ -446,10 +465,12 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       // P3-15: the action row, the language toggle and the display/share entry points.
       actions, languages, languageButtons: Object.freeze({ ...languageButtons }), displayButton, shareButton,
       panels: Object.freeze({ sequential: panels.sequential, simultaneous: panels.simultaneous, settings, settingsBody, settingsClose,
+        display, displayBody, displayClose,
         share, shareClose, shareURL, shareCopy, shareStatus, shareImage, shareDeployment }) }),
     get selectedTab() { return selected; },
     get settingsOpen() { return !settings.hidden; },
     get shareOpen() { return !share.hidden; },
+    get displayOpen() { return !display.hidden; },
     get layout() { return layout; },
     setLanguage,
     onLanguageChange(listener) {
@@ -466,7 +487,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       settingsOpenListeners.add(listener);
       return () => settingsOpenListeners.delete(listener);
     },
-    openDisplay,
+    openDisplay, closeDisplay,
     openShare, closeShare,
     render,
     destroy() {

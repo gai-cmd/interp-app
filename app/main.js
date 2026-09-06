@@ -50,6 +50,7 @@ import { createDiagnostics } from './engine/diagnostics.js';
 import { DEFAULT_TAB, TABS, mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
 import { createAppearance } from './ui/appearance.js';
+import { createDisplayControls } from './ui/display-view.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
 import { ACTIONS, PolicyError, createPolicyRuntime, isPolicyError } from './policy/runtime.js';
@@ -201,6 +202,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
 
   let config = null, engine = null, voiceEngine = null, capture = null, store = null;
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
+  const displayViews = [];
   let audioContext = null, closing = null;
   let simEngine = null, hubEngine = null, listenEngines = null;
   let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null, appearance = null;
@@ -548,13 +550,25 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       metrics: { snapshot: () => simEngine.snapshot().metrics,
         subscribe: fn => simEngine.subscribe(() => fn()) } });
     controls = createPwaControls({ root: settingsView.elements.appActions, document: doc, i18n, shell, pwa, notify });
+    // P3-20: the display controls of §1.12 section 1 are mounted twice — the
+    // header's 화면 sheet and the settings screen — from the same component
+    // over the same appearance state and the same preference store. Neither
+    // mount keeps a value, so a change in one is visible in the other at once.
+    for (const [instance, host] of [['sheet', shell.elements.panels.displayBody],
+      ['settings', settingsView.elements.displayControls]]) {
+      const view = createDisplayControls({ appearance, i18n, document: doc, preferences,
+        policy: policyRuntime, instance });
+      host.append(view.element);
+      displayViews.push(view);
+      removers.push(shell.onLanguageChange(() => view.refresh()));
+    }
     // P3-02e: the key badge and the simultaneous screen's "open settings"
     // action land on the key entry; a stored key can still be gone on this
     // device (iOS keeps separate storage for Safari and the home-screen app
     // and evicts script storage after seven days without use), so the key
     // section says that the key may have to be entered again here.
-    // P3-15: the header display button lands on the display section (its
-    // first control is the UI language select until P3-20 adds the rest).
+    // P3-20: the header display button now opens its own sheet, so the
+    // 'display' target only arrives from inside the settings screen itself.
     removers.push(shell.onSettingsOpen((target) => {
       const focusTarget = target === 'key' ? settingsView.elements.keyInput
         : target === 'display' ? settingsView.elements.uiSelect : null;
@@ -618,6 +632,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Own listeners first, then the P1-16 order: policy -> settings ->
     // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
+    for (const view of displayViews.splice(0)) attempt(() => view.destroy());
     appearance?.destroy();
     policyRuntime?.close();
     policyClient?.stop();

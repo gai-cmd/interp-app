@@ -877,7 +877,7 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   const app = h.root.childNodes[0];
   assert.equal(h.shell.layout, SHELL_LAYOUTS.STACKED);
   assert.equal(app.getAttribute('data-layout'), 'stacked');
-  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings sheet', 'share-dialog sheet']);
+  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings sheet', 'shell-display sheet', 'share-dialog sheet']);
   const header = h.shell.elements.header;
   assert.deepEqual(classNames(header), ['shell-title', 'shell-badges', 'shell-actions']);
   assert.deepEqual(classNames(h.shell.elements.actions),
@@ -904,21 +904,27 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   // Header focus order = DOM order = visual order: key badge, KO, EN, JA, display, share, settings.
   assert.deepEqual(focusableIds(header),
     ['shell-mode', 'shell-language', 'shell-language', 'shell-language', 'shell-display-button', 'share-button', 'shell-settings-button']);
-  // The display button opens the settings dialog on the display section until P3-20 mounts its sheet.
+  // P3-20: the display button now opens its own sheet, not the settings dialog.
   const targets = [];
   h.shell.onSettingsOpen((target) => targets.push(target));
   h.shell.elements.displayButton.focus();
   h.shell.elements.displayButton.dispatch('click');
-  assert.equal(h.shell.settingsOpen, true);
-  assert.deepEqual(targets, ['display']);
+  assert.equal(h.shell.displayOpen, true);
+  assert.equal(h.shell.settingsOpen, false, 'the display sheet is not the settings dialog');
+  assert.deepEqual(targets, [], 'opening the display sheet does not ask the settings view to focus anything');
   assert.equal(h.shell.elements.displayButton.getAttribute('aria-expanded'), 'true');
-  assert.equal(h.shell.elements.settingsButton.getAttribute('aria-expanded'), 'true');
-  assert.equal(h.doc.activeElement, h.shell.elements.panels.settingsClose);
-  h.shell.openDisplay();
-  assert.deepEqual(targets, ['display', 'display'], 'an open dialog still forwards the target');
-  h.shell.closeSettings();
+  assert.equal(h.shell.elements.settingsButton.getAttribute('aria-expanded'), 'false');
+  assert.equal(h.doc.activeElement, h.shell.elements.panels.displayClose);
+  // The two sheets stay mutually exclusive (P3-16).
+  h.shell.openSettings();
+  assert.equal(h.shell.displayOpen, false);
   assert.equal(h.shell.elements.displayButton.getAttribute('aria-expanded'), 'false');
+  h.shell.closeSettings();
   assert.equal(h.doc.activeElement, h.shell.elements.displayButton, 'focus returns to the display button');
+  h.shell.openDisplay();
+  h.shell.closeDisplay();
+  assert.equal(h.shell.displayOpen, false);
+  assert.equal(h.doc.activeElement, h.shell.elements.displayButton);
   assert.deepEqual(SETTINGS_TARGETS, ['key', 'display']);
   assert.deepEqual(h.engine.calls, []);
 });
@@ -991,11 +997,11 @@ test('P3-15 desktop header: the 64rem query moves the tab row between the title 
   assert.equal(headerMedia.listenerCount, 1);
   const app = h.root.childNodes[0];
   const header = h.shell.elements.header;
-  const stacked = ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings sheet', 'share-dialog sheet'];
+  const stacked = ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings sheet', 'shell-display sheet', 'share-dialog sheet'];
   assert.equal(h.shell.layout, SHELL_LAYOUTS.DESKTOP);
   assert.equal(app.getAttribute('data-layout'), 'desktop');
   assert.deepEqual(classNames(header), ['shell-title', 'shell-tabs', 'shell-badges', 'shell-actions']);
-  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-main', 'shell-settings sheet', 'share-dialog sheet']);
+  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-main', 'shell-settings sheet', 'shell-display sheet', 'share-dialog sheet']);
   assert.deepEqual(focusableIds(header), ['tab-sequential', 'tab-simultaneous', 'shell-mode', 'shell-language', 'shell-language', 'shell-language',
     'shell-display-button', 'share-button', 'shell-settings-button']);
   assert.equal(h.view.layout, SEQ_LAYOUTS.STACKED, 'the window query is the header\'s; the sequential view keeps the document\'s');
