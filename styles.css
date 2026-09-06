@@ -698,6 +698,15 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   grid-template-columns: var(--touch) minmax(0, 1fr);
   align-items: center;
 }
+/* The control and its label take the two columns; anything else in the row
+   (the storage warning under "remember this key") is a full-width line. A
+   third child used to land in the 44px control column, which squeezed a
+   Japanese sentence into one character per line on a phone. */
+.settings-remember > :not(.settings-checkbox):not(.settings-radio):not(label),
+.settings-mode-option > :not(.settings-checkbox):not(.settings-radio):not(label) {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
 .settings-checkbox, .settings-radio {
   width: var(--touch);
   height: var(--touch);

@@ -1256,3 +1256,18 @@ test('P3-22 a shared event key is never masked, revealed or offered a toggle', (
   assert.throws(() => h.keyStore.revealPersonal('nope'), { code: 'UNKNOWN_PROVIDER' });
   assert.equal(h.keyStore.revealPersonal('alpha'), null, 'nothing stored, nothing revealed');
 });
+
+test('styles: a note beside a checkbox takes the whole row, not the control column', async () => {
+  const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  // The row is a two-column grid: the control, then its label.
+  const row = css.slice(css.indexOf('.settings-remember, .settings-mode-option {'));
+  assert.match(row, /grid-template-columns:\s*var\(--touch\) minmax\(0, 1fr\)/);
+  // Anything else in that row spans both columns. Without this a third child
+  // lands in the 44px control column, which squeezed the Japanese storage
+  // warning into one character per line on a phone.
+  const span = css.slice(css.indexOf('.settings-remember > :not('));
+  assert.ok(span.startsWith('.settings-remember > :not('), 'the span rule exists');
+  assert.match(span.slice(0, 400), /grid-column:\s*1 \/ -1/);
+  assert.match(span.slice(0, 400), /\.settings-mode-option > :not\(/);
+  assert.match(span.slice(0, 400), /min-width:\s*0/);
+});
