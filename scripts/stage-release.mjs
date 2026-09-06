@@ -22,7 +22,7 @@ export const ENTRY_FILE = 'index.html';
 export const WORKER_FILE = 'sw.js';
 export const HEADERS_FILE = '_headers';
 export const MANIFEST_FILES = Object.freeze(SUPPORTED_LANGUAGES.map((language) => `manifest.${language}.webmanifest`));
-export const ICON_FILES = Object.freeze(['icons/icon-192.png', 'icons/icon-512.png', 'icons/qr-site.png']);
+export const ICON_FILES = Object.freeze(['icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon-180.png', 'icons/favicon-32.png', 'icons/favicon-16.png', 'icons/favicon.ico', 'icons/qr-site.png']);
 export const ROOT_COPIED_FILES = Object.freeze([HEADERS_FILE, ...MANIFEST_FILES, ...ICON_FILES]);
 export const ROOT_FILES = Object.freeze([ENTRY_FILE, WORKER_FILE, ...ROOT_COPIED_FILES]);
 
