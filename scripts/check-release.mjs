@@ -9,8 +9,23 @@ import { join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   ENTRY_BOOT_FILE, ENTRY_FILE, ENTRY_MODULE_FILE, HEADERS_FILE, RELEASES_DIRECTORY, RELEASE_ID_PATTERN,
-  RELEASE_MANIFEST, ROOT_FILES, WORKER_FILE, isVersionedPath, readRelease, shellFor,
+  POLICY_FILE, RELEASE_MANIFEST, ROOT_FILES, WORKER_FILE, isVersionedPath, readRelease, shellFor,
 } from './stage-release.mjs';
+// P3-36: the deployed policy is checked with the app's own validator and the
+// app's own version, so a release cannot ship a policy the app would reject.
+import { validatePolicy } from '../app/policy/schema.js';
+import { findForbidden } from '../app/admin/policy-editor.js';
+import { APP_VERSION, parseVersion } from '../app/version.js';
+
+/** -1 / 0 / 1 comparing two numeric triplets; an unparsable one sorts lowest. */
+function compareVersions(left, right) {
+  const a = parseVersion(left) ?? [0, 0, 0];
+  const b = parseVersion(right) ?? [0, 0, 0];
+  for (let index = 0; index < 3; index++) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  }
+  return 0;
+}
 
 // Key-shaped strings (§11.2). Add patterns; never add real values as tests.
 export const SECRET_PATTERNS = Object.freeze([
@@ -200,6 +215,38 @@ async function loadEndpointOrigins(releaseDir) {
  * endpointOrigins, each release's own app/config.js is imported (the shipped
  * code is the reference for CSP connect-src).
  */
+/**
+ * P3-36: the deployed policy must be a policy the app would accept. A release
+ * that ships an invalid one is a release that blocks every start (§1.5), and a
+ * policy that carries a credential is a public file leaking one — neither may
+ * be deployed, so both are refused here rather than discovered in production.
+ *
+ * The check runs the SAME validator the app runs; there is no looser build-time
+ * version of it.
+ */
+export async function checkDeployedPolicy(root) {
+  const issues = [];
+  let text;
+  try { text = await readFile(join(root, POLICY_FILE), 'utf8'); }
+  catch { return [{ code: 'RELEASE_POLICY_MISSING', path: POLICY_FILE }]; }
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return [{ code: 'RELEASE_POLICY_INVALID', path: POLICY_FILE }]; }
+  // A credential in the public policy file, whatever produced it.
+  const forbidden = findForbidden(parsed);
+  for (const path of forbidden) issues.push({ code: 'RELEASE_POLICY_SECRET', path: `${POLICY_FILE}/${path}` });
+  const result = validatePolicy(parsed);
+  if (!result.ok) {
+    for (const issue of result.issues) {
+      issues.push({ code: 'RELEASE_POLICY_INVALID', path: `${POLICY_FILE}/${issue.path || ''}` });
+    }
+  } else if (compareVersions(result.policy.minAppVersion, APP_VERSION) > 0) {
+    // A policy demanding a newer app than the one being deployed locks the
+    // release out of its own site.
+    issues.push({ code: 'RELEASE_POLICY_VERSION', path: `${POLICY_FILE}/minAppVersion` });
+  }
+  return issues;
+}
+
 export async function checkRelease({ dir, endpointOrigins } = {}) {
   let root;
   try {
@@ -207,6 +254,7 @@ export async function checkRelease({ dir, endpointOrigins } = {}) {
     if (!(await lstat(root)).isDirectory()) throw new Error();
   } catch { return { ok: false, issues: [{ code: 'RELEASE_DIR_INVALID' }], releases: [], current: null }; }
   const { files, issues } = await listFiles(root);
+  issues.push(...await checkDeployedPolicy(root));
   const releases = new Set();
   for (const path of files) {
     const kind = classifyPath(path);

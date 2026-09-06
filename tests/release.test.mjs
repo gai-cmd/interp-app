@@ -652,3 +652,55 @@ test('P3-35 a rollback moves the entry files and leaves the deployed policy alon
   assert.match(await readFile(join(out, 'admin/index.html'), 'utf8'), /releases\/old\//);
   assert.match(await readFile(join(out, 'index.html'), 'utf8'), /releases\/old\//);
 });
+
+test('P3-36 a release may not ship a policy the app would reject', async (t) => {
+  const directory = await temp(t);
+  const root = await fixtureSource(directory);
+  const out = join(directory, 'out');
+  await stageRelease({ id: 'p36', out, root, now: () => new Date('2026-09-06T00:00:00Z') });
+  const good = await readFile(join(out, 'policy.json'), 'utf8');
+  const codesFor = async () => (await checkRelease({ dir: out })).issues.map((issue) => issue.code);
+
+  assert.deepEqual(await codesFor(), [], 'the repository policy passes');
+
+  // Unparsable, missing, and schema-invalid all block the deploy.
+  await writeFile(join(out, 'policy.json'), '{not json');
+  assert.ok((await codesFor()).includes('RELEASE_POLICY_INVALID'));
+  await rm(join(out, 'policy.json'));
+  assert.ok((await codesFor()).includes('RELEASE_POLICY_MISSING'));
+  await writeFile(join(out, 'policy.json'), JSON.stringify({ schemaVersion: 99 }));
+  assert.ok((await codesFor()).includes('RELEASE_POLICY_INVALID'), 'the app\'s own validator decides');
+
+  // A credential in the public policy file is refused, not merely reported as
+  // an unknown field.
+  const withKey = { ...JSON.parse(good), sharedEvents: [{ id: 'e', key: 'SHOULD-NOT-SHIP' }] };
+  await writeFile(join(out, 'policy.json'), JSON.stringify(withKey));
+  assert.ok((await codesFor()).includes('RELEASE_POLICY_SECRET'));
+
+  // A policy demanding a newer app than the one being deployed would lock the
+  // release out of its own site.
+  const future = { ...JSON.parse(good), minAppVersion: '99.0.0' };
+  await writeFile(join(out, 'policy.json'), JSON.stringify(future));
+  assert.ok((await codesFor()).includes('RELEASE_POLICY_VERSION'));
+
+  await writeFile(join(out, 'policy.json'), good);
+  assert.deepEqual(await codesFor(), []);
+});
+
+test('P3-36 both HTML entries are checked, and _headers passing is not a deployment fact', async (t) => {
+  const directory = await temp(t);
+  const root = await fixtureSource(directory);
+  const out = join(directory, 'out');
+  const staged = await stageRelease({ id: 'p36b', out, root, now: () => new Date('2026-09-06T00:00:00Z') });
+  // Two entry points ship, and both point at this release.
+  for (const entry of ['index.html', 'admin/index.html']) {
+    assert.ok(staged.files.includes(entry), entry);
+    assert.match(await readFile(join(out, entry), 'utf8'), /releases\/p36b\//, entry);
+  }
+  // The header file itself is only a file: the checklist says so, because
+  // GitHub Pages does not apply it.
+  const headers = await readFile(join(out, '_headers'), 'utf8');
+  assert.match(headers, /GitHub Pages does not apply this file/);
+  const checklist = await readFile(join(repoRoot, 'docs/release-checklist.md'), 'utf8');
+  assert.match(checklist, /_headers/, 'the checklist records the unverified header state');
+});
