@@ -13,8 +13,8 @@
   <!-- P3-13 appearance boot: a classic synchronous script placed before the stylesheet so the saved
        mode/tone/text reach <html> before the first paint. The release check allows exactly this script
        plus the app/main.js module; no other script, inline code, handler or style may be added. -->
-  <script src="./releases/p3-voice-20260906/app/ui/appearance-boot.js"></script>
-  <link rel="stylesheet" href="./releases/p3-voice-20260906/styles.css">
+  <script src="./releases/p3-models-20260906/app/ui/appearance-boot.js"></script>
+  <link rel="stylesheet" href="./releases/p3-models-20260906/styles.css">
   <!-- Install assets are P1-17 files; the links stay unresolved until they ship. -->
   <link rel="manifest" href="./manifest.ko.webmanifest">
   <link rel="icon" href="./icons/favicon.ico" sizes="16x16 32x32 48x48">
@@ -26,6 +26,6 @@
 <body>
   <div id="app" class="app"></div>
   <!-- P1-19 bootstrap: cleans the URL fragment, builds config/engine and calls mount() from app/ui/shell.js. -->
-  <script type="module" src="./releases/p3-voice-20260906/app/main.js"></script>
+  <script type="module" src="./releases/p3-models-20260906/app/main.js"></script>
 </body>
 </html>
