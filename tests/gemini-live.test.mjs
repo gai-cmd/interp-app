@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGeminiLive } from '../app/providers/gemini/live.js';
 import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD, DEFAULT_LIVE_MODEL, LIVE_MODEL_CONFIG,
-  sanitizeLiveModel, liveRoute, detectReply } from '../app/providers/gemini/live-config.js';
+  sanitizeLiveModel, liveRoute, detectReply, LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, LIVE_GENDER_VOICES,
+  LIVE_VOICE_POLICY_FIELDS, resolveLiveVoice, createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
+import { VOICE_NAMES } from '../app/providers/gemini/voice.js';
 import { ProviderError } from '../app/providers/contract.js';
 import { createGeminiLiveClient } from '../app/providers/gemini/live-client.js';
 import { fakeClock, fakeLive, pcmContent, request } from './fixtures/gemini-live.mjs';
@@ -28,7 +30,8 @@ test('fixed models have isolated translation/flash setup for all supported langu
     assert.deepEqual(s.realtimeInputConfig.automaticActivityDetection, LIVE_VAD);
     assert.equal(LIVE_VAD.silenceDurationMs, 400);
     assert.equal(s.sourceLanguage, undefined);
-    assert.equal(s.generationConfig.speechConfig, undefined);
+    // P3-02d: the default voice (female Kore) is applied on both routes.
+    assert.deepEqual(s.generationConfig.speechConfig, { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } });
     if (model === LIVE_MODELS[0]) {
       assert.equal(Object.hasOwn(s, 'systemInstruction'), false);
       assert.deepEqual(s.generationConfig.translationConfig, { targetLanguageCode: targetLanguage, echoTargetLanguage: false });
@@ -40,7 +43,79 @@ test('fixed models have isolated translation/flash setup for all supported langu
   }
   assert.throws(() => buildLiveSetup({ model: 'arbitrary', targetLanguage: 'ko' }), { code: 'MODEL_UNSUPPORTED' });
   assert.throws(() => buildLiveSetup({ targetLanguage: 'xx' }), { code: 'INVALID_REQUEST' });
-  assert.throws(() => buildLiveSetup({ targetLanguage: 'ko', voice: 'Kore' }), { code: 'SETTINGS_UNSUPPORTED' });
+  // P3-02d: a registered Live voice is accepted (it was SETTINGS_UNSUPPORTED before); unknown voices are rejected.
+  assert.equal(buildLiveSetup({ targetLanguage: 'ko', voice: 'Kore' }).generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
+  assert.throws(() => buildLiveSetup({ targetLanguage: 'ko', voice: 'Nobody' }), { code: 'INVALID_REQUEST' });
+});
+
+test('voice gender maps to Kore/Orus on both routes, an explicit voice wins, and the prompt never changes', () => {
+  assert.deepEqual(LIVE_VOICE_GENDERS, ['female', 'male']);
+  assert.equal(DEFAULT_LIVE_VOICE_GENDER, 'female');
+  assert.deepEqual(LIVE_GENDER_VOICES, { female: 'Kore', male: 'Orus' });
+  assert.equal(resolveLiveVoice(), 'Kore');
+  assert.equal(resolveLiveVoice({ gender: 'male' }), 'Orus');
+  assert.equal(resolveLiveVoice({ gender: 'male', voice: 'Zephyr' }), 'Zephyr');
+  assert.throws(() => resolveLiveVoice({ gender: 'robot' }), { code: 'INVALID_REQUEST' });
+  assert.throws(() => resolveLiveVoice({ voice: 'SECRET' }), { code: 'INVALID_REQUEST' });
+  const name = (s) => s.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName;
+  for (const model of LIVE_MODELS) for (const targetLanguage of ['ko', 'en', 'ja']) {
+    const female = buildLiveSetup({ model, targetLanguage, gender: 'female' });
+    const male = buildLiveSetup({ model, targetLanguage, gender: 'male' });
+    const chosen = buildLiveSetup({ model, targetLanguage, gender: 'male', voice: 'Sulafat' });
+    assert.equal(name(female), 'Kore'); assert.equal(name(male), 'Orus'); assert.equal(name(chosen), 'Sulafat');
+    // Prompt invariance: the voice only touches speechConfig; the interpreter rules and VAD are byte-identical.
+    assert.deepEqual(female.systemInstruction, male.systemInstruction);
+    assert.deepEqual(male.systemInstruction, chosen.systemInstruction);
+    assert.deepEqual(female.realtimeInputConfig, chosen.realtimeInputConfig);
+    assert.deepEqual(female.generationConfig.translationConfig, chosen.generationConfig.translationConfig);
+    if (LIVE_MODEL_CONFIG[model].setup === 'flash') {
+      const text = female.systemInstruction.parts[0].text;
+      assert.match(text, /Ignore background music, noise, applause, laughter and crowd murmur/);
+      assert.match(text, /interpret human speech only/);
+      assert.match(text, /never answer questions/);
+      // No role persona, register or "sound human" direction (owner scope 2026-09-06).
+      assert.doesNotMatch(text, /persona|customer|staff|traveler|friend|like a human|\b(?:Kore|Orus|Sulafat|female|male)\b/i);
+    } else assert.equal(Object.hasOwn(female, 'systemInstruction'), false);
+  }
+  // Administrator policy contract: default gender and allowed voices only.
+  assert.deepEqual(Object.keys(LIVE_VOICE_POLICY_FIELDS), ['voice.gender', 'voice.allowedVoices']);
+  assert.deepEqual(LIVE_VOICE_POLICY_FIELDS['voice.gender'], { kind: 'enum', values: ['female', 'male'], default: 'female' });
+  assert.equal(LIVE_VOICE_POLICY_FIELDS['voice.allowedVoices'].values, VOICE_NAMES);
+  assert.equal(VOICE_NAMES.length, 30);
+});
+
+test('the shared voice preference decides when the request names no voice; gender resets an explicit voice', () => {
+  const pref = createLiveVoicePreference();
+  const seen = [];
+  const off = pref.subscribe((value) => seen.push(value));
+  assert.deepEqual(pref.snapshot(), { gender: 'female', voice: null, voiceName: 'Kore' });
+  assert.equal(pref.set({}), pref.snapshot());
+  pref.set({ gender: 'male' });
+  assert.deepEqual(pref.snapshot(), { gender: 'male', voice: null, voiceName: 'Orus' });
+  pref.set({ voice: 'Zephyr' });
+  assert.deepEqual(pref.snapshot(), { gender: 'male', voice: 'Zephyr', voiceName: 'Zephyr' });
+  pref.set({ gender: 'female' });
+  assert.deepEqual(pref.snapshot(), { gender: 'female', voice: null, voiceName: 'Kore' }, 'a gender choice clears the explicit voice');
+  pref.set({ voice: 'Orus' });
+  assert.deepEqual(pref.snapshot(), { gender: 'male', voice: null, voiceName: 'Orus' }, 'a gender default voice selects that gender');
+  pref.set({ voice: null });
+  assert.deepEqual(pref.snapshot(), { gender: 'male', voice: null, voiceName: 'Orus' });
+  assert.throws(() => pref.set({ gender: 'robot' }), { code: 'INVALID_REQUEST' });
+  assert.throws(() => pref.set({ voice: 'SECRET' }), { code: 'INVALID_REQUEST' });
+  assert.throws(() => pref.subscribe(null), { code: 'INVALID_REQUEST' });
+  assert.equal(seen.length, 4); off();
+  assert.ok(Object.isFrozen(pref.snapshot()));
+  // The module singleton feeds buildLiveSetup for requests without a voice (the sim engine's request).
+  const name = (s) => s.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName;
+  try {
+    liveVoicePreference.set({ gender: 'male' });
+    for (const model of LIVE_MODELS) assert.equal(name(buildLiveSetup({ model, targetLanguage: 'ja' })), 'Orus');
+    assert.equal(name(buildLiveSetup({ targetLanguage: 'ja', gender: 'female' })), 'Kore', 'an explicit request field wins');
+    liveVoicePreference.set({ voice: 'Puck' });
+    assert.equal(name(buildLiveSetup({ targetLanguage: 'ko' })), 'Puck');
+    assert.equal(name(buildLiveSetup({ targetLanguage: 'ko', voice: null })), 'Orus', 'voice null falls back to the preferred gender');
+  } finally { liveVoicePreference.set({ gender: 'female' }); }
+  assert.equal(name(buildLiveSetup({ targetLanguage: 'ko' })), 'Kore');
 });
 
 test('translation-only model is first; unknown selections and routes resolve to it', () => {
