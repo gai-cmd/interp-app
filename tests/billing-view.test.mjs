@@ -88,13 +88,16 @@ test('an unpriced model is "cannot estimate" with no number, and a partial run s
   f.view.destroy();
 });
 
-test('a personal rate is offered only where the policy allows it', () => {
+test('personal pricing is explanatory only, including policy permission changes', () => {
   const f = fixture({ table: pricing({ allowLocalOverride: false }) });
   assert.equal(f.el('billing-local-rate').hidden, true);
-  assert.equal(f.view.elements.localInput.disabled, true);
+  assert.equal(all(f.view.element, node => node.tagName === 'INPUT').length, 0);
   f.policy.set(pricing({ allowLocalOverride: true }));
   assert.equal(f.el('billing-local-rate').hidden, false);
-  assert.equal(f.view.elements.localInput.disabled, false);
+  assert.equal(all(f.view.element, node => node.tagName === 'INPUT').length, 0);
+  assert.equal(f.el('billing-local-rate').children[0].textContent, ko['billing.localRateHint']);
+  f.policy.set(pricing({ allowLocalOverride: false }));
+  assert.equal(f.el('billing-local-rate').hidden, true);
   f.view.destroy();
 });
 

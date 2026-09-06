@@ -194,7 +194,7 @@
   "billing.hubExcluded": "会場放送の受信は自分のGemini呼び出しではないため、費用を計算しません。",
   "billing.keyChanged": "キーが変わりました。プラン表示をもう一度確認してください。",
   "billing.localRate": "個人単価",
-  "billing.localRateHint": "サイトポリシーが許可した場合にのみ個人単価を入力できます。その場合も推定としてのみ表示します。",
+  "billing.localRateHint": "このバージョンではサイトポリシーに登録された単価のみを使用します。個人単価の入力には対応していません。単価がない場合は推定不可と表示します。",
   "billing.mayDiffer": "実際のGoogleプロジェクトのプランと異なる場合があります。",
   "billing.noDoubleCount": "再接続や重複した終了で時間を二重に加算することはありません。",
   "billing.notZero": "不明な費用を0として表示することはありません。",

@@ -117,14 +117,9 @@ export function createBillingView({ usage, i18n, document: doc, preferences = nu
   cost.hidden = true;
   root.append(cost);
 
-  // A personal rate is offered only where the policy allows it, and the value
-  // is still shown as an estimate (§1.13).
+  // P3-41: personal pricing is deferred until model, capability and currency
+  // can be selected together. Never offer an input that cannot be applied.
   const localRow = element(doc, 'div', { className: 'settings-field billing-local-rate' });
-  const localLabel = element(doc, 'label', { className: 'settings-label', attributes: { for: 'billing-local-rate' } });
-  bind.text(localLabel, 'billing.localRate');
-  const localInput = element(doc, 'input', { className: 'settings-input billing-local-input',
-    attributes: { id: 'billing-local-rate', type: 'text', inputmode: 'decimal', autocomplete: 'off' } });
-  localRow.append(localLabel, localInput);
   const localHint = element(doc, 'p', { className: 'settings-note' });
   bind.text(localHint, 'billing.localRateHint');
   localRow.append(localHint);
@@ -171,10 +166,9 @@ export function createBillingView({ usage, i18n, document: doc, preferences = nu
       rateVerified.hidden = verified === null;
       if (verified) rateVerified.textContent = i18n.t('billing.verifiedAt', { date: String(verified).slice(0, 10) });
     }
-    // The personal rate exists only where the administrator allows it.
+    // Explain the deferred feature when the policy permits personal rates.
     const allowed = pricing()?.allowLocalOverride === true;
     localRow.hidden = !allowed;
-    localInput.disabled = !allowed;
   }
 
   removers.push(usage.subscribe(() => render()));
@@ -184,7 +178,7 @@ export function createBillingView({ usage, i18n, document: doc, preferences = nu
   return Object.freeze({
     element: root,
     elements: Object.freeze({ planSelect, usageRow, breakdown, cost, costLine, rateSource, rateVerified,
-      rateMissing, localRow, localInput, keyChanged, displayOnly }),
+      rateMissing, localRow, keyChanged, displayOnly }),
     render,
     /** A key change asks the user to confirm the plan display again (§1.13). */
     noteKeyChange(generation) {

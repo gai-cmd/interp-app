@@ -834,3 +834,18 @@ test('one-way source hint reflects automatic and named selection', async () => {
   f.choose('spoken', 'ko'); await tick();
   assert.equal(hint.textContent, dictionaries.en['sim.sourceHint']);
 });
+
+
+test('language pair keeps source, swap and target order and key action follows its notice', async () => {
+  const f = setup({ onOpenSettings() {} });
+  const pair = f.get('language-pair');
+  assert.deepEqual(pair.children, [f.get('spoken').parentNode, f.get('swap'), f.get('target').parentNode]);
+  const section = f.get('notice').parentNode;
+  assert.equal(section.children[section.children.indexOf(f.get('notice')) + 1], f.get('open-settings'));
+  f.choose('mode', 'hub');
+  await tick();
+  assert.equal(f.get('spoken').parentNode.hidden, true);
+  assert.equal(f.get('swap').hidden, true);
+  assert.equal(f.get('target').parentNode.hidden, false);
+  f.view.destroy();
+});

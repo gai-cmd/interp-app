@@ -194,7 +194,7 @@
   "billing.hubExcluded": "Venue broadcast listening is not your own Gemini call, so no cost is calculated for it.",
   "billing.keyChanged": "The key changed. Check the plan display again.",
   "billing.localRate": "Personal rate",
-  "billing.localRateHint": "You can enter a personal rate only when the site policy allows it. Even then it is shown only as an estimate.",
+  "billing.localRateHint": "This version uses only rates published in the site policy. Personal rate entry is not supported. Without a rate, the estimate is unavailable.",
   "billing.mayDiffer": "It may differ from the actual plan of your Google project.",
   "billing.noDoubleCount": "Reconnects and duplicate stops never count time twice.",
   "billing.notZero": "Unknown costs are never shown as 0.",

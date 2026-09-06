@@ -1134,3 +1134,13 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   .btn, .badge, .card, .sheet, .turn-text { border-color: CanvasText; }
   .seq-ptt[aria-pressed="true"] { outline: 3px solid Highlight; outline-offset: -3px; }
 }
+
+/* P3-41: retain the capsule styling with a full keyboard/touch target. */
+.badge.shell-mode { min-height: var(--touch); min-width: var(--touch); cursor: pointer; }
+
+/* Language pairs follow source, swap, target in both visual and DOM order. */
+.sim-language-pair { display: grid; grid-template-columns: minmax(0, 1fr);
+  gap: var(--gap); align-items: end; flex: 1 1 100%; min-width: 0; }
+@media (min-width: 40rem) {
+  .sim-language-pair { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+}

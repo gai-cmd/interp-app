@@ -109,8 +109,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   };
   const section = node('section', 'sim', root, null, { 'data-caption-only': 'false' });
   const controls = node('div', 'sim-controls', section);
-  const select = (name, key) => {
-    const label = node('label', 'sim-field', controls);
+  const select = (name, key, parent = controls) => {
+    const label = node('label', 'sim-field', parent);
     node('span', '', label, key);
     return node('select', name, label);
   };
@@ -125,14 +125,14 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const room = node('input', 'sim-room', roomLabel, null,
     { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '128' });
   bind.attribute(room, 'placeholder', 'hub.roomCodePlaceholder');
-  // Owner, 2026-09-07: the simultaneous screen had no source language at all,
-  // so the model was left to guess what it was hearing — a Korean speaker
-  // asking for Japanese could get English. Both ends are now chosen here.
-  const sourceSelect = select('sim-spoken', 'language.source');
+  // Keep DOM and keyboard order aligned with the sequential language pair.
+  const languagePair = node('div', 'sim-language-pair', controls);
+  const sourceSelect = select('sim-spoken', 'language.source', languagePair);
   for (const value of SOURCE_OPTIONS) {
     node('option', '', sourceSelect, value === 'auto' ? 'language.auto' : `language.${value}`, { value });
   }
-  const language = select('sim-target', 'language.target');
+  const swap = node('button', 'btn btn-secondary sim-swap', languagePair, 'language.swap', { type: 'button' });
+  const language = select('sim-target', 'language.target', languagePair);
   const options = SUPPORTED_LANGUAGES.map(value => node('option', '', language, `language.${value}`, { value }));
   // Two-way (owner, 2026-09-06): one microphone, one session, and the direction
   // decided per utterance by the language heard. The target select keeps its
@@ -148,8 +148,6 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const value of LIVE_VOICE_GENDERS) node('option', '', voice, `sim.voice.${value}`, { value });
   const voiceLabel = voice.parentNode;
   const button = (name, key, parent = controls) => node('button', `btn btn-secondary ${name}`, parent, key, { type: 'button' });
-  // Placed in the source row, but built here because `button` is defined above.
-  const swap = button('sim-swap', 'language.swap', sourceSelect.parentNode);
   const start = button('sim-start', 'common.start'), stop = button('sim-stop', 'common.stop');
   const sound = button('sim-sound', 'sim.enableSound');
   const source = button('sim-source', 'sim.captions.showSource');
@@ -196,6 +194,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const output = node('p', 'sim-output', section, null, { role: 'status' });
   const broadcast = node('p', 'sim-broadcast', section, null, { role: 'status' });
   const notice = node('p', 'sim-notice', section, null, { role: 'status' });
+  section.append(openSettings);
   const meter = node('meter', 'sim-level', section, null, { min: '0', max: '100', value: '0' });
   bind.attribute(meter, 'aria-label', 'seq.inputLevel');
   // Gate state: "no speech" while only music/noise (or nothing) reaches the microphone.
@@ -556,6 +555,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     setText(sourceHint, i18n.t(spoken === 'auto' ? 'sim.sourceAuto' : 'sim.sourceHint'));
     sourceSelect.disabled = pending || hub;
     sourceSelect.parentNode.hidden = hub;
+    swap.hidden = hub;
     swap.disabled = pending || spoken === 'auto';
     renderTwoWay();
     directHints.hidden = hub; hubHints.hidden = !hub; meter.hidden = hub;
