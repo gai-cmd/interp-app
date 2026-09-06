@@ -1,6 +1,6 @@
 {
-  "id": "p3-icons-20260906",
-  "createdAt": "2026-09-06T02:59:28.917Z",
+  "id": "p3-mute-20260906",
+  "createdAt": "2026-09-06T03:02:56.224Z",
   "files": {
     "styles.css": "95335a0afeb7252d6ab7f21f555a91e2b33e9871f2b1d3b039d5f30d4f944832",
     "app/audio/caption-speaker.js": "2d97e60963036acad891c88c0c10236664b4ccde6bb9695824db17162895c0a9",
@@ -26,7 +26,7 @@
     "app/engine/segment-assembler.js": "b151738a390ddb895811fc3db32ed57a9cc74b5bf5c70a827da4bf86ba34a4ba",
     "app/engine/seq.js": "39918a4f500649c5148224318b38d517c28e7d3d929e2424c01e2ff0ba042e9d",
     "app/engine/session-manager.js": "cf8463fa8db26c4dfa00bf3a987a41c45d41e0a748866604a39b9c73f5118949",
-    "app/engine/sim.js": "a5a0bc0a88c31d8abb36582901b67b5d4fc7a93a6e894e95ec1c0b0a77df3fda",
+    "app/engine/sim.js": "5f4f14356a2d76e7050a3a5ef106c4fdaafa1b6fa0ef283f16bea5a366addafb",
     "app/engine/voice.js": "4a536c17c68cee253867a0a7ffe4747c7ef15b5a1fca403725e3bdb6d5e8d8e2",
     "app/hub/client.js": "8ca6981028e294e9efd9ba0f2c697a6949877075b6d33f1979eb41352574d403",
     "app/hub/config.js": "eb169c559f13abd9ff5adbf93a8d54389fd51ee9138566db87205384b73bca31",
