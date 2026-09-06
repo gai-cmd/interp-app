@@ -161,6 +161,7 @@
 | 날짜 | 릴리스 ID | 호스트 | URL | 검사 | 비고 |
 |---|---|---|---|---|---|
 | 2026-09-05 21:37 JST | p1-20260905 | GitHub Pages (`gai-cmd/interp-app`, 브랜치 `gh-pages`) | https://gai-cmd.github.io/interp-app/ | check-release RELEASE_OK 52 · 배포 후 curl: `/`, `sw.js`, manifest, `releases/…/app/main.js`, `i18n/ko.json` 모두 200·정확한 MIME · 헤드리스 Chrome 152 콜드 로드 스모크 통과(셸·SW 등록·설정·키 비저장·콘솔 0) | **테스트 배포**(§19 판정: 공개 출시 아님). GitHub Pages는 `_headers`(CSP·Permissions-Policy)를 적용하지 않음 → 헤더까지 필요하면 Cloudflare Pages로 이전. manifest `id`는 `/interp-app/`로 고정. 실기기(Android/iOS)·실키 검증은 미실시 |
+| 2026-09-06 · P2 | p2-20260906 | GitHub Pages (`gh-pages`) | https://gai-cmd.github.io/interp-app/ | check-release RELEASE_OK 71 · 배포 후 curl `/`, `sw.js`, `releases/p2-20260906/app/main.js`, `i18n/ja.json` 200·MIME 정확 · 헤드리스 Chrome 152 콜드 로드: 셸·SW·설정·동시통역 탭(내 폰 마이크/현장 방송 · 시작/중지/소리/원문/짧게 나눠/최신 자막) 렌더·예외 0 | **테스트 배포** · 실기기·실키·규모 검증 미실시(P2-23·24 보류) · `_headers` 미적용(GitHub Pages) |
 
 
 ## P2-20 허브 등록과 릴리스 검증
