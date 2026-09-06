@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createSimView, KEY_FAILURE_CODES, TWO_WAY_STORAGE_KEY, VOICE_GENDER_STORAGE_KEY, listenFailure, readVoiceGender } from '../app/ui/sim-view.js';
+import { createSimView, KEY_FAILURE_CODES, SIM_SOURCE_STORAGE_KEY, TWO_WAY_STORAGE_KEY, VOICE_GENDER_STORAGE_KEY, listenFailure, readVoiceGender } from '../app/ui/sim-view.js';
 import { ProviderError } from '../app/providers/contract.js';
 import { createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { BAR_HIDE_MS, CAPTION_ONLY_STORAGE_KEYS, CAPTION_SIZE, CAPTION_SIZE_STORAGE_KEY, clampCaptionSize,
@@ -712,93 +712,95 @@ test('P3-18 styles: the caption controls meet the touch target and the board siz
 
 // --- Two-way interpretation (owner, 2026-09-06) ---
 
-test('two-way: off by default, one microphone, and the pair is the target plus the other language', () => {
+test('two-way: off by default, and its two languages are the 발화 / 도착 selects', async () => {
   const storage = fakeStorage();
   const f = setup({ storage });
   const toggle = byClass(f.root, 'sim-two-way-input');
-  const partner = f.get('partner');
   assert.equal(toggle.checked, false);
-  assert.equal(partner.parentNode.hidden, true, 'the other language appears only with two-way on');
   assert.equal(byClass(f.root, 'sim-two-way-hint').hidden, true);
+  // One-way still names both ends (owner, 2026-09-07): the model must not be
+  // left guessing what it is hearing.
+  assert.equal(f.get('spoken').value, 'auto');
+  assert.equal(f.get('target').value, 'ja');
+
+  f.choose('spoken', 'ko');
+  await tick();
+  f.get('start').dispatch('click');
+  assert.deepEqual(f.direct.calls.at(-1), ['start', { targetLanguage: 'ja', sourceLanguage: 'ko' }]);
 
   toggle.checked = true; toggle.dispatch('change');
-  assert.equal(partner.parentNode.hidden, false);
-  assert.equal(byClass(f.root, 'sim-two-way-hint').textContent, dictionaries.en['sim.twoWay.hint']);
-  // The target select still names one side; the partner is the other.
-  assert.equal(f.get('target').value, 'ja');
-  assert.equal(partner.value, 'ko');
+  await tick();
   assert.equal(byClass(f.root, 'sim-two-way-pair').textContent,
-    `${dictionaries.en['language.ja']} ↔ ${dictionaries.en['language.ko']}`);
-  // One session speaks with one voice, and the screen says so.
+    `${dictionaries.en['language.ko']} ↔ ${dictionaries.en['language.ja']}`);
   assert.equal(byClass(f.root, 'sim-two-way-voice').textContent, dictionaries.en['sim.twoWay.oneVoice']);
-  assert.equal(byClass(f.root, 'sim-two-way-voice').hidden, false);
-
-  f.get('start').dispatch('click');
-  assert.deepEqual(f.direct.calls.at(-1), ['start', { targetLanguage: 'ja', languages: ['ja', 'ko'] }]);
+  // There is no third language control to disagree with the two on screen.
+  assert.equal(byClass(f.root, 'sim-partner'), undefined);
 });
 
-test('two-way: the two languages can never be the same', async () => {
+test('two-way: the pair is exactly what the two selects say, and never the same language twice', async () => {
   const f = setup({ storage: fakeStorage() });
   const toggle = byClass(f.root, 'sim-two-way-input');
-  const partner = f.get('partner');
-  toggle.checked = true; toggle.dispatch('change');
-  assert.equal(partner.value, 'ko');
-  // The option matching the target is not selectable.
-  const optionFor = (value) => partner.children.find(n => n.getAttribute('value') === value);
-  assert.equal(optionFor('ja').disabled, true, 'the target cannot also be the other side');
-  assert.equal(optionFor('ko').disabled, false);
-  assert.equal(optionFor('en').disabled, false);
-
-  partner.value = 'en'; partner.dispatch('change');
-  assert.equal(byClass(f.root, 'sim-two-way-pair').textContent,
-    `${dictionaries.en['language.ja']} ↔ ${dictionaries.en['language.en']}`);
-  // Moving the target onto the partner pushes the partner elsewhere.
-  f.choose('target', 'en');
+  f.choose('spoken', 'ko');
   await tick();
-  assert.notEqual(partner.value, 'en', 'the pair stays two different languages');
-  assert.equal(optionFor('en').disabled, true);
+  toggle.checked = true; toggle.dispatch('change');
+  await tick();
+  f.direct.calls.length = 0;
   f.get('start').dispatch('click');
-  const [, request] = f.direct.calls.at(-1);
-  assert.equal(request.languages[0], 'en');
-  assert.notEqual(request.languages[1], 'en');
-  // A malformed pair is never sent: the request is refused by the provider.
+  assert.deepEqual(f.direct.calls.at(-1),
+    ['start', { targetLanguage: 'ja', sourceLanguage: 'ko', languages: ['ko', 'ja'] }]);
+
+  // Choosing the target that is already the spoken language moves the other end
+  // away rather than asking for a no-op.
+  f.choose('target', 'ko');
+  await tick();
+  assert.notEqual(f.get('spoken').value, 'ko');
+  const [, request] = (f.direct.calls.length = 0, f.get('start').dispatch('click'), f.direct.calls.at(-1));
   assert.equal(new Set(request.languages).size, 2);
+  assert.equal(request.languages[1], request.targetLanguage);
+  assert.equal(request.languages[0], request.sourceLanguage);
+
+  // Turning two-way on while the source is automatic resolves it to a real
+  // language, because a pair needs both ends.
+  const g = setup({ storage: fakeStorage() });
+  assert.equal(g.get('spoken').value, 'auto');
+  const gt = byClass(g.root, 'sim-two-way-input');
+  gt.checked = true; gt.dispatch('change');
+  await tick();
+  assert.notEqual(g.get('spoken').value, 'auto');
+  assert.notEqual(g.get('spoken').value, g.get('target').value);
 });
 
-test('two-way: hub listening has no direction to choose, and the choice is remembered', async () => {
+test('two-way: swapping exchanges the two languages, and hub listening offers none of it', async () => {
   const storage = fakeStorage();
   const f = setup({ storage });
-  const toggle = byClass(f.root, 'sim-two-way-input');
-  toggle.checked = true; toggle.dispatch('change');
-  f.get('partner').value = 'en'; f.get('partner').dispatch('change');
-  assert.equal(storage.map.get(TWO_WAY_STORAGE_KEY), 'en');
+  f.choose('spoken', 'ko');
+  await tick();
+  byClass(f.root, 'sim-swap').dispatch('click');
+  await tick();
+  assert.equal(f.get('spoken').value, 'ja', 'the spoken language became the target');
+  assert.equal(f.get('target').value, 'ko');
+  assert.equal(storage.map.get(SIM_SOURCE_STORAGE_KEY), 'ja');
 
-  // A hub listener receives a finished broadcast: the option does not apply.
+  // A hub listener receives a finished broadcast: no direction, no source.
   f.choose('mode', 'hub');
   await tick();
   assert.equal(byClass(f.root, 'sim-two-way').hidden, true);
-  assert.equal(byClass(f.root, 'sim-two-way-hint').hidden, true);
+  assert.equal(f.get('spoken').parentNode.hidden, true);
   f.get('start').dispatch('click');
   const join = f.hub.calls.at(-1);
-  assert.equal(join[0], 'join');
-  assert.equal('languages' in join[1], false, 'a hub join carries no language pair');
+  assert.equal('sourceLanguage' in join[1], false, 'a hub join carries no spoken language');
+  assert.equal('languages' in join[1], false);
 
-  f.choose('mode', 'direct');
-  await tick();
-  assert.equal(byClass(f.root, 'sim-two-way').hidden, false);
-  // A second launch restores both the mode and the partner.
+  // The choice survives a relaunch and a late storage handover.
   const g = setup({ storage: fakeStorage(Object.fromEntries(storage.map)) });
-  assert.equal(byClass(g.root, 'sim-two-way-input').checked, true);
-  assert.equal(g.get('partner').value, 'en');
-  // A late storage handover (main.js) restores it too.
+  assert.equal(g.get('spoken').value, 'ja');
   const m = setup();
-  assert.equal(byClass(m.root, 'sim-two-way-input').checked, false);
-  m.view.setStorage(fakeStorage({ [TWO_WAY_STORAGE_KEY]: 'ko' }));
+  m.view.setStorage(fakeStorage({ [SIM_SOURCE_STORAGE_KEY]: 'ko', [TWO_WAY_STORAGE_KEY]: '1' }));
+  assert.equal(m.get('spoken').value, 'ko');
   assert.equal(byClass(m.root, 'sim-two-way-input').checked, true);
-  assert.equal(m.get('partner').value, 'ko');
-  // A corrupt stored value simply means "off".
-  const bad = setup({ storage: fakeStorage({ [TWO_WAY_STORAGE_KEY]: 'klingon' }) });
-  assert.equal(byClass(bad.root, 'sim-two-way-input').checked, false);
+  // A corrupt stored value simply means automatic.
+  const bad = setup({ storage: fakeStorage({ [SIM_SOURCE_STORAGE_KEY]: 'klingon' }) });
+  assert.equal(bad.get('spoken').value, 'auto');
 });
 
 test('two-way: changing the pair during a session keeps it running and says a restart applies it', () => {

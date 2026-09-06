@@ -253,7 +253,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     const op = { controller: new AbortController(), prepared: deferred(), ready: deferred(), done: deferred(),
       sessionId: context.sessionId, turnId: context.turnId ?? context.sessionId,
       muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {},
-      targetLanguage: request.targetLanguage, languages: pair, fallback: false };
+      targetLanguage: request.targetLanguage, sourceLanguage: request.sourceLanguage ?? null,
+      languages: pair, fallback: false };
     metrics = createListenMetrics({ now });
     // A corrupted stored selection never reaches the router: fall back to the
     // translation-only default rather than failing or steering to flash.
@@ -293,6 +294,10 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       });
     } catch { cancel(op, 'MICROPHONE_UNAVAILABLE'); }
     const input = { input: { format: 'pcm16' }, targetLanguage: request.targetLanguage,
+      // 'auto' stays out of the request: the provider layer treats an absent
+      // source as "decide from what you hear", which is the old behaviour.
+      ...(request.sourceLanguage && request.sourceLanguage !== 'auto'
+        ? { sourceLanguage: request.sourceLanguage } : {}),
       ...(pair === null ? {} : { languages: pair }), model: op.model };
     void run(op, input, { providerId: context.providerId, keySource: context.keySource });
     return Object.freeze({ ready: op.ready.promise, done: op.done.promise });

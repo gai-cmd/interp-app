@@ -34,7 +34,12 @@ test('fixed models have isolated translation/flash setup for all supported langu
     assert.deepEqual(s.generationConfig.speechConfig, { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } });
     if (model === LIVE_MODELS[0]) {
       assert.equal(Object.hasOwn(s, 'systemInstruction'), false);
-      assert.deepEqual(s.generationConfig.translationConfig, { targetLanguageCode: targetLanguage, echoTargetLanguage: false });
+      // Owner, 2026-09-07: a named spoken language is passed on, so the model
+      // is not left deciding what it heard.
+      assert.deepEqual(s.generationConfig.translationConfig,
+        { targetLanguageCode: targetLanguage, echoTargetLanguage: false, sourceLanguageCode: 'ja' });
+      assert.deepEqual(buildLiveSetup({ model, targetLanguage }).generationConfig.translationConfig,
+        { targetLanguageCode: targetLanguage, echoTargetLanguage: false }, 'no source named, nothing added');
     } else {
       assert.match(s.systemInstruction.parts[0].text, /do not wait for sentence completion/);
       assert.equal(s.generationConfig.translationConfig, undefined);

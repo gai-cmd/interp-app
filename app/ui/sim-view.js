@@ -18,15 +18,17 @@
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { normalizeError } from '../providers/contract.js';
 import { LIVE_VOICE_GENDERS, LIVE_GENDER_VOICES, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
-import { createBinder } from './seq-view.js';
+import { createBinder, SOURCE_OPTIONS } from './seq-view.js';
 import { createCaptionBoard, DEFAULT_DISPLAY } from './caption-board.js';
 import { CAPTION_SIZE, stepCaptionSize } from '../preferences.js';
 import { UNKNOWN_KEY, errorCodeKey, levelPercent, resolveKey } from './errors.js';
 
 export const VOICE_GENDER_STORAGE_KEY = 'interp-app.ui.v1.voiceGender';
-// P3 two-way (owner, 2026-09-06): the other language of the pair. Its presence
-// is what turns two-way on, so one value carries both facts.
-export const TWO_WAY_STORAGE_KEY = 'interp-app.ui.v1.twoWayPartner';
+// Two-way interpretation on/off. The two languages are the ones on screen
+// (owner, 2026-09-07), so nothing else is stored here.
+export const TWO_WAY_STORAGE_KEY = 'interp-app.ui.v1.twoWay';
+// The spoken language of the simultaneous screen; absent means automatic.
+export const SIM_SOURCE_STORAGE_KEY = 'interp-app.ui.v1.simSource';
 // Failure codes whose remedy is the key entry in settings.
 export const KEY_FAILURE_CODES = Object.freeze(['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED']);
 const codePattern = /^[A-Z][A-Z0-9_]{0,39}$/;
@@ -45,11 +47,16 @@ export function listenFailure(i18n, error) {
   const specific = `sim.error.${code}`;
   return { code, key: i18n.has(specific) ? specific : errorCodeKey(code) };
 }
-/** The remembered two-way partner language, or null when two-way is off. */
-export function readTwoWayPartner(storage) {
+/** The remembered spoken language, or null for automatic detection. */
+export function readSimSource(storage) {
   let value;
-  try { value = storage?.getItem(TWO_WAY_STORAGE_KEY); } catch { value = null; }
+  try { value = storage?.getItem(SIM_SOURCE_STORAGE_KEY); } catch { value = null; }
   return SUPPORTED_LANGUAGES.includes(value) ? value : null;
+}
+
+/** Whether two-way interpretation was left on. The languages are its own two. */
+export function readTwoWay(storage) {
+  try { return storage?.getItem(TWO_WAY_STORAGE_KEY) === '1'; } catch { return false; }
 }
 
 /** The remembered gender, or the default for a missing/corrupt value. */
@@ -82,10 +89,11 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   if (!root || !doc || !i18n?.t || !engines.direct?.subscribe) throw new Error('INVALID_REQUEST');
   const bind = createBinder(i18n), listeners = [];
   let mode = 'direct', target = SUPPORTED_LANGUAGES.includes(targetLanguage) ? targetLanguage : 'ja';
-  // Two-way state: whether it is on, and the other language of the pair. The
-  // pair is always two different languages; the partner moves out of the way
-  // when the target is changed onto it.
-  let twoWay = false, partnerLanguage = null;
+  // Two-way state: whether it is on. Its two languages are the 발화 / 도착
+  // selects, so there is no third control to keep in step.
+  let twoWay = false;
+  // 'auto' keeps the previous behaviour (the model decides from what it hears).
+  let spoken = 'auto';
   let disposed = false, pending = false, snapshot, unsubscribe, headphonesHinted = false, store = storage, speaking = false;
   // The last failure of this screen (start rejected before the engine ran, or
   // a rejected handle); the engine's own errorCode is read from the snapshot.
@@ -116,6 +124,13 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const room = node('input', 'sim-room', roomLabel, null,
     { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '128' });
   bind.attribute(room, 'placeholder', 'hub.roomCodePlaceholder');
+  // Owner, 2026-09-07: the simultaneous screen had no source language at all,
+  // so the model was left to guess what it was hearing — a Korean speaker
+  // asking for Japanese could get English. Both ends are now chosen here.
+  const sourceSelect = select('sim-spoken', 'language.source');
+  for (const value of SOURCE_OPTIONS) {
+    node('option', '', sourceSelect, value === 'auto' ? 'language.auto' : `language.${value}`, { value });
+  }
   const language = select('sim-target', 'language.target');
   const options = SUPPORTED_LANGUAGES.map(value => node('option', '', language, `language.${value}`, { value }));
   // Two-way (owner, 2026-09-06): one microphone, one session, and the direction
@@ -124,9 +139,6 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const twoWayRow = node('label', 'sim-field sim-two-way', controls);
   const twoWayInput = node('input', 'sim-two-way-input', twoWayRow, null, { type: 'checkbox', id: 'sim-two-way' });
   const twoWayText = node('span', '', twoWayRow, 'sim.twoWay');
-  const partner = select('sim-partner', 'sim.twoWay.partner');
-  const partnerOptions = SUPPORTED_LANGUAGES.map(value => node('option', '', partner, `language.${value}`, { value }));
-  const partnerLabel = partner.parentNode;
   const twoWayPair = node('p', 'sim-two-way-pair', controls, null, { role: 'status' });
   const twoWayHint = node('p', 'sim-two-way-hint', controls, 'sim.twoWay.hint');
   const twoWayVoice = node('p', 'sim-two-way-voice', controls, 'sim.twoWay.oneVoice');
@@ -135,6 +147,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const value of LIVE_VOICE_GENDERS) node('option', '', voice, `sim.voice.${value}`, { value });
   const voiceLabel = voice.parentNode;
   const button = (name, key, parent = controls) => node('button', `btn btn-secondary ${name}`, parent, key, { type: 'button' });
+  // Placed in the source row, but built here because `button` is defined above.
+  const swap = button('sim-swap', 'language.swap', sourceSelect.parentNode);
   const start = button('sim-start', 'common.start'), stop = button('sim-stop', 'common.stop');
   const sound = button('sim-sound', 'sim.enableSound');
   const source = button('sim-source', 'sim.captions.showSource');
@@ -242,11 +256,13 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     finally { pending = false; if (!disposed) render(); }
   }
   /** The two languages to interpret between, or null when one-way. */
+  /** Two-way interprets between the two languages already on screen. */
   function twoWayPair2() {
     if (!twoWay || mode !== 'direct') return null;
-    const other = partnerLanguage;
-    if (!SUPPORTED_LANGUAGES.includes(other) || other === target) return null;
-    return [target, other];
+    // Owner, 2026-09-07: the pair IS 발화 ↔ 도착. There is no third language
+    // control, so what the screen shows is what the session interprets between.
+    if (!SUPPORTED_LANGUAGES.includes(spoken) || spoken === target) return null;
+    return [spoken, target];
   }
   /** The first supported language that is not `language`. */
   const otherThan = (language) => SUPPORTED_LANGUAGES.find((value) => value !== language) ?? null;
@@ -258,20 +274,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     twoWayInput.checked = twoWay && applies;
     twoWayInput.disabled = pending;
     const on = applies && twoWay;
-    partnerLabel.hidden = !on;
-    partner.disabled = pending;
     twoWayHint.hidden = !on;
     twoWayVoice.hidden = !on;
     twoWayPair.hidden = !on;
-    for (const option of partnerOptions) {
-      // The other side cannot be the same language as this one.
-      option.disabled = option.getAttribute('value') === target;
-    }
     if (on) {
-      if (!SUPPORTED_LANGUAGES.includes(partnerLanguage) || partnerLanguage === target) {
-        partnerLanguage = otherThan(target);
-      }
-      partner.value = partnerLanguage ?? '';
       const pair = twoWayPair2();
       setText(twoWayPair, pair === null ? i18n.t('sim.twoWay.sameLanguage')
         : i18n.t('sim.twoWay.pair', { source: i18n.t(`language.${pair[0]}`), target: i18n.t(`language.${pair[1]}`) }));
@@ -279,31 +285,25 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   }
   listen(twoWayInput, 'change', () => {
     twoWay = twoWayInput.checked === true;
-    if (twoWay && (!SUPPORTED_LANGUAGES.includes(partnerLanguage) || partnerLanguage === target)) {
-      partnerLanguage = otherThan(target);
+    // Two-way has to know both ends, so an automatic source is resolved to a
+    // real language the moment it is turned on.
+    if (twoWay && (spoken === 'auto' || spoken === target)) {
+      spoken = otherThan(target) ?? spoken;
+      rememberLanguages();
     }
-    rememberTwoWay();
-    if (mode === 'direct' && running()) setText(notice, i18n.t('sim.voiceRestart'));
-    render();
-  });
-  listen(partner, 'change', () => {
-    const next = partner.value;
-    if (!SUPPORTED_LANGUAGES.includes(next) || next === target) { renderTwoWay(); return; }
-    partnerLanguage = next;
     rememberTwoWay();
     if (mode === 'direct' && running()) setText(notice, i18n.t('sim.voiceRestart'));
     render();
   });
   function rememberTwoWay() {
     try {
-      if (twoWay && partnerLanguage) store?.setItem(TWO_WAY_STORAGE_KEY, partnerLanguage);
+      if (twoWay) store?.setItem(TWO_WAY_STORAGE_KEY, '1');
       else store?.removeItem(TWO_WAY_STORAGE_KEY);
     } catch { /* Storage refusal keeps the in-memory choice. */ }
   }
   function restoreTwoWay() {
-    const remembered = readTwoWayPartner(store);
-    twoWay = remembered !== null;
-    partnerLanguage = remembered;
+    twoWay = readTwoWay(store);
+    if (twoWay && (spoken === 'auto' || spoken === target)) spoken = otherThan(target) ?? spoken;
     renderTwoWay();
   }
 
@@ -316,8 +316,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     if (mode === 'direct' && !headphonesHinted) { headphonesHinted = true; setText(notice, i18n.t('sim.headphonesStart')); }
     const pair = twoWayPair2();
     call(() => mode === 'hub' ? current().join({ hubId: venueSelect.value, roomCode: room.value, language: target })
-      : (startDirect ?? (request => current().start(request)))(
-        pair === null ? { targetLanguage: target } : { targetLanguage: target, languages: pair }));
+      : (startDirect ?? (request => current().start(request)))({
+        targetLanguage: target,
+        ...(spoken === 'auto' ? {} : { sourceLanguage: spoken }),
+        ...(pair === null ? {} : { languages: pair }) }));
   }
   const stopSession = () => call(end);
   // Manual "reopen session": physical close of the current direct session,
@@ -344,8 +346,46 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     if (next !== mode && (next === 'direct' || (next === 'hub' && engines.hub && hubs.length))) void change(() => { mode = next; board.clear(); });
   });
   listen(language, 'change', () => { const next = language.value;
-    if (SUPPORTED_LANGUAGES.includes(next) && next !== target) void change(() => { target = next; });
+    if (!SUPPORTED_LANGUAGES.includes(next) || next === target) return;
+    void change(() => {
+      target = next;
+      // Interpreting a language into itself is a no-op; the other end moves
+      // away rather than the app silently doing nothing.
+      if (spoken !== 'auto' && spoken === target) {
+        spoken = otherThan(target) ?? spoken;
+        rememberLanguages();
+      }
+    });
   });
+  listen(sourceSelect, 'change', () => {
+    const next = sourceSelect.value;
+    if (!SOURCE_OPTIONS.includes(next) || next === spoken) return;
+    // A source equal to the target would ask for a no-op; move the target away
+    // rather than silently interpreting into the language just spoken.
+    void change(() => {
+      spoken = next;
+      if (spoken !== 'auto' && spoken === target) target = SUPPORTED_LANGUAGES.find((value) => value !== spoken) ?? target;
+      rememberLanguages();
+    });
+  });
+  listen(swap, 'click', () => {
+    if (spoken === 'auto') return;
+    void change(() => { const previous = target; target = spoken; spoken = previous; rememberLanguages(); });
+  });
+  function rememberLanguages() {
+    try {
+      if (spoken === 'auto') store?.removeItem(SIM_SOURCE_STORAGE_KEY);
+      else store?.setItem(SIM_SOURCE_STORAGE_KEY, spoken);
+    } catch { /* Storage refusal keeps the in-memory choice. */ }
+  }
+  function restoreLanguages() {
+    const remembered = readSimSource(store);
+    if (remembered === null) return;
+    spoken = remembered;
+    // A remembered spoken language that equals the default target moves the
+    // target, not the choice the person actually made.
+    if (spoken === target) target = otherThan(spoken) ?? target;
+  }
   const running = () => Boolean(snapshot?.busy) || !['idle', 'stopped', 'failed'].includes(snapshot?.status);
   // A voice change never stops the session: it applies at the next start (restart notice).
   listen(voice, 'change', () => {
@@ -389,6 +429,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     showVoice(voicePreference.snapshot());
   }
   restoreVoice();
+  restoreLanguages();
   restoreTwoWay();
   for (const el of [start, fsPrimary]) listen(el, 'click', startSession);
   for (const el of [stop, fsStop]) listen(el, 'click', stopSession);
@@ -507,6 +548,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     }
     // Hub listening uses device speech, so the provider voice choice is hidden there.
     voiceLabel.hidden = hub; voice.disabled = pending;
+    sourceSelect.value = spoken;
+    sourceSelect.disabled = pending || hub;
+    sourceSelect.parentNode.hidden = hub;
+    swap.disabled = pending || spoken === 'auto';
     renderTwoWay();
     directHints.hidden = hub; hubHints.hidden = !hub; meter.hidden = hub;
     speech.hidden = hub || snapshot.status !== 'running';
@@ -558,7 +603,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   subscribe();
   return Object.freeze({ element: section, board, render,
     refresh() { if (!disposed) { bind.refresh(); board.refresh(); renderCaptionControls(); render(); } },
-    setStorage(next) { if (!disposed) { store = next; board.setStorage(next); renderCaptionControls(); restoreVoice(); restoreTwoWay(); render(); } },
+    setStorage(next) { if (!disposed) { store = next; board.setStorage(next); renderCaptionControls(); restoreVoice(); restoreLanguages(); restoreTwoWay(); render(); } },
     // P3-11: the app's event link (null detaches); the section re-renders on its changes.
     setHubControl(next) {
       if (disposed) return;
