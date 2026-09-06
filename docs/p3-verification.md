@@ -43,13 +43,13 @@ P3-01은 코드를 바꾸지 않았으므로 위 수치는 P3-00 직후 기준�
 
 | ID | 확인 | 방법 | 담당 과제 | 판정 |
 |---|---|---|---|---|
-| V01 | 430px·768px·1280px에서 가로 스크롤 없음, 본문 최대 폭(40rem·60rem), 순차 데스크톱 좌 24rem·우 가변 2열 | 실제 브라우저 창 크기 변경·스크린샷 | P3-12·17 | P3-12 부분(본문 최대 폭 40rem·60rem, min-width 브레이크포인트) 구현 완료·미검증. 순차 2열은 P3-17 |
-| V02 | 모든 버튼·입력 44px 이상, PTT 모바일 64px·데스크톱 56px, S 글자에서도 유지 | 개발자 도구 크기 측정 | P3-12·17 | P3-12 부분(`--touch: 44px` 고정 px, PTT `max(64px, 4rem)`/`max(56px, 3.5rem)`) 구현 완료·미검증 |
+| V01 | 430px·768px·1280px에서 가로 스크롤 없음, 본문 최대 폭(40rem·60rem), 순차 데스크톱 좌 24rem·우 가변 2열 | 실제 브라우저 창 크기 변경·스크린샷 | P3-12·17 | P3-12 부분(본문 최대 폭 40rem·60rem, min-width 브레이크포인트) 구현 완료·미검증. P3-17 부분(순차 데스크톱 좌 24rem·우 가변 2열 `.seq[data-layout="desktop"]`, 말풍선 `overflow-wrap: anywhere`) 구현 완료·미검증 |
+| V02 | 모든 버튼·입력 44px 이상, PTT 모바일 64px·데스크톱 56px, S 글자에서도 유지 | 개발자 도구 크기 측정 | P3-12·17 | P3-12 부분(`--touch: 44px` 고정 px, PTT `max(64px, 4rem)`/`max(56px, 3.5rem)`) 구현 완료·미검증. P3-17 부분(PTT 전폭 단독 행, 시작/종료·취소 행 `flex: 1 1 8rem`, 텍스트 입력 `min-height: var(--touch)`) 구현 완료·미검증 |
 | V03 | 네 톤 × 라이트/다크에서 본문·악센트 위 글자 대비 4.5:1 이상 | 대비 도구 실측(자동 계산 검사는 P3-12) | P3-12 | 구현 완료·자동 계산 통과(아래 P3-12 절)·실측 미검증 |
 | V04 | 시스템 모드 변경 즉시 반영, 강제 라이트가 시스템 다크 위에서 유지 | OS 설정 전환 | P3-14 | 미검증 |
 | V05 | XL 글자·일본어·200% 확대에서 헤더 줄바꿈, 언어 토글이 overflow 메뉴에 숨지 않음 | 브라우저 확대 | P3-12·15 | P3-12 부분(`html[data-text]` 4단계, 헤더 `flex-wrap`) 구현 완료·미검증. 언어 토글 배치는 P3-15 |
 | V06 | 저장된 표시 설정이 첫 페인트 전 적용(깜빡임 없음), 저장소 차단 시 system/navy/m으로 부팅 | 새로고침 반복 관찰·프라이빗 창 | P3-13 | 미검증 |
-| V07 | 포커스 링 2px·offset 2px 가시, Tab 순서 = 시각 순서, reduced-motion에서 전환 0 | 키보드만으로 전체 흐름 | P3-12·16·17 | P3-12 부분(포커스 링·reduced-motion) 구현 완료·미검증. Tab 순서는 P3-16·17 |
+| V07 | 포커스 링 2px·offset 2px 가시, Tab 순서 = 시각 순서, reduced-motion에서 전환 0 | 키보드만으로 전체 흐름 | P3-12·16·17 | P3-12 부분(포커스 링·reduced-motion) 구현 완료·미검증. P3-17 부분(순차 화면 Tab 순서 = DOM 순서 = 시각 순서, 두 배치 모두 CSS `order` 없이 실제 노드 이동, 전환 시 포커스 유지) 구현 완료·미검증. 시트 Tab 순서는 P3-16 |
 | V08 | 설정·화면·공유 시트가 상호 배타적으로 열리고, inert·Escape·포커스 복귀·내용 스크롤·sticky 행동 영역 동작 | 모바일 시트·데스크톱 모달 각각 | P3-16 | 미검증 |
 | V09 | 동시통역 자막판 가−/가+ 1~2rem, 고대비 옵션, 글자 변경 시 스크롤 위치 유지 | 실제 자막 수신 중 조작 | P3-18 | 미검증 |
 | V10 | P2-25 공유 다이얼로그: 열기·닫기·URL 텍스트·복사·포커스 복귀·`role=dialog` 스크린리더 읽기 | 실제 브라우저·스크린리더 | P3-15·16 | 미검증 (P2-25 인계) |
@@ -143,3 +143,18 @@ P3-39는 §3 전체를 최종 표로 정리하되, 증거 없는 행은 그대�
 - 포커스 토큰 `#ff9f1c`(DESIGN.md §2 고정값)는 라이트 바탕에서 약 1.9:1이라 단독으로는 WCAG 비텍스트 3:1에 못 미친다. 그래서 `:focus-visible`은 설계대로 2px·offset 2px 주황 outline을 두고, offset 틈에 `--text` 색 2px 링(`box-shadow`)을 더해 어느 바탕에서든 두 링 중 하나가 3:1 이상이 되게 했다(테스트가 bg·surface·surface-alt 각각에 대해 단언). Astra 검수 항목.
 - 성공색 `--success`(#1e7a46)는 라이트 바탕에서 4.97~5.35로 여유가 작다. 카드·바탕 위 텍스트로만 쓰고 `--surface-alt` 위 텍스트로는 쓰지 않는다(warm surface-alt 위에서는 4.43으로 미달하므로 테스트도 그 쌍은 요구하지 않는다).
 - 다크 모드 `--border`(#3a434d)는 설계 공유 토큰이며 바탕 대비 약 1.8:1의 낮은 구분선이다. 상태는 색이 아니라 텍스트·속성으로 전달하므로 그대로 둔다.
+
+## P3-17 순차통역 반응형 화면 (2026-09-06)
+
+- 자동: `node --test tests/ui-format.test.mjs` 18 통과(기존 14 + P3-17 4, 실패·취소·skip·todo 0). `node --test tests/*.test.mjs` 765 통과. `node --test tests/` 내부 764 + 디렉터리 진입 1 통과. `node scripts/check-i18n.mjs` I18N_OK languages=3 keys=781 files=65. `git diff --check` 통과. Node v24.18.0, HEAD `2f87a71` + `app/ui/seq-view.js`·`styles.css`·`tests/ui-format.test.mjs`·이 문서 변경.
+- 수동 항목 갱신: V01·V02·V07의 P3-17 담당 부분을 "구현 완료·미검증"으로 적었다. 실측(430/768/1280px 스크린샷, 개발자 도구 크기, 키보드 순회, iPad 회전 시 1024px 경계 전환)은 오케스트레이터 담당으로 남긴다.
+- 바꾼 기존 단언: 없음. `tests/ui-format.test.mjs`의 모의 DOM(`FakeElement.remove`)이 브라우저처럼 분리된 서브트리의 포커스를 잃도록 보강했을 뿐 기존 단언은 그대로 통과한다. `tests/integration.test.mjs`·`tests/app-lifecycle.test.mjs`가 의존하는 말풍선 자식 순서(meta·원문·번역·음성·행동)와 meta의 `[1]` 상태 배지 위치는 유지했다.
+- 남은 미검증: V01(2열 실제 배치·긴 번역문 가로 넘침 실측), V02(PTT 64/56px·S 글자·iOS 확대 실측), V07(Tab 순서·전환 시 포커스 유지 실기기·스크린리더), 하단 고정 독이 iOS Safari 키보드 등장·주소창 축소에서도 보이는지(`position: sticky; bottom: 0` + `env(safe-area-inset-bottom)`은 Node에서 검증 불가).
+
+### 구현 요약과 Astra 검수 항목
+
+- 두 배치의 DOM 순서: 적층(<64rem) `언어쌍 → 기록(records 행·빈 안내·log) → 하단 독(상태 행·PTT·시작/종료·취소·힌트·텍스트 폼)`, 데스크톱(≥64rem) `좌 열(언어쌍·독) → 기록`. 뷰가 `document.defaultView.matchMedia('(min-width: 64rem)')`로 실제 노드를 옮기고 `data-layout="stacked|desktop"`을 붙이며, CSS 2열 그리드는 그 속성에만 켜진다. matchMedia가 없으면 적층 순서 그대로다. CSS `order`는 쓰지 않는다(테스트가 금지).
+- 하단 독은 `position: sticky; bottom: 0` + safe-area 패딩으로 스크롤·키보드 등장 시 PTT와 입력창을 보이게 하고(DESIGN.md §8), `.shell-main`·`.shell-panel`을 세로 flex로 바꿔 기록이 짧아도 독이 화면 하단(엄지 범위)에 놓이게 했다. **설계와 다른 결정:** P3-12가 넣은 태블릿 `.seq-controls { grid-template-columns: 2fr 1fr 1fr }`(PTT와 시작/종료·취소가 한 행)를 제거하고 모든 폭에서 PTT를 전폭 단독 행으로 두었다. 근거: DESIGN.md §4 "PTT: 전폭". 텍스트 폼은 `textarea | 보내기` 한 행 + 힌트 아래 그리드로 바꾸고 DOM도 `label·textarea·submit·hint` 순으로 맞췄다.
+- PTT 문구는 렌더에서 결정한다: 녹음 중 `seq.recording`, 그 외 `seq.holdToTalk`(DESIGN.md §4 "누르는 동안 텍스트 '녹음 중'"). 상태 배지와 말풍선 상태 배지에 `data-state`(recording/error)를 붙여 P3-12의 `.badge[data-state]` 테두리 규칙을 사용한다.
+- 말풍선 meta에 엔진(`turn.model`, `mono`)과 경과 시간(`endedAt − createdAt`, `Intl.NumberFormat` unit 초)을 추가했다(DESIGN.md §4 "시각·엔진·지연"). 새 i18n 키는 없다(사전 파일은 이 과제 범위 밖). 경과 시간은 번역 지연이 아니라 턴 시작부터 종료(음성 재생 포함)까지이므로 "지연"의 정의가 다르면 Astra가 판단한다.
+- `.turn-text`에 `overflow-wrap: anywhere; max-width: 100%; min-width: 0`, 모든 flex/grid 컨테이너에 `min-width: 0`을 두어 긴 번역문·URL의 가로 넘침을 막았다.

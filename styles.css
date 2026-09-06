@@ -447,9 +447,15 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 .shell-tabs { padding: var(--gap) var(--page-x) 0; }
 
 .shell-main {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   margin: var(--gap) var(--page-x) var(--space-5);
 }
+
+/* The visible panel fills the card so the sequential dock can sit in the thumb
+   range even when the transcript is short (DESIGN.md §5: bottom third). */
+.shell-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 
 .shell-planned { margin: 0; color: var(--text-muted); }
 
@@ -473,10 +479,34 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 .shell-settings-title { margin: 0; font-size: 1.25rem; }
 
-/* 14. Sequential screen. The PTT is full width, 64px on mobile and 56px on
-   desktop, growing with text zoom; while pressed it shows a 3px recording
-   border (inset so the button does not shift) plus the "recording" text. */
-.seq { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+/* 14. Sequential screen (P3-17, DESIGN.md §4 PTT/bubbles, §5, §8). The PTT is
+   full width, 64px on mobile and 56px on desktop, growing with text zoom;
+   while pressed it shows a 3px recording border (inset so the button does not
+   shift) plus the "recording" text. Stacked layout (default): language pair,
+   transcript, then the dock (status, PTT, start/finish, hint, text form) which
+   sticks to the bottom of the viewport so the PTT and input stay reachable
+   while the page scrolls or the keyboard opens. The DOM is in that order; no
+   CSS `order` is used anywhere on this screen. */
+.seq { display: flex; flex-direction: column; flex: 1 1 auto; gap: var(--gap); min-width: 0; }
+
+.seq-transcript { display: flex; flex-direction: column; flex: 1 1 auto; gap: var(--gap); min-width: 0; }
+
+.seq-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+  margin-top: auto;
+  padding-top: var(--gap);
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.seq-column { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 
 .seq-pair {
   display: grid;
@@ -513,13 +543,19 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   transition: width 80ms linear;
 }
 
+/* PTT on its own full-width row; start/finish and cancel share the next row
+   and the remaining button widens when cancel is hidden. */
 .seq-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--gap);
+  min-width: 0;
 }
 
+.seq-toggle, .seq-cancel { flex: 1 1 8rem; min-width: 0; }
+
 .seq-ptt {
+  flex: 1 1 100%;
   width: 100%;
   min-height: max(64px, 4rem);
   font-size: 1.25rem;
@@ -540,7 +576,18 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 .seq-hint { margin: 0; font-size: 0.875rem; color: var(--text-muted); }
 
-.seq-form { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+/* Text form: textarea | send on one row, hint underneath (DOM order matches). */
+.seq-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "text submit" "hint hint";
+  gap: var(--space-2);
+  align-items: start;
+  min-width: 0;
+}
+.seq-text { grid-area: text; min-width: 0; }
+.seq-submit { grid-area: submit; }
+#seq-submit-hint { grid-area: hint; }
 
 .seq-records {
   display: flex;
@@ -582,8 +629,10 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   color: var(--text-muted);
 }
 
+.turn-engine, .turn-latency { font-variant-numeric: tabular-nums; }
 .turn-block { margin: var(--space-1) 0; min-width: 0; }
 .turn-label { display: block; font-size: 0.8125rem; font-weight: 600; color: var(--text-muted); }
+/* Long translations and pasted URLs wrap inside the bubble; never a horizontal scroll. */
 .turn-text {
   margin: 0.125rem 0 0;
   padding: var(--space-2) var(--space-3);
@@ -591,6 +640,9 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   border-radius: var(--radius);
   background: var(--surface-alt);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
 }
 .turn-text-translation {
   border-inline-start-color: var(--accent);
@@ -824,7 +876,6 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   .card, .shell-main, .settings-section { padding: 1.25rem; }
   .caption-text, .turn-text-translation { font-size: 1.5rem; }
   .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 40rem; margin-left: auto; margin-right: auto; width: calc(100% - 2 * var(--page-x)); }
-  .seq-controls { grid-template-columns: 2fr 1fr 1fr; align-items: stretch; }
   .shell-settings-header, .shell-settings-body { max-width: 40rem; margin-inline: auto; }
   .diag-check { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
   .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
@@ -849,6 +900,24 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 60rem; }
   .shell-settings-header, .shell-settings-body { max-width: 60rem; }
   .seq-ptt { min-height: max(56px, 3.5rem); }
+  /* Desktop sequential (DESIGN.md §5): 24rem control column + variable
+     transcript. The grid only switches on once the view has moved the nodes
+     into that order (data-layout), so DOM and visual order always agree. */
+  .seq[data-layout="desktop"] {
+    display: grid;
+    grid-template-columns: 24rem minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-5);
+  }
+  .seq[data-layout="desktop"] .seq-column { position: sticky; top: var(--gap); }
+  .seq[data-layout="desktop"] .seq-dock {
+    position: static;
+    margin-top: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top: 0;
+    background: transparent;
+  }
 }
 
 /* 19. Motion and forced colours (DESIGN.md §6). Transitions are 150ms

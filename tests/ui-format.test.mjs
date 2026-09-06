@@ -7,7 +7,7 @@ import { createState, MAX_TURNS, SEQ_STATUS, TURN_PHASE } from '../app/state.js'
 import { ProviderError } from '../app/providers/contract.js';
 import { describeTurn, errorKey, keySelectionKeys, levelPercent, NOTICE_DURATION_MS, replayOutput,
   resolveKey, statusKey, turnActions, turnKey, voiceKey } from '../app/ui/errors.js';
-import { createSeqView, SOURCE_OPTIONS } from '../app/ui/seq-view.js';
+import { createSeqView, DESKTOP_LAYOUT_QUERY, SEQ_LAYOUTS, SOURCE_OPTIONS } from '../app/ui/seq-view.js';
 import { mount, TABS } from '../app/ui/shell.js';
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -39,7 +39,13 @@ class FakeElement {
   set outerHTML(_value) { throw new Error('OUTER_HTML_USED'); }
   append(...nodes) { this.text = ''; for (const node of nodes) { node.remove(); node.parentNode = this; this.childNodes.push(node); } }
   appendChild(node) { this.append(node); return node; }
-  remove() { if (!this.parentNode) return; this.parentNode.childNodes = this.parentNode.childNodes.filter((node) => node !== this); this.parentNode = null; }
+  // Like a browser, detaching the focused subtree drops focus (P3-17 relayout must restore it).
+  remove() {
+    if (!this.parentNode) return;
+    if (this.ownerDocument.activeElement && this.contains(this.ownerDocument.activeElement)) this.ownerDocument.activeElement = null;
+    this.parentNode.childNodes = this.parentNode.childNodes.filter((node) => node !== this);
+    this.parentNode = null;
+  }
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
     if (name === 'class') this.classes = new Set(String(value).split(/\s+/).filter(Boolean));
@@ -121,9 +127,21 @@ function fakeEngine() {
   };
   return engine;
 }
-function harness({ language = 'ko', ...options } = {}) {
+// MediaQueryList double: the view subscribes to 'change' and reads .matches.
+function fakeMedia(matches) {
+  const listeners = new Set();
+  return {
+    matches, media: null, queries: [],
+    addEventListener(type, handler) { if (type === 'change') listeners.add(handler); },
+    removeEventListener(type, handler) { if (type === 'change') listeners.delete(handler); },
+    set(next) { this.matches = next; for (const handler of [...listeners]) handler({ matches: next, media: this.media }); },
+    get listenerCount() { return listeners.size; },
+  };
+}
+function harness({ language = 'ko', media = null, ...options } = {}) {
   const doc = createDocument();
   const win = createWindow(doc);
+  if (media) doc.defaultView = { matchMedia(query) { media.queries.push(query); media.media = query; return media; } };
   const root = doc.createElement('div');
   const timers = fakeTimers();
   const engine = fakeEngine();
@@ -645,4 +663,203 @@ test('connection badge follows offline events and Live session state; pagehide c
   assert.equal(h.engine.calls.at(-1)[0], 'cancel', 'no listener runs after destroy');
   assert.equal(h.engine.calls.filter((call) => call[0] === 'cancel').length, 1);
   assert.equal(h.timers.pending.length, 0);
+});
+
+// --- P3-17: responsive sequential screen (design-p3 §1.9, DESIGN.md §4, §5, §8) ---
+
+const classNames = (node) => node.childNodes.map((child) => [...child.classes].join(' '));
+const focusableIds = (node) => all(node, (item) => ['BUTTON', 'SELECT', 'TEXTAREA'].includes(item.tagName) && visible(item))
+  .map((item) => item.getAttribute('id') ?? [...item.classes].at(-1));
+
+test('P3-17 stacked layout: DOM order is pair, transcript, dock and the dock holds status, PTT, start/finish, hint and form', () => {
+  const h = harness({ initialTab: 'sequential' });
+  const seq = h.view.element;
+  assert.equal(h.view.layout, SEQ_LAYOUTS.STACKED);
+  assert.equal(seq.getAttribute('data-layout'), 'stacked');
+  assert.deepEqual(classNames(seq), ['seq-pair', 'seq-transcript', 'seq-dock']);
+  const transcript = byClass(seq, 'seq-transcript');
+  assert.deepEqual(classNames(transcript), ['seq-records', 'seq-empty', 'seq-turns']);
+  const dock = byClass(seq, 'seq-dock');
+  assert.deepEqual(classNames(dock), ['seq-status-row', 'seq-controls', 'seq-hint', 'seq-form']);
+  assert.deepEqual(classNames(byClass(dock, 'seq-controls')), ['btn btn-primary seq-ptt', 'btn btn-secondary seq-toggle', 'btn btn-secondary seq-cancel']);
+  // Text form: label, textarea, send, hint. The send button precedes the hint as on screen.
+  assert.deepEqual(classNames(byClass(dock, 'seq-form')), ['sr-only', 'seq-text', 'btn btn-primary seq-submit', 'seq-hint']);
+  assert.equal(byClass(dock, 'seq-text').getAttribute('aria-describedby'), 'seq-submit-hint');
+  // Focus order in the stacked layout equals source order: selects/swap, transcript buttons, PTT, toggle, textarea, send.
+  assert.deepEqual(focusableIds(seq), ['seq-source', 'seq-swap', 'seq-target', 'seq-clear', 'seq-ptt', 'seq-toggle', 'seq-text', 'seq-submit']);
+  // No matchMedia (no window): the stacked order stands and the view still destroys cleanly.
+  assert.equal(h.doc.defaultView, undefined);
+  h.shell.destroy();
+  assert.equal(h.root.childNodes.length, 0);
+});
+
+test('P3-17 desktop layout: the 64rem media query moves pair and dock into a 24rem column before the transcript, and back, keeping focus', () => {
+  const media = fakeMedia(true);
+  const h = harness({ initialTab: 'sequential', media });
+  assert.deepEqual(media.queries, [DESKTOP_LAYOUT_QUERY]);
+  assert.equal(DESKTOP_LAYOUT_QUERY, '(min-width: 64rem)');
+  assert.equal(media.listenerCount, 1);
+  const seq = h.view.element;
+  assert.equal(h.view.layout, SEQ_LAYOUTS.DESKTOP);
+  assert.equal(seq.getAttribute('data-layout'), 'desktop');
+  assert.deepEqual(classNames(seq), ['seq-column', 'seq-transcript']);
+  assert.deepEqual(classNames(byClass(seq, 'seq-column')), ['seq-pair', 'seq-dock']);
+  assert.deepEqual(classNames(byClass(seq, 'seq-dock')), ['seq-status-row', 'seq-controls', 'seq-hint', 'seq-form']);
+  // Source order on desktop = left column top to bottom, then the transcript on the right.
+  assert.deepEqual(focusableIds(seq), ['seq-source', 'seq-swap', 'seq-target', 'seq-ptt', 'seq-toggle', 'seq-text', 'seq-submit', 'seq-clear']);
+
+  // The screen keeps working after the move: PTT, text and bubbles all render in place.
+  const ptt = byClass(seq, 'seq-ptt');
+  ptt.dispatch('pointerdown', { button: 0, pointerId: 1 });
+  assert.equal(ptt.textContent, ko['seq.recording']);
+  assert.equal(byClass(seq, 'seq-status').getAttribute('data-state'), 'recording');
+  ptt.dispatch('pointerup', { pointerId: 1 });
+  assert.equal(ptt.textContent, ko['seq.holdToTalk']);
+  assert.equal(byClass(seq, 'seq-status').getAttribute('data-state'), null);
+  h.engine.cancel();
+  const { turnId } = h.engine.submitText('hello');
+  h.engine.complete(turnId, 'hello', 'こんにちは');
+  assert.equal(byClass(seq, 'seq-transcript').contains(byClass(seq, 'turn')), true);
+
+  // Narrowing below 64rem restores the stacked order; a focused PTT stays focused across the move.
+  ptt.focus();
+  media.set(false);
+  assert.equal(h.view.layout, SEQ_LAYOUTS.STACKED);
+  assert.deepEqual(classNames(seq), ['seq-pair', 'seq-transcript', 'seq-dock']);
+  assert.equal(h.doc.activeElement, ptt);
+  assert.equal(all(h.root, (node) => node.classes.has('seq-column')).length, 0, 'the column wrapper leaves the DOM');
+  assert.equal(all(h.root, (node) => node.classes.has('turn')).length, 2, 'bubbles (cancelled PTT turn + text turn) survive the relayout');
+  // The same state again is a no-op; widening moves the nodes back once.
+  media.set(false);
+  assert.deepEqual(classNames(seq), ['seq-pair', 'seq-transcript', 'seq-dock']);
+  byClass(seq, 'seq-text').focus();
+  media.set(true);
+  assert.deepEqual(classNames(seq), ['seq-column', 'seq-transcript']);
+  assert.equal(h.doc.activeElement, byClass(seq, 'seq-text'));
+  assert.equal(h.engine.calls.filter((call) => call[0] === 'startRecording').length, 1, 'relayout never touches the engine');
+  h.shell.destroy();
+  assert.equal(media.listenerCount, 0, 'destroy removes the media listener');
+});
+
+test('P3-17 PTT label, status attribute and bubble meta (time, status, engine, elapsed) in three languages', () => {
+  const h = harness({ initialTab: 'sequential' });
+  const ptt = byClass(h.root, 'seq-ptt');
+  const status = byClass(h.root, 'seq-status');
+  ptt.dispatch('keydown', { key: ' ' });
+  assert.equal(ptt.getAttribute('aria-pressed'), 'true');
+  assert.equal(ptt.textContent, ko['seq.recording']);
+  assert.equal(status.getAttribute('data-state'), 'recording');
+  h.shell.setLanguage('ja');
+  assert.equal(ptt.textContent, dictionaries.ja['seq.recording'], 'a language change keeps the pressed label');
+  ptt.dispatch('keyup', { key: ' ' });
+  assert.equal(ptt.textContent, dictionaries.ja['seq.holdToTalk']);
+  assert.equal(status.getAttribute('data-state'), null);
+  h.shell.setLanguage('ko');
+  h.engine.cancel();
+
+  const { turnId } = h.engine.submitText('사과 12개');
+  const bubble = (id) => all(h.root, (node) => node.getAttribute('data-turn-id') === id)[0];
+  const meta = bubble(turnId).childNodes[0];
+  assert.deepEqual(classNames(meta), ['turn-time', 'badge turn-status', 'turn-engine mono', 'turn-latency']);
+  assert.equal(meta.childNodes[1].textContent, ko['seq.translating']);
+  assert.equal(meta.childNodes[2].hidden, true, 'no engine before the result');
+  assert.equal(meta.childNodes[3].hidden, true, 'no elapsed time before the turn ends');
+  h.engine.complete(turnId, '사과 12개', '12 apples');
+  assert.equal(meta.childNodes[2].hidden, false);
+  assert.equal(meta.childNodes[2].textContent, 'm', 'the engine is the model name from the store');
+  // The engine double finishes the turn on complete(), so endedAt is set and the elapsed time appears.
+  const stored = h.state.snapshot().turns.find((item) => item.turnId === turnId);
+  assert.equal(typeof stored.endedAt, 'number');
+  assert.equal(meta.childNodes[3].hidden, false);
+  assert.equal(meta.childNodes[3].textContent, h.i18n.formatNumber((stored.endedAt - stored.createdAt) / 1000,
+    { style: 'unit', unit: 'second', unitDisplay: 'narrow', maximumFractionDigits: 1 }));
+  assert.match(meta.childNodes[3].textContent, /\d/);
+  const failed = h.engine.submitText('again');
+  h.state.failTurn(failed.turnId, { errorCode: 'RATE_LIMITED' });
+  h.state.finishTurn(failed.turnId);
+  const failedMeta = bubble(failed.turnId).childNodes[0];
+  assert.equal(failedMeta.childNodes[1].getAttribute('data-state'), 'error');
+  assert.equal(failedMeta.childNodes[2].hidden, true);
+  assert.equal(meta.childNodes[1].getAttribute('data-state'), null);
+  for (const language of ['en', 'ja']) {
+    h.shell.setLanguage(language);
+    assert.equal(meta.childNodes[1].textContent, dictionaries[language]['seq.completed']);
+    assert.equal(meta.childNodes[2].textContent, 'm');
+  }
+  assert.equal(JSON.stringify(h.state.snapshot()).includes('SECRET'), false);
+});
+
+test('P3-17 styles: 40/64rem breakpoints, 24rem column + variable transcript, sticky dock, PTT sizes, bubble tokens, wrapping and no CSS order', async () => {
+  const raw = await read('styles.css');
+  const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+  const escape = (value) => value.replace(/[.*+?^$()|[\]\\]/g, '\\$&');
+  const block = (selector, source = css) => {
+    const match = new RegExp(`(?:^|[\\n}])\\s*${escape(selector)}\\s*\\{([^}]*)\\}`, 's').exec(source);
+    assert.ok(match, `rule ${selector}`);
+    return Object.fromEntries(match[1].split(';').map((part) => part.split(':').map((value) => value.trim())).filter(([name]) => name));
+  };
+  const media = (query) => {
+    const start = css.indexOf(`@media ${query} `);
+    assert.ok(start >= 0, query);
+    let depth = 0, index = css.indexOf('{', start);
+    for (; index < css.length; index++) { if (css[index] === '{') depth++; else if (css[index] === '}' && --depth === 0) break; }
+    return css.slice(start, index + 1);
+  };
+  // Breakpoints are min-width only, at exactly 40rem and 64rem; the view's query matches the stylesheet.
+  assert.deepEqual([...new Set([...css.matchAll(/@media \(([^)]*width[^)]*)\)/g)].map((match) => match[1]))], ['min-width: 40rem', 'min-width: 64rem']);
+  assert.ok(media(DESKTOP_LAYOUT_QUERY).length > 0);
+  // Stacked: transcript grows, dock sticks to the bottom with the safe area and stays opaque.
+  const dock = block('.seq-dock');
+  assert.equal(dock.position, 'sticky');
+  assert.equal(dock.bottom, '0');
+  assert.match(dock['padding-bottom'], /safe-area-inset-bottom/);
+  assert.equal(dock.background, 'var(--surface)');
+  assert.equal(block('.seq-transcript').flex, '1 1 auto');
+  assert.equal(block('.shell-panel').flex, '1 1 auto');
+  // Desktop: 24rem control column + variable transcript, gated on the data-layout the view sets.
+  const desktop = media('(min-width: 64rem)');
+  const grid = block('.seq[data-layout="desktop"]', desktop);
+  assert.equal(grid.display, 'grid');
+  assert.equal(grid['grid-template-columns'], '24rem minmax(0, 1fr)');
+  assert.equal(block('.seq[data-layout="desktop"] .seq-column', desktop).position, 'sticky');
+  assert.equal(block('.seq[data-layout="desktop"] .seq-dock', desktop).position, 'static');
+  assert.equal(block('.seq').display, 'flex', 'the base .seq rule is a single column');
+  assert.equal(/\.seq(?:\[[^\]]*\])?\s*\{[^}]*display:\s*grid/.test(media('(min-width: 40rem)')), false, 'tablet stays one column');
+  // Tablet+ keeps the 40rem/60rem caps (P3-12) and the larger translation size.
+  assert.match(media('(min-width: 40rem)'), /\.shell-main[^{]*\{[^}]*max-width: 40rem/);
+  assert.match(desktop, /\.shell-main[^{]*\{[^}]*max-width: 60rem/);
+  assert.match(media('(min-width: 40rem)'), /\.turn-text-translation \{ font-size: 1\.5rem; \}/);
+  // PTT: full-width row, 64px mobile / 56px desktop growing with zoom, recording border while pressed.
+  const ptt = block('.seq-ptt');
+  assert.equal(ptt.flex, '1 1 100%');
+  assert.equal(ptt.width, '100%');
+  assert.equal(ptt['min-height'], 'max(64px, 4rem)');
+  assert.equal(block('.seq-ptt', desktop)['min-height'], 'max(56px, 3.5rem)');
+  assert.match(block('.seq-ptt[aria-pressed="true"]')['box-shadow'], /inset 0 0 0 3px var\(--recording\)/);
+  assert.equal(block('.seq-controls').display, 'flex');
+  assert.equal(block('.seq-toggle, .seq-cancel').flex, '1 1 8rem');
+  // Text form: textarea | send, hint below. Grid areas match the DOM order.
+  const form = block('.seq-form');
+  assert.equal(form['grid-template-columns'], 'minmax(0, 1fr) auto');
+  assert.equal(form['grid-template-areas'], '"text submit" "hint hint"');
+  // Bubbles (DESIGN.md §4): source on surface-alt, translation on accent-soft, 2px start bar, muted meta, actions at the end.
+  const text = block('.turn-text');
+  assert.equal(text.background, 'var(--surface-alt)');
+  assert.equal(text['border-inline-start'], '2px solid var(--border)');
+  assert.equal(text['overflow-wrap'], 'anywhere');
+  assert.equal(text['white-space'], 'pre-wrap');
+  assert.equal(text['max-width'], '100%');
+  assert.equal(block('.turn-text-translation').background, 'var(--accent-soft)');
+  assert.equal(block('.turn-text-translation')['border-inline-start-color'], 'var(--accent)');
+  assert.equal(block('.turn-meta')['font-size'], '0.8125rem');
+  assert.equal(block('.turn-meta').color, 'var(--text-muted)');
+  assert.equal(block('.turn-actions')['justify-content'], 'flex-end');
+  assert.equal(block('.badge[data-state="recording"]')['border-color'], 'var(--recording)');
+  assert.equal(block('.badge[data-state="error"]')['border-color'], 'var(--danger)');
+  // Grid/flex children never force a horizontal scroll and no rule reorders visually.
+  for (const selector of ['.seq', '.seq-transcript', '.seq-dock', '.seq-column', '.seq-controls', '.seq-form', '.seq-turns', '.turn-block']) {
+    assert.equal(block(selector)['min-width'], '0', `${selector} min-width`);
+  }
+  assert.equal(/[^-\w]order\s*:/.test(css), false, 'no CSS order property');
+  assert.equal(/overflow-x:\s*(auto|scroll)/.test(css), false, 'no horizontal scroll regions');
 });
