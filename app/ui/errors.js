@@ -4,6 +4,7 @@
 // keys with i18n.t() and textContent; no provider text or raw error is echoed.
 // P2 mappings are new implementation of design-p2 §§7–10 and 17; no legacy code is ported.
 import { PHASE_MESSAGE_KEYS, SEQ_STATUS, STATUS_MESSAGE_KEYS, TURN_PHASE } from '../state.js';
+import { isPolicyError } from '../policy/errors.js';
 import { normalizeError } from '../providers/contract.js';
 import { LISTEN_STATUS, OUTPUT_STATUS, BROADCAST_STATUS } from '../engine/listen-state.js';
 
@@ -12,6 +13,13 @@ import { LISTEN_STATUS, OUTPUT_STATUS, BROADCAST_STATUS } from '../engine/listen
 export const NOTICE_DURATION_MS = 8000;
 export const LEVEL_FULL_SCALE_RMS = 0.25;
 export const UNKNOWN_KEY = 'error.unknown';
+// Only registered dictionary codes or fixed categories; never retain raw input.
+let lastFailure = null;
+export const lastErrorDiagnostic = () => lastFailure;
+export function recordErrorDiagnostic(i18n, code) {
+  lastFailure = typeof code === 'string' && codePattern.test(code) && i18n.has(`error.${code}`)
+    ? code : 'UNCLASSIFIED_ERROR';
+}
 
 const keyPattern = /^[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/;
 const codePattern = /^[A-Z][A-Z0-9_]{0,39}$/;
@@ -20,7 +28,12 @@ const terminal = new Set([TURN_PHASE.COMPLETED, TURN_PHASE.SILENCE, TURN_PHASE.U
 
 /** A dictionary key the i18n instance knows; anything else becomes error.unknown. */
 export function resolveKey(i18n, key, fallback = UNKNOWN_KEY) {
-  return typeof key === 'string' && keyPattern.test(key) && i18n.has(key) ? key : fallback;
+  if (typeof key === 'string' && keyPattern.test(key) && i18n.has(key)) {
+    if (key.startsWith('error.')) recordErrorDiagnostic(i18n, key.slice(6));
+    return key;
+  }
+  if (fallback === UNKNOWN_KEY) lastFailure = 'UNRESOLVED_MESSAGE_KEY';
+  return fallback;
 }
 
 /** Session status badge (§7.2 state flow). */
@@ -57,7 +70,7 @@ export function noticeKey(notice) {
 
 /** Thrown engine/store errors map to error.<CODE>; the raw error is dropped. */
 export function errorKey(error) {
-  return `error.${normalizeError(error).code}`;
+  return `error.${isPolicyError(error) ? error.code : normalizeError(error).code}`;
 }
 
 /** Normalized engine code only; views must resolve the key before rendering. */

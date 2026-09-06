@@ -1,5 +1,6 @@
 // New implementation of design-v0.6 §§8–9; no legacy socket code is ported.
 import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
+import { isPolicyError, PolicyError } from '../policy/errors.js';
 import { withDeadline } from './retry.js';
 
 // Shared by all managers in this app module instance, across providers/modes.
@@ -16,7 +17,7 @@ function notify() {
   }
 }
 function sessionError(entry, raw) {
-  const error = normalizeError(raw);
+  const error = isPolicyError(raw) ? new PolicyError(raw.code) : normalizeError(raw);
   // Shutdown uses abort internally, but a peer close is not user cancellation.
   return entry.remoteClosed && error.code === 'ABORTED' ? new ProviderError('SESSION_CLOSED') : error;
 }

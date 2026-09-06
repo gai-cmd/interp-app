@@ -5,6 +5,7 @@
  * Changes: existing capture, router, recovery, caption store and PCM player;
  * serial physical closure, generation guards, no IPC, extra voice or raw errors.
  */
+import { isPolicyError, PolicyError, POLICY_ERROR_CODES } from '../policy/errors.js';
 import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
 import { createListenMetrics } from './listen-metrics.js';
 import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply,
@@ -24,6 +25,7 @@ const deferred = () => {
   return { promise, resolve };
 };
 const attempt = fn => { try { return fn(); } catch { /* Observer-owned failure. */ } };
+const normalizeFailure = error => isPolicyError(error) ? new PolicyError(error.code) : normalizeError(error);
 const captureCodes = new Set(['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'TIMEOUT']);
 // P3-02e: a session is replaced automatically (live-recovery: at most three
 // reopenings, 1/2/4 s) only for transport failures. Every 429 family code and
@@ -32,7 +34,7 @@ const captureCodes = new Set(['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'TI
 export const NO_REPLACEMENT_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429',
   'INVALID_KEY', 'PERMISSION_DENIED', 'IP_DENIED', 'CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'CREDENTIAL_FORBIDDEN',
   'SAFETY_BLOCKED']);
-const noReplacement = new Set(NO_REPLACEMENT_CODES);
+const noReplacement = new Set([...NO_REPLACEMENT_CODES, ...POLICY_ERROR_CODES]);
 const MAX_SKIPPED = 100;
 // 24 kHz PCM16 mono: 48 bytes per millisecond.
 const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
@@ -75,7 +77,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     const model = active?.model ?? lastResult?.model ?? selectedModel;
     return Object.freeze({ ...state.snapshot(), errorCode,
       messageKey: errorCode ? `error.${errorCode}` : null,
-      metrics: metrics?.snapshot() ?? null, model, route: liveRoute(model),
+      metrics: metrics?.snapshot() ?? null, model, route: routeOf(model),
       fallback: active?.fallback ?? lastResult?.fallback ?? false, defaultModel: DEFAULT_LIVE_MODEL,
       skippedSegments: Object.freeze([...skipped]),
       captions: store?.snapshot() ?? null, busy: Boolean(active),
@@ -114,7 +116,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     metrics.resetInput(); metrics.observe('reconnects');
     op.uplink?.cancel(); op.player?.cancel(); store.interrupt(); store.markGap('reception');
     state.transition('reconnecting', op.generation);
-    c.fault.resolve({ error: normalizeError(error), goAway });
+    c.fault.resolve({ error: normalizeFailure(error), goAway });
   }
   function event(op, c, ev) {
     if (!alive(op) || op.connection !== c || !c.enabled || ev.generation !== c.generation) return;
@@ -195,7 +197,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
           }
           outcome = await c.fault.promise;
         } catch (raw) {
-          outcome = { error: normalizeError(raw) };
+          outcome = { error: normalizeFailure(raw) };
           // An event carries the original remote error, before cleanup aborts.
           if (!c.enabled) outcome = await c.fault.promise;
           else fault(op, c, outcome.error);
@@ -219,12 +221,12 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         notify();
       }
     } catch (raw) {
-      failure = op.failure ?? (op.controller.signal.aborted ? null : normalizeError(raw).code);
+      failure = op.failure ?? (op.controller.signal.aborted ? null : normalizeFailure(raw).code);
     } finally {
       silence(op); op.controller.abort(); op.capture?.cancel();
       try {
         if (op.ownsSession) await (op.lease ? op.lease.close() : sessionManager.close());
-      } catch (raw) { failure = normalizeError(raw).code; }
+      } catch (raw) { failure = normalizeFailure(raw).code; }
       await op.capture?.done;
       op.detach();
       errorCode = failure;
@@ -265,6 +267,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     if (pair !== null && routeOf(op.model) === 'translation') {
       op.model = models().find((model) => routeOf(model) !== 'translation') ?? op.model;
     }
+    if (!LIVE_MODELS.includes(op.model)) throw new ProviderError('MODEL_UNSUPPORTED');
     op.requestedModel = op.model; skipped = [];
     store?.close(); store = createCaptionStore({ sessionId: op.sessionId, now }); store.subscribe(notify);
     errorCode = null; active = op;

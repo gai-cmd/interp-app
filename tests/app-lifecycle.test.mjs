@@ -1070,3 +1070,19 @@ test('offline dictionary miss shows fallback and a fresh start can recover; cach
   assert.equal(app.i18n.t('common.start'), dictionaries.en['common.start']);
   await app.close();
 });
+
+
+test('P3-40 direct permission denial is requested once and reports the microphone reason', async t => {
+  const b = await listeningApp(t);
+  let calls = 0;
+  b.win.navigator.mediaDevices.getUserMedia = async () => {
+    calls++;
+    throw Object.assign(new Error('private browser detail'), { name: 'NotAllowedError' });
+  };
+  const handle = b.app.listenEngines.direct.start({ targetLanguage: 'ja' });
+  const result = await handle.done;
+  assert.equal(result.errorCode, 'MICROPHONE_DENIED');
+  assert.equal(calls, 1);
+  assert.equal(b.sockets.length, 0);
+  assert.equal(b.root.textContent.includes('private browser detail'), false);
+});

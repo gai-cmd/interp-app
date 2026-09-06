@@ -131,14 +131,14 @@ test('the platform hands one acquired stream to the next getUserMedia, and only 
   // A promise is accepted, because the offer is made before it settles.
   platform.provideStream(Promise.resolve(handed));
   assert.equal(await platform.getUserMedia({ audio: true }), handed);
-  // A refused or ended offer falls through instead of failing the capture.
+  // Empty or ended offers fall through; a denied offer must never retry.
   platform.provideStream(Promise.resolve(null));
   assert.equal(await platform.getUserMedia({ audio: true }), browserStream);
   platform.provideStream(Promise.reject(new Error('denied')));
-  assert.equal(await platform.getUserMedia({ audio: true }), browserStream);
+  await assert.rejects(platform.getUserMedia({ audio: true }), /denied/);
   platform.provideStream(streamOf(track('ended')));
   assert.equal(await platform.getUserMedia({ audio: true }), browserStream);
-  assert.equal(asked.length, 4);
+  assert.equal(asked.length, 3);
 });
 
 // --- the running app ---

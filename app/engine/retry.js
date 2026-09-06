@@ -1,5 +1,9 @@
 // New implementation of design-v0.6 §§8–9; legacy retry loops are not ported.
-import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
+import { isPolicyError, PolicyError } from '../policy/errors.js';
+import { ProviderError, assertActive, normalizeError as normalizeProviderError } from '../providers/contract.js';
+
+// Policy denials are terminal application outcomes, not provider failures.
+const normalizeError = error => isPolicyError(error) ? new PolicyError(error.code) : normalizeProviderError(error);
 
 const transient = new Set(['RATE_LIMITED', 'UNAVAILABLE', 'NETWORK_ERROR', 'TIMEOUT']);
 const fallback = new Set(['MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'INVALID_RESULT', 'UNAVAILABLE', 'NETWORK_ERROR']);

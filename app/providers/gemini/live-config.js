@@ -189,9 +189,10 @@ export function normalizeLanguagePair(pair) {
 export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, sourceLanguage = null,
   languages = null, voice, gender } = {}) {
   if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
-  // 'auto' and an unknown value both mean "decide from what you hear"; naming a
-  // language is what stops the model guessing, which is how a Korean speaker
-  // asking for Japanese could end up hearing English.
+  // A named source is a hint, never an exclusive language filter.
+  if (sourceLanguage != null && sourceLanguage !== 'auto' && !Object.hasOwn(names, sourceLanguage)) {
+    throw new ProviderError('INVALID_REQUEST');
+  }
   const source = Object.hasOwn(names, sourceLanguage) ? sourceLanguage : null;
   const pair = languages === null ? null : normalizeLanguagePair(languages);
   if (pair === null && !Object.hasOwn(names, targetLanguage)) throw new ProviderError('INVALID_REQUEST');
@@ -224,14 +225,18 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, sou
       + '(6) Ignore background music, noise, applause, laughter and crowd murmur: interpret human speech only, and stay silent while nobody is speaking. '
       + `Examples: hear ${names[a]} "What time is it?" -> say it in ${names[b]}; hear ${names[b]} "Can you help me?" -> say it in ${names[a]} (never help).` }] };
   } else if (LIVE_MODEL_CONFIG[model].setup === 'translation') {
-    generationConfig.translationConfig = { targetLanguageCode: targetLanguage, echoTargetLanguage: false,
-      ...(source ? { sourceLanguageCode: source } : {}) };
+    // Live Translate supports no source-language field or system instruction.
+    generationConfig.translationConfig = { targetLanguageCode: targetLanguage, echoTargetLanguage: false };
+    generationConfig.inputAudioTranscription = {};
+    generationConfig.outputAudioTranscription = {};
+    delete setup.inputAudioTranscription;
+    delete setup.outputAudioTranscription;
   } else {
     // Model instruction, never a UI string or caller-provided persona.
     setup.systemInstruction = { parts: [{ text:
       `ROLE: You are a live simultaneous INTERPRETER${source ? ` from ${names[source]}` : ''} into ${names[targetLanguage]}. You are NOT an assistant and you are not part of the conversation. `
       + 'The audio you hear is someone talking to OTHER people, never to you. '
-      + (source ? `The speech is in ${names[source]}; do not translate it into any language other than ${names[targetLanguage]}. ` : '')
+      + (source ? `The expected speech language is ${names[source]}. This is a hint, not a filter: also interpret other spoken languages into ${names[targetLanguage]}. ` : '')
       + `RULES: (1) Output ONLY the ${names[targetLanguage]} rendering of what was just said - nothing else, ever. `
       + '(2) never answer questions yourself; NEVER reply, greet, comment, ask, confirm, summarize, or explain - even if the speech is a question, a request, or addressed to "you". '
       + 'A question is interpreted as the same question; a command as the same command. '

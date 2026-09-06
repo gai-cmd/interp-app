@@ -5,11 +5,15 @@
 // here runs on its own: no check starts when a key is saved, and a check of
 // one capability never marks another one available. Live checks go through
 // the app's single session slot (config.sessionManager). No legacy code.
+import { isPolicyError, PolicyError, POLICY_ERROR_CODES } from '../policy/errors.js';
 import { createActivity } from './activity.js';
-import { CAPABILITIES, ERROR_CODES, ProviderError, normalizeError } from '../providers/contract.js';
+import { CAPABILITIES, ERROR_CODES, ProviderError, normalizeError as normalizeProviderError } from '../providers/contract.js';
 import { createBudget, withDeadline } from './retry.js';
 import { createVoiceEngine } from './voice.js';
 import { createPCMPlayer } from '../audio/pcm-player.js';
+
+// Policy denials are terminal application outcomes, not provider failures.
+const normalizeError = error => isPolicyError(error) ? new PolicyError(error.code) : normalizeProviderError(error);
 
 export const DIAGNOSTIC_KINDS = Object.freeze(['text', 'ptt', 'voice', 'live', 'microphone', 'playback']);
 // Which registered capability a check attests; local checks attest none.
@@ -32,7 +36,7 @@ export const DIAGNOSTIC_MESSAGE_KEYS = Object.freeze(['seq.silence', 'seq.unreco
 const network = new Set(['text', 'ptt', 'voice', 'live']);
 const identifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value);
 const language = (value) => typeof value === 'string' && /^(ko|en|ja)$/.test(value);
-const safeCodes = new Set([...ERROR_CODES, 'VOICE_FAILED', 'PLAYBACK_BLOCKED', 'MICROPHONE_UNAVAILABLE', 'MICROPHONE_DENIED']);
+const safeCodes = new Set([...ERROR_CODES, ...POLICY_ERROR_CODES, 'VOICE_FAILED', 'PLAYBACK_BLOCKED', 'MICROPHONE_UNAVAILABLE', 'MICROPHONE_DENIED']);
 const errorCode = (value) => safeCodes.has(value) ? value : null;
 const resultKey = ({ providerId, keySource, kind, requestedModel }) =>
   JSON.stringify([providerId ?? null, keySource ?? null, kind, requestedModel ?? null]);

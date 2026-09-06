@@ -752,7 +752,7 @@
   "sim.seatAudio": "座席の騒音やスピーカーとの距離によって認識品質が変わることがあります。",
   "sim.sequentialFallback": "短く区切って逐次通訳する",
   "sim.settingsChanged": "設定が変わったため聴取を停止しました。新しい設定で開始してください。",
-  "sim.sourceAuto": "原語は自動で認識されます。",
+  "sim.sourceAuto": "自動検出：聞こえた発話を到着言語に通訳します。すでに到着言語の発話は読み上げません。",
   "sim.speech.detected": "発話を検出",
   "sim.speech.none": "発話なし",
   "sim.status.connecting": "接続中",
@@ -796,5 +796,7 @@
   "voice.previewNotOutput": "音声出力が「{output}」なので、通訳ではこの声は使われません。試聴では再生します。",
   "voice.previewRunning": "実行中の検査が終わると試聴できます。",
   "voice.provider": "プロバイダー音声",
-  "voice.select": "音声を選択"
+  "voice.select": "音声を選択",
+  "sim.sourceHint": "発話言語は参考情報で、他の言語を除外しません。翻訳専用モデルは常に自動検出します。",
+  "diagnostics.lastError": "直近のエラー識別子：{code}（原文やキーは記録しません）"
 }

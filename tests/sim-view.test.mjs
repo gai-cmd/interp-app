@@ -812,3 +812,25 @@ test('two-way: changing the pair during a session keeps it running and says a re
   assert.equal(f.get('notice').textContent, dictionaries.en['sim.voiceRestart']);
   assert.deepEqual(f.direct.calls.filter(c => c[0] === 'stop'), [], 'the running session is not stopped');
 });
+
+
+test('two-way cannot revert to auto or silently submit a one-way request', async () => {
+  const f = setup();
+  f.choose('target', 'ko'); await tick();
+  const toggle = byClass(f.root, 'sim-two-way-input');
+  toggle.checked = true; toggle.dispatch('change');
+  assert.equal(f.get('spoken').value, 'ja');
+  f.choose('spoken', 'auto');
+  assert.equal(f.get('spoken').value, 'ja');
+  assert.equal(byClass(f.root, 'sim-source-hint').hidden, true);
+  f.get('start').dispatch('click');
+  assert.deepEqual(f.direct.calls.at(-1)[1].languages, ['ja', 'ko']);
+});
+
+test('one-way source hint reflects automatic and named selection', async () => {
+  const f = setup();
+  const hint = byClass(f.root, 'sim-source-hint');
+  assert.equal(hint.textContent, dictionaries.en['sim.sourceAuto']);
+  f.choose('spoken', 'ko'); await tick();
+  assert.equal(hint.textContent, dictionaries.en['sim.sourceHint']);
+});

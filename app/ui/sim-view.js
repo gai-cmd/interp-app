@@ -21,7 +21,7 @@ import { LIVE_VOICE_GENDERS, LIVE_GENDER_VOICES, DEFAULT_LIVE_VOICE_GENDER, live
 import { createBinder, SOURCE_OPTIONS } from './seq-view.js';
 import { createCaptionBoard, DEFAULT_DISPLAY } from './caption-board.js';
 import { CAPTION_SIZE, stepCaptionSize } from '../preferences.js';
-import { UNKNOWN_KEY, errorCodeKey, levelPercent, resolveKey } from './errors.js';
+import { UNKNOWN_KEY, recordErrorDiagnostic, errorCodeKey, levelPercent, resolveKey } from './errors.js';
 
 export const VOICE_GENDER_STORAGE_KEY = 'interp-app.ui.v1.voiceGender';
 // Two-way interpretation on/off. The two languages are the ones on screen
@@ -43,6 +43,7 @@ export function listenFailure(i18n, error) {
   const own = typeof error?.code === 'string' && codePattern.test(error.code) ? error.code : null;
   const normalized = normalizeError(error).code;
   const code = own && i18n.has(errorCodeKey(own)) ? own : normalized !== 'PROVIDER_ERROR' ? normalized : null;
+  recordErrorDiagnostic(i18n, code);
   if (!code) return { code: null, key: UNKNOWN_KEY };
   const specific = `sim.error.${code}`;
   return { code, key: i18n.has(specific) ? specific : errorCodeKey(code) };
@@ -162,7 +163,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const openSettings = button('sim-open-settings', 'sim.openSettings');
   openSettings.setAttribute('aria-haspopup', 'dialog');
   const directHints = node('div', 'sim-hints', section);
-  for (const key of ['sim.sourceAuto', 'sim.headphones', 'sim.seatAudio', 'sim.personalKey', 'sim.liveVoice']) node('p', '', directHints, key);
+  const sourceHint = node('p', 'sim-source-hint', directHints, 'sim.sourceAuto');
+  for (const key of ['sim.headphones', 'sim.seatAudio', 'sim.personalKey', 'sim.liveVoice']) node('p', '', directHints, key);
   const hubHints = node('div', 'sim-hints', section);
   for (const key of ['hub.noKeyOrMicrophone', 'hub.deviceSpeech', 'hub.recentNotice']) node('p', '', hubHints, key);
   // P3-11: venue live control; hidden until the app hands its event link over
@@ -265,7 +267,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     return [spoken, target];
   }
   /** The first supported language that is not `language`. */
-  const otherThan = (language) => SUPPORTED_LANGUAGES.find((value) => value !== language) ?? null;
+  const otherThan = (language) => ['ko', 'ja', 'en'].find((value) => value !== language) ?? null;
   function renderTwoWay() {
     // Two-way needs a microphone of our own: a hub listener receives a finished
     // broadcast and has no direction to choose.
@@ -359,12 +361,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   });
   listen(sourceSelect, 'change', () => {
     const next = sourceSelect.value;
-    if (!SOURCE_OPTIONS.includes(next) || next === spoken) return;
+    if (!SOURCE_OPTIONS.includes(next) || next === spoken || (twoWay && next === 'auto')) { render(); return; }
     // A source equal to the target would ask for a no-op; move the target away
     // rather than silently interpreting into the language just spoken.
     void change(() => {
       spoken = next;
-      if (spoken !== 'auto' && spoken === target) target = SUPPORTED_LANGUAGES.find((value) => value !== spoken) ?? target;
+      if (spoken !== 'auto' && spoken === target) target = otherThan(spoken) ?? target;
       rememberLanguages();
     });
   });
@@ -549,6 +551,9 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     // Hub listening uses device speech, so the provider voice choice is hidden there.
     voiceLabel.hidden = hub; voice.disabled = pending;
     sourceSelect.value = spoken;
+    for (const option of sourceSelect.children) if (option.value === 'auto' || option.getAttribute('value') === 'auto') option.disabled = twoWay;
+    sourceHint.hidden = hub || twoWay;
+    setText(sourceHint, i18n.t(spoken === 'auto' ? 'sim.sourceAuto' : 'sim.sourceHint'));
     sourceSelect.disabled = pending || hub;
     sourceSelect.parentNode.hidden = hub;
     swap.disabled = pending || spoken === 'auto';

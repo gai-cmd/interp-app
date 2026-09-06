@@ -48,6 +48,7 @@ export function createPlatform(env = globalThis) {
     provideStream(stream) {
       const previous = offered;
       offered = stream ?? null;
+      if (offered && typeof offered.catch === 'function') offered.catch(() => {});
       return previous;
     },
     get offeredStream() { return offered; },
@@ -64,15 +65,14 @@ export function createPlatform(env = globalThis) {
       return inputDeviceId;
     },
     get inputDeviceId() { return inputDeviceId; },
+    inputConstraints: withDevice,
     getUserMedia: async constraints => {
       const ready = takeOffered();
-      // A live stream satisfies the request; an ended, missing or refused one
-      // is discarded so the browser is asked properly instead of the capture
-      // failing on it. A stream from a device that is no longer the selected
+      // A live stream satisfies the request. A refused offer rejects capture
+      // without a second permission request; ended or missing offers fall through. A stream from a device that is no longer the selected
       // one is discarded too (P3-26: the pre-acquired stream follows the same
       // choice as a fresh request).
-      let stream = null;
-      try { stream = await ready; } catch { stream = null; }
+      const stream = await ready;
       if (stream && stream.getAudioTracks?.().some((track) => track.readyState !== 'ended')
         && matchesDevice(stream)) return stream;
       return env.navigator.mediaDevices.getUserMedia(withDevice(constraints));

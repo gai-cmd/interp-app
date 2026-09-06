@@ -255,9 +255,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     if (!policyRuntime) throw new PolicyError('POLICY_LOADING');
     return policyRuntime.assertRoute(route);
   } });
-  // Views map thrown errors with errorKey(), which cannot name PolicyError
-  // codes; the block reason is set after their synchronous handler ran so the
-  // notice the user sees is the policy reason (error.POLICY_* keys, P3-02).
+  // Keep policy blocks visible after the synchronous handler has completed.
   function announceBlock(error) {
     if (!isPolicyError(error)) return;
     const key = errorCodeKey(error.code);
@@ -305,12 +303,16 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
           // to report — this must not become its own error path — and a stream
           // that arrives after a cancel is stopped by the service itself.
           if (micPermission) {
-            const granted = attempt(() => micPermission.request({ purpose: 'start', signal: owned.signal }));
+            const granted = attempt(() => micPermission.request({ purpose: 'start', signal: owned.signal,
+              constraints: platform.inputConstraints({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }) }));
             // Offered synchronously as a promise: capture calls getUserMedia
-            // before this settles, and the platform awaits the offer. A refusal
-            // resolves to null, so capture asks the browser as it always did.
+            // before this settles. Capture awaits the same grant or denial, with no retry.
             if (granted && typeof granted.then === 'function') {
-              attempt(() => platform.provideStream(granted.then((result) => result?.stream ?? null, () => null)));
+              attempt(() => platform.provideStream(granted.then((result) => {
+                if (result?.stream) return result.stream;
+                // Sanitized browser names retain capture classification without retrying permission.
+                throw { name: result?.cancelled ? 'AbortError' : result?.error === 'denied' ? 'NotAllowedError' : 'NotReadableError' };
+              })));
             }
           }
           handle = raw.start(request, { ...selection, signal: owned.signal,
@@ -320,7 +322,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
         return handle;
       } catch (error) {
         owned.close().catch(() => {});
-        throw new ProviderError(redact(error).code);
+        throw isPolicyError(error) ? new PolicyError(error.code) : new ProviderError(redact(error).code);
       }
     }
     // Spreading `raw` would freeze its getters at the value they had here, so
@@ -722,8 +724,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     removers.push(config.keyStore.subscribe(() => renderKeyGuides()));
 
     // Owner, 2026-09-06: ask the provider which Live models this account can
-    // reach and take the newest one, so a model published after this build was
-    // reviewed does not need a code change to be used. It runs only with a
+    // reach. Discovery is informational: an unreviewed model cannot replace
+    // the selected model because its setup is not supported by the adapter. It runs only with a
     // personal key (there is nothing to ask with), only while nothing is
     // running, and at most once per key: a failure is a code that changes
     // nothing, so discovery can never block interpretation.
@@ -737,7 +739,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       discoveryKey = key;
       const found = await discoverLiveModels({ fetch: win.fetch?.bind(win), key });
       if (closed || found.code !== null || found.models.length === 0) return;
-      const adopted = await attempt(() => simEngine.setDiscoveredModels(found.models, { adopt: true }));
+      const adopted = await attempt(() => simEngine.setDiscoveredModels(found.models, { adopt: false }));
       if (adopted) notify('sim.modelDiscovered');
       attempt(() => settingsView?.render());
     }

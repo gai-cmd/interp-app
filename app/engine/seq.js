@@ -1,10 +1,14 @@
 // New implementation of design-v0.6 §§6.4, 7.2, 8.1, 8.2, 8.5, 9.3 and 14.1:
 // one sequential flow PTT/text -> combined translate -> captions -> voice ->
 // idle, with cancellation. Policy only; no legacy handlers are ported.
-import { ProviderError, normalizeError } from '../providers/contract.js';
+import { isPolicyError, PolicyError } from '../policy/errors.js';
+import { ProviderError, normalizeError as normalizeProviderError } from '../providers/contract.js';
 import { createRetryExecutor } from './retry.js';
 import { createVoiceEngine } from './voice.js';
 import { createState, TURN_PHASE } from '../state.js';
+
+// Policy denials are terminal application outcomes, not provider failures.
+const normalizeError = error => isPolicyError(error) ? new PolicyError(error.code) : normalizeProviderError(error);
 
 // Design values pending device measurement, not provider facts.
 export const SEQ_POLICY = Object.freeze({ translateTimeoutMs: 30000, maxTextLength: 4000 });

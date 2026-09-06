@@ -21,8 +21,8 @@ import { APP_VERSION } from '../version.js';
 
 // PolicyError codes (architecture.md P3-01 table). Not part of ERROR_CODES:
 // views render error.<CODE> through errorCodeKey(), never through redact().
-export const POLICY_ERROR_CODES = Object.freeze(['POLICY_LOADING', 'POLICY_UNAVAILABLE', 'POLICY_EXPIRED', 'POLICY_STOPPED',
-  'POLICY_FEATURE_DISABLED', 'APP_VERSION_TOO_OLD', 'EVENT_ENDED', 'HUB_CONTROL_STOPPED', 'HUB_CONTROL_LOST']);
+import { PolicyError } from './errors.js';
+export { PolicyError, POLICY_ERROR_CODES, isPolicyError } from './errors.js';
 // Action kinds (architecture.md P3-01): seq.start | seq.retry | seq.replay |
 // diagnostics | sim.direct | hub.join | event.join. They are composed rather
 // than written as dotted literals because the i18n regression scans app
@@ -58,20 +58,6 @@ export const CHANGE_TYPES = Object.freeze(['initial', 'stopped', 'reopened', 'di
   'preference', 'event', 'hubControl']);
 export const CLEANUP_STATES = Object.freeze(['idle', 'running', 'failed']);
 export const REFRESH_REASONS = Object.freeze(['foreground', 'preflight', 'manual']);
-
-/** Thrown by assertAction / assertRoute; `code` is one of POLICY_ERROR_CODES. */
-export class PolicyError extends Error {
-  constructor(code) {
-    const safe = POLICY_ERROR_CODES.includes(code) ? code : 'POLICY_UNAVAILABLE';
-    super(safe);
-    this.name = 'PolicyError';
-    this.code = safe;
-  }
-}
-export function isPolicyError(error) {
-  return error instanceof PolicyError
-    || (error !== null && typeof error === 'object' && error.name === 'PolicyError' && POLICY_ERROR_CODES.includes(error.code));
-}
 
 const invalid = () => { throw new TypeError('POLICY_RUNTIME_INVALID'); };
 const isFunction = (value) => typeof value === 'function';

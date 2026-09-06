@@ -9,7 +9,7 @@ import { METRIC_NAMES } from '../engine/listen-metrics.js';
 import { CAPABILITIES } from '../providers/contract.js';
 import { DIAGNOSTIC_KINDS, KIND_CAPABILITY } from '../engine/diagnostics.js';
 import { createBinder } from './seq-view.js';
-import { errorKey, resolveKey } from './errors.js';
+import { errorKey, resolveKey, lastErrorDiagnostic } from './errors.js';
 
 export const STATE_KEYS = Object.freeze({ unsupported: 'capability.unsupported', planned: 'capability.planned',
   hubRequired: 'capability.hubRequired', untested: 'capability.untested', running: 'diagnostics.running',
@@ -96,7 +96,8 @@ export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null
     list.append(row);
     checkRows[kind] = { row, state, message, model, button };
   }
-  section.append(scope, userStart, table, list);
+  const lastError = element(doc, 'p', { className: 'diag-last-error' });
+  section.append(scope, userStart, lastError, table, list);
   for (const key of ['diagnostics.liveScope', 'diagnostics.connectionOnly', 'diagnostics.metrics',
     'diagnostics.metricsPrivacy', 'diagnostics.timingBoundary', 'diagnostics.policyBudget']) {
     const note = element(doc, 'p'); bind.text(note, key); section.append(note);
@@ -149,6 +150,9 @@ export function createDiagnosticsView({ root, i18n, diagnostics, getRoute = null
 
   function render(next = diagnostics.snapshot()) {
     snapshot = next;
+    const lastCode = lastErrorDiagnostic();
+    lastError.hidden = lastCode === null;
+    lastError.textContent = lastCode ? i18n.t('diagnostics.lastError', { code: lastCode }) : '';
     renderObservations();
     const current = route();
     const capabilities = attempt(() => diagnostics.capabilities(current, attempt(() => getOptions?.()) ?? {})) ?? [];

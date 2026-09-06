@@ -119,7 +119,7 @@ test('a discovered model gets a setup route by the same rule the repository uses
 
 // --- the running app adopts a newly published model ---
 
-test('the app asks once per key, adopts the newest Live model and says so', async (t) => {
+test('the app lists discoveries without automatically adopting an unreviewed setup', async (t) => {
   const b = await boot();
   t.after(() => b.app.close());
   const sim = b.app.listenEngines.direct;
@@ -133,20 +133,19 @@ test('the app asks once per key, adopts the newest Live model and says so', asyn
     { name: 'models/gemini-text', supportedGenerationMethods: ['generateContent'] },
   ] }), { status: 200, headers: { 'content-type': 'application/json' } }));
   b.enterPersonalKey({ key: secrets.personal, remember: false });
-  await until(() => sim.model !== DEFAULT_LIVE_MODEL);
+  await until(() => sim.discoveredModels.length > 0);
 
   assert.equal(b.gemini.discoveryCalls.length, 1);
   assert.equal(b.gemini.discoveryCalls[0].method, 'GET');
   assert.equal(b.gemini.discoveryCalls[0].headers['x-goog-api-key'], secrets.personal);
   assert.equal(leaks(b.gemini.discoveryCalls[0].url), false, 'the key is never in the URL');
-  assert.equal(sim.model, 'gemini-9.0-live-preview', 'the newest model is adopted');
+  assert.equal(sim.model, DEFAULT_LIVE_MODEL, 'discovery cannot switch to an unsupported setup');
   assert.deepEqual([...sim.discoveredModels], ['gemini-9.0-live-preview']);
   // The reviewed models keep their place at the head of the list.
   assert.deepEqual([...sim.models].slice(0, LIVE_MODELS.length), [...LIVE_MODELS]);
   // The screen says the model in use was found rather than reviewed.
   const note = byClass(b.root, 'settings-model-discovered');
-  assert.equal(note.hidden, false);
-  assert.ok(note.textContent.includes('gemini-9.0-live-preview'));
+  assert.equal(note.hidden, true);
   // The picker offers it, labelled by its identifier.
   const option = all(b.root, (node) => node.getAttribute('data-discovered') === 'true')[0];
   assert.equal(option.getAttribute('value'), 'gemini-9.0-live-preview');

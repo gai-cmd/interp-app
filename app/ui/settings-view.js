@@ -55,7 +55,7 @@ export function acceptsDirectKey(descriptor, keySource) {
 
 /** Key-store failures carry security or provider codes; anything else is generic. */
 export function keyStoreErrorKey(error) {
-  return `error.${redact(error).code}`;
+  return error?.name === 'PolicyError' ? errorKey(error) : `error.${redact(error).code}`;
 }
 
 /** A pasted QR link or fragment reduces to the fragment the key store accepts. */

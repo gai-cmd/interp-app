@@ -752,7 +752,7 @@
   "sim.seatAudio": "좌석의 소음과 스피커 거리에 따라 인식 품질이 달라질 수 있어요.",
   "sim.sequentialFallback": "짧게 나눠 순차통역",
   "sim.settingsChanged": "설정이 바뀌어 청취를 중지했어요. 새 설정으로 시작하세요.",
-  "sim.sourceAuto": "원어는 자동으로 인식해요.",
+  "sim.sourceAuto": "자동 감지: 들리는 말을 도착 언어로 통역해요. 이미 도착 언어인 말은 읽지 않아요.",
   "sim.speech.detected": "발화 감지",
   "sim.speech.none": "발화 없음",
   "sim.status.connecting": "연결 중",
@@ -796,5 +796,7 @@
   "voice.previewNotOutput": "지금 음성 출력이 “{output}”이라 통역에는 이 목소리가 쓰이지 않아요. 미리듣기는 그대로 들을 수 있어요.",
   "voice.previewRunning": "다른 검사가 끝나면 미리듣기를 할 수 있어요.",
   "voice.provider": "제공자 목소리",
-  "voice.select": "목소리 선택"
+  "voice.select": "목소리 선택",
+  "sim.sourceHint": "발화 언어는 참고 선택이며 다른 언어를 차단하지 않아요. 번역 전용 모델은 항상 자동 감지해요.",
+  "diagnostics.lastError": "최근 오류 식별자: {code} (원문·키는 기록하지 않아요)"
 }
