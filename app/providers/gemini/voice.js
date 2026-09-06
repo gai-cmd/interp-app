@@ -20,6 +20,59 @@ export const VOICE_NAMES = Object.freeze(['Kore', 'Aoede', 'Leda', 'Zephyr', 'Ca
   'Despina', 'Erinome', 'Laomedeia', 'Achernar', 'Gacrux', 'Pulcherrima', 'Vindemiatrix', 'Sulafat',
   'Orus', 'Charon', 'Puck', 'Fenrir', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Algenib',
   'Rasalgethi', 'Alnilam', 'Schedar', 'Achird', 'Zubenelgenubi', 'Sadachbia', 'Sadaltager']);
+// P3 voice picker (owner, 2026-09-06): what each prebuilt voice sounds like.
+//
+// `tone` is Google's own one-word description of the voice, copied verbatim
+// from the Gemini speech-generation documentation (the "Voice options" table).
+// It is provider data, like the names themselves, and is not translated.
+//
+// `gender` is NOT documented by Google. It is the classification two
+// independent public listings agree on (a ComfyUI Gemini-TTS node's voice
+// lists and a published listening comparison of all 30 voices); the two
+// disagree on Pulcherrima and Sulafat, so those carry null and the UI shows
+// no gender for them rather than guessing. Only Kore and Orus are load-bearing
+// (LIVE_GENDER_VOICES, live-config.js); the rest is guidance for choosing.
+export const VOICE_PROFILES = Object.freeze({
+  Kore: { gender: 'female', tone: 'Firm' },
+  Aoede: { gender: 'female', tone: 'Breezy' },
+  Leda: { gender: 'female', tone: 'Youthful' },
+  Zephyr: { gender: 'female', tone: 'Bright' },
+  Callirrhoe: { gender: 'female', tone: 'Easy-going' },
+  Autonoe: { gender: 'female', tone: 'Bright' },
+  Despina: { gender: 'female', tone: 'Smooth' },
+  Erinome: { gender: 'female', tone: 'Clear' },
+  Laomedeia: { gender: 'female', tone: 'Upbeat' },
+  Achernar: { gender: 'female', tone: 'Soft' },
+  Gacrux: { gender: 'female', tone: 'Mature' },
+  Vindemiatrix: { gender: 'female', tone: 'Gentle' },
+  Pulcherrima: { gender: null, tone: 'Forward' },
+  Sulafat: { gender: null, tone: 'Warm' },
+  Orus: { gender: 'male', tone: 'Firm' },
+  Charon: { gender: 'male', tone: 'Informative' },
+  Puck: { gender: 'male', tone: 'Upbeat' },
+  Fenrir: { gender: 'male', tone: 'Excitable' },
+  Enceladus: { gender: 'male', tone: 'Breathy' },
+  Iapetus: { gender: 'male', tone: 'Clear' },
+  Umbriel: { gender: 'male', tone: 'Easy-going' },
+  Algieba: { gender: 'male', tone: 'Smooth' },
+  Algenib: { gender: 'male', tone: 'Gravelly' },
+  Rasalgethi: { gender: 'male', tone: 'Informative' },
+  Alnilam: { gender: 'male', tone: 'Firm' },
+  Schedar: { gender: 'male', tone: 'Even' },
+  Achird: { gender: 'male', tone: 'Friendly' },
+  Zubenelgenubi: { gender: 'male', tone: 'Casual' },
+  Sadachbia: { gender: 'male', tone: 'Lively' },
+  Sadaltager: { gender: 'male', tone: 'Knowledgeable' },
+});
+/** 'female' | 'male' | null (not agreed by the sources, or an unknown name). */
+export function voiceGender(voice) {
+  return Object.hasOwn(VOICE_PROFILES, voice) ? VOICE_PROFILES[voice].gender : null;
+}
+/** Google's one-word description, or null for an unknown name. */
+export function voiceTone(voice) {
+  return Object.hasOwn(VOICE_PROFILES, voice) ? VOICE_PROFILES[voice].tone : null;
+}
+
 // Application limits and reference session policy, not provider quota facts.
 export const VOICE_LIMITS = Object.freeze({ sampleRate: 24000, maxTextLength: 4000,
   turnTimeoutMs: 60000, maxTurnAudioBytes: 5760000, maxTranscriptChars: 8000,

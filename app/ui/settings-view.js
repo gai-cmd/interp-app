@@ -24,6 +24,7 @@
 // view are kept; the sections map keeps the P1 names as aliases.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { LIVE_MODELS, DEFAULT_LIVE_MODEL, liveVoicePreference } from '../providers/gemini/live-config.js';
+import { voiceGender, voiceTone } from '../providers/gemini/voice.js';
 import { AUDIO_SENSITIVITIES, APPLIED_SETTING_NAMES, audioPreferences } from '../audio/capture.js';
 import { VOICE_OUTPUTS } from '../state.js';
 import { redact } from '../security/redact.js';
@@ -263,6 +264,10 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     render(store.snapshot());
   });
   const voiceField = field(voiceBlock, 'settings-voice-name', 'voice.select', voiceSelect);
+  // Owner, 2026-09-06: the picker says whether a voice reads male or female and
+  // what it sounds like, so it is not 30 bare names. The note states where each
+  // half comes from, because Google publishes the tone but not the gender.
+  const voiceGenderNote = note(voiceBlock, 'voice.genderNote', 'settings-note settings-voice-note');
   const previewButton = button(voiceField, 'voice.preview', 'btn-secondary settings-voice-preview', () => {
     call(() => diagnostics.run('voice', { ...checkOptions() }));
   });
@@ -693,6 +698,15 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     }
   }
 
+  /** "Kore · 여성 · Firm", or "Sulafat · Warm" when the sources disagree. */
+  function voiceOptionLabel(value) {
+    const gender = voiceGender(value);
+    const tone = voiceTone(value) ?? '';
+    if (!tone) return value;
+    return gender
+      ? i18n.t('voice.option', { name: value, gender: i18n.t(`voice.gender.${gender}`), tone })
+      : i18n.t('voice.optionNoGender', { name: value, tone });
+  }
   function renderVoice(desc) {
     const settings = snapshot.voice;
     outputLock?.update(policyEntry(SETTING_NAMES.voiceOutput));
@@ -705,8 +719,9 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
       for (const option of Array.from(voiceSelect.childNodes)) option.remove();
       for (const value of wanted) {
         const option = element(doc, 'option', { attributes: { value } });
-        // Voice identifiers are registered provider data, not dictionary text.
-        if (value) option.textContent = value; else option.setAttribute('data-default', 'true');
+        // Voice identifiers and Google's one-word tone are registered provider
+        // data, not dictionary text; only the gender word is translated.
+        if (value) option.textContent = voiceOptionLabel(value); else option.setAttribute('data-default', 'true');
         voiceSelect.append(option);
       }
     }

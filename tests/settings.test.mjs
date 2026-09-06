@@ -23,6 +23,8 @@ import { checkState, createDiagnosticsView, STATE_KEYS } from '../app/ui/diagnos
 import { SecurityError } from '../app/security/redact.js';
 import { createAudioPreferences } from '../app/audio/capture.js';
 import { createLiveVoicePreference } from '../app/providers/gemini/live-config.js';
+import { LIVE_GENDER_VOICES } from '../app/providers/gemini/live-config.js';
+import { VOICE_NAMES, VOICE_PROFILES, voiceGender, voiceTone } from '../app/providers/gemini/voice.js';
 import { provider } from './fixtures/providers.mjs';
 import { goldenWav } from './fixtures/audio.mjs';
 import { createClock, deferred, tick } from './fixtures/live.mjs';
@@ -290,7 +292,8 @@ test('one registered provider shows its title without a picker, mounts into the 
   assert.equal(h.view.elements.keyInput.getAttribute('placeholder'), ko['settings.keyPlaceholder']);
   assert.equal(options(h.view.elements.voiceSelect).length, 31, 'default plus the registered Live voices');
   assert.equal(h.view.elements.voiceSelect.childNodes[0].textContent, ko['voice.provider']);
-  assert.equal(h.view.elements.voiceSelect.childNodes[1].textContent, 'Kore');
+  // Owner, 2026-09-06: each voice says how it reads and what it sounds like.
+  assert.equal(h.view.elements.voiceSelect.childNodes[1].textContent, `Kore · ${ko['voice.gender.female']} · Firm`);
   assert.equal(visible(h.view.elements.deviceSelect), false);
   assert.equal(visible(h.el('settings-quota-scope')), true, 'project-scoped quota note for Gemini');
   assert.equal(h.el('settings-quota-scope').textContent, ko['quota.project']);
@@ -1270,4 +1273,45 @@ test('styles: a note beside a checkbox takes the whole row, not the control colu
   assert.match(span.slice(0, 400), /grid-column:\s*1 \/ -1/);
   assert.match(span.slice(0, 400), /\.settings-mode-option > :not\(/);
   assert.match(span.slice(0, 400), /min-width:\s*0/);
+});
+
+
+test('the voice picker names the gender and Google\'s tone, and stays silent where the sources disagree', async () => {
+  // The real provider registration, so the picker carries all 30 Live voices.
+  const h = harness({ config: createAppConfig() });
+  const nodes = h.view.elements.voiceSelect.childNodes.slice(1);
+  const labels = nodes.map((node) => node.textContent);
+  const values = nodes.map((node) => node.getAttribute('value'));
+  assert.equal(labels.length, VOICE_NAMES.length);
+
+  // Every registered voice has a profile, and the tone is Google's own word.
+  for (const [index, value] of values.entries()) {
+    const profile = VOICE_PROFILES[value];
+    assert.ok(profile, `${value} has a profile`);
+    assert.ok(labels[index].startsWith(`${value} · `), `${value} keeps its identifier first`);
+    assert.ok(labels[index].endsWith(` · ${profile.tone}`), `${value} ends with its tone`);
+  }
+  // The two the sources disagree on show no gender at all rather than a guess.
+  const undecided = VOICE_NAMES.filter((name) => VOICE_PROFILES[name].gender === null);
+  assert.deepEqual(undecided.sort(), ['Pulcherrima', 'Sulafat']);
+  for (const name of undecided) {
+    const label = labels[values.indexOf(name)];
+    assert.equal(label, `${name} · ${VOICE_PROFILES[name].tone}`);
+    assert.equal(label.includes(ko['voice.gender.female']), false);
+    assert.equal(label.includes(ko['voice.gender.male']), false);
+  }
+  // The counts the two public classifications agree on.
+  const by = (gender) => VOICE_NAMES.filter((name) => VOICE_PROFILES[name].gender === gender).length;
+  assert.deepEqual({ female: by('female'), male: by('male'), undecided: undecided.length }, { female: 12, male: 16, undecided: 2 });
+  // The two voices the app actually commits to must agree with the profiles.
+  assert.equal(voiceGender(LIVE_GENDER_VOICES.female), 'female');
+  assert.equal(voiceGender(LIVE_GENDER_VOICES.male), 'male');
+  assert.equal(voiceGender('nope'), null);
+  assert.equal(voiceTone('nope'), null);
+  // The note explains where each half of the label comes from, in every language.
+  for (const lang of ['ko', 'en', 'ja']) {
+    h.shell.setLanguage(lang);
+    assert.equal(h.el('settings-voice-note').textContent, dictionaries[lang]['voice.genderNote']);
+  }
+  h.shell.setLanguage('ko');
 });
