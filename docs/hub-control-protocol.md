@@ -117,3 +117,68 @@
 `node --test tests/hub-protocol.test.mjs`가 협상 구분·snapshot 정규화·16KiB 경계·TTL 경계·필드 제한·`settings` 봉투의
 권한 불부여를 검증한다. 실제 허브 서버는 아직 확장을 구현하지 않았으므로 [p3-verification.md](p3-verification.md)
 V29의 협상·중지·해제·heartbeat 상실 표시는 **fixture 검증까지만** 완료다.
+
+## P3-10 통제 상태와 재접속 (`app/hub/control.js`)
+
+### 책임 경계
+
+- P3-09 파서는 **텍스트 한 건**을 정규화하고, 이 모듈은 그 정규화된 snapshot이 **무엇을 바꿔도 되는지**를 정한다.
+  소켓·행사 참가·재접속 시도는 P3-11(`app/hub/client.js`, `app/main.js`)이 맡는다.
+- 이 모듈은 네트워크·저장소·DOM에 접근하지 않는다. 주입받는 것은 `now`·`setTimeout`·`clearTimeout` 셋뿐이고,
+  시각은 **앱의 단조 시계**(`performance.now()`)를 쓴다. 허브가 보낸 `issuedAt`은 표시·기록용이며 만료 계산에 쓰지 않는다
+  (기기 시계가 틀려도 중지가 조기 해제되면 안 된다).
+- 이 상태는 **제한만 만든다**. 사이트 정책과의 교집합은 `app/policy/resolve.js`가 계산한다
+  (`코드 지원 ∩ 사이트 정책 ∩ 행사 ∩ 허브 통제`). 허브는 사이트 정책이 끈 기능을 다시 켤 수 없다.
+
+계약(architecture.md "허브 통제"):
+
+```
+createHubControl({ now, setTimeout, clearTimeout })
+  -> { negotiate(control|null), receive(controlEvent), disconnected(), reset(), snapshot(), subscribe(fn), close() }
+snapshot() -> frozen { supported, eventId, epoch, revision, stopped, disabledFeatures, notice, heartbeatLost, expiresAt }
+```
+
+`supported`는 hello 전에는 `null`, 확장 없는 허브에는 `false`다. `expiresAt`은 `now()` 눈금이거나 `null`이다.
+
+### 순서 규칙 (epoch × revision)
+
+| 들어온 것 | 판정 | 이유 |
+|---|---|---|
+| 협상 전 snapshot | 거부 | 신뢰 근거가 없다 |
+| 다른 `eventId`·`epoch` | 무시 | 다른 방송의 통제다 |
+| `revision <` 현재 | 무시 | **역순 도착이 해제로 둔갑하지 않는다** |
+| `revision ==` 현재 | 상태 불변 + TTL 재무장 | 중복 = heartbeat |
+| `revision >` 현재 | 적용 | 유일한 상태 변경 경로 |
+| 새 epoch의 첫 snapshot | revision 무관하게 적용 | 방송 재시작은 번호가 1부터다 |
+
+`negotiate()`가 같은 행사·같은 epoch를 답하면 revision 순서를 **이어간다**(재접속). epoch나 행사가 바뀌면
+revision을 `null`로 되돌려 다음 snapshot을 무조건 받는다. `receive()`는 상태를 바꿨을 때만 `true`를 낸다
+(heartbeat는 `false`).
+
+### TTL과 중지 latch
+
+- TTL은 **수신 시각부터** `ttlSeconds`(10~120초) 동안이며, 협상 직후에는 첫 snapshot을 기다리느라 최대치(120초)를 준다.
+- 만료와 `disconnected()`는 `heartbeatLost = true`만 만든다. **`stopped`·`disabledFeatures`·`notice`는 건드리지 않는다.**
+  `resolve.js`가 `heartbeatLost`를 `HUB_CONTROL_LOST` 차단으로 바꾸므로, 통제를 확인할 수 없는 동안은 시작이 막힌다.
+- 중지 latch를 푸는 것은 **더 높은 revision의 새 snapshot**과 `reset()`(행사에서 나감) 둘뿐이다.
+  단절·TTL 만료·확장 없는 허브로의 재접속·epoch 교체·`close()` 중 어느 것도 해제가 아니다.
+- `close()` 이후에는 모든 호출이 무시되고 타이머가 해제된다. 마지막 상태는 그대로 남는다.
+
+### 예상 함정과 대응
+
+| 함정 | 대응 |
+|---|---|
+| 단절·TTL 만료가 긴급 중지를 해제 | 해제 경로를 `revision >` 와 `reset()` 둘로 한정, 해당 회귀 테스트 4건 |
+| 허브 시계를 믿어 조기 해제 | `issuedAt` 미사용, 앱 단조 시계만 사용 |
+| 재접속이 revision을 0으로 되돌림 | `negotiate()`가 같은 epoch면 revision 유지, client.js가 마지막 epoch·revision을 hello에 실음 |
+| 확장 없는 허브로 재접속해 통제 소멸 | `supported=false`로 표시하되 latch 유지, 이후 snapshot 전부 거부 |
+| 허브가 사이트 정책보다 넓은 권한 부여 | 이 모듈은 제한만 표현, 교집합은 `resolve.js`, 회귀 테스트가 `open`/`released` 기능 집합 동일성을 단언 |
+
+### fixture와 검증
+
+`tests/fixtures/hub-control.mjs`는 `tests/fixtures/hub.mjs`의 §1.8 예시 봉투를 **파서 출력 형태**(`type: 'control'`)로
+바꾸고 결정적 시계(`createClock`)를 얹은 것이다. 실제 허브 주소·방 코드·키·QR payload는 없다.
+`node --test tests/hub-control.test.mjs`가 생성·협상·순서(역순·중복·새 epoch)·TTL·단절·재협상·확장 없는 허브·
+`reset`/`close`/구독 해제·구독자 예외 격리·사이트 정책 교집합을 검증한다(9건).
+`app/hub/client.js`는 이 모듈을 **재수출**하므로 `app/main.js`의 import 경로는 그대로다.
+V29(실제 허브 왕복)는 서버가 확장을 구현할 때까지 여전히 fixture 검증까지만 완료다.

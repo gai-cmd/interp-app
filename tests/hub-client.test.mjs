@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHubClient, createHubControl, HUB_CLIENT_LIMITS, HUB_CONTROL_INITIAL_EPOCH } from '../app/hub/client.js';
-import { HUB_LIMITS } from '../app/hub/protocol.js';
 import { createSocketFixture, createClock, deferred, DelayedBlob, tick,
   hub, hello, caption, status, wire } from './fixtures/hub-socket.mjs';
-import { EPOCH, EVENT_ID, controlHello, releaseSnapshot, snapshot } from './fixtures/hub.mjs';
+import { EPOCH, EVENT_ID, controlHello, snapshot } from './fixtures/hub.mjs';
 
 function fixture(options = {}) {
   const clock = createClock(), transport = createSocketFixture(options);
@@ -311,86 +310,11 @@ test('a refused hello send is a connection failure with retries; malformed contr
   assert.equal(g.clock.size, 0);
 });
 
-// --- createHubControl: the P3-10 state, defined in client.js until control.js exists ---
-function controlFixture() {
-  const clock = createClock(), changes = [];
-  const control = createHubControl(clock);
-  control.subscribe((value) => changes.push(value));
-  return { clock, changes, control, parse: (message) => ({ ...message, type: 'control', disabledFeatures: [...message.disabledFeatures] }) };
-}
-const initialState = { supported: null, eventId: null, epoch: null, revision: null, stopped: false,
-  disabledFeatures: [], notice: null, heartbeatLost: false, expiresAt: null };
-
-test('control state: initial, negotiation, ordering, duplicates as heartbeat, other epoch or event ignored', () => {
-  const { control, parse, clock, changes } = controlFixture();
-  assert.deepEqual(control.snapshot(), initialState);
-  assert.ok(Object.isFrozen(control.snapshot()));
-  assert.equal(control.receive(parse(snapshot())), false, 'nothing is accepted before a negotiation');
-  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 12 });
-  assert.equal(control.snapshot().supported, true);
-  assert.equal(control.snapshot().revision, null, 'the hello revision is a hint; the first snapshot is accepted at any revision');
-  assert.equal(control.snapshot().expiresAt, HUB_LIMITS.ttlMaxSeconds * 1000);
-  assert.equal(control.receive(parse(snapshot({ epoch: 'other-epoch' }))), false);
-  assert.equal(control.receive(parse(snapshot({ eventId: 'other-event' }))), false);
-  assert.equal(control.receive({ ...parse(snapshot()), type: 'hello' }), false);
-  assert.equal(control.receive(parse(snapshot())), true);
-  const applied = control.snapshot();
-  assert.equal(applied.revision, 13); assert.equal(applied.stopped, true);
-  assert.deepEqual([...applied.disabledFeatures], ['simultaneousDirect']);
-  assert.equal(applied.notice.id, 'pause-13'); assert.equal(applied.expiresAt, 60000);
-  assert.ok(Object.isFrozen(applied.disabledFeatures));
-  clock.advance(1000);
-  const before = changes.length;
-  assert.equal(control.receive(parse(snapshot())), false, 'a repeat is the heartbeat');
-  assert.equal(control.snapshot().expiresAt, 61000, 'the heartbeat re-arms the TTL');
-  assert.equal(changes.length, before + 1);
-  assert.equal(control.receive(parse(releaseSnapshot({ revision: 12 }))), false, 'a lower revision never releases');
-  assert.equal(control.snapshot().stopped, true);
-  assert.equal(control.receive(parse(releaseSnapshot())), true);
-  assert.deepEqual({ ...control.snapshot(), expiresAt: null }, { ...initialState, supported: true, eventId: EVENT_ID, epoch: EPOCH, revision: 14 });
-  assert.throws(() => control.negotiate({ version: 1 }), { code: 'INVALID_REQUEST' });
-  assert.throws(() => control.subscribe(null), { code: 'INVALID_REQUEST' });
-  control.close();
-});
-
-test('control state: TTL expiry and disconnection only set heartbeatLost; the stop latch survives until a newer snapshot or reset', () => {
-  const { control, parse, clock } = controlFixture();
-  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 0 });
-  control.receive(parse(snapshot({ ttlSeconds: 10 })));
-  clock.advance(9999); assert.equal(control.snapshot().heartbeatLost, false);
-  clock.advance(1); assert.equal(control.snapshot().heartbeatLost, true);
-  assert.equal(control.snapshot().stopped, true, 'expiry does not release');
-  assert.equal(control.receive(parse(snapshot({ ttlSeconds: 10 }))), false);
-  assert.equal(control.snapshot().heartbeatLost, false, 'the heartbeat clears the loss');
-  control.disconnected();
-  assert.equal(control.snapshot().heartbeatLost, true);
-  assert.equal(control.snapshot().expiresAt, null);
-  assert.equal(control.snapshot().stopped, true, 'disconnection does not release');
-  assert.equal(clock.size, 0, 'no timer while disconnected');
-  // Same epoch again: revision ordering continues and the latch stays.
-  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 13 });
-  assert.equal(control.snapshot().heartbeatLost, false);
-  assert.equal(control.snapshot().revision, 13); assert.equal(control.snapshot().stopped, true);
-  assert.equal(control.receive(parse(releaseSnapshot({ revision: 13 }))), false);
-  assert.equal(control.snapshot().stopped, true);
-  // A new epoch (broadcast restart) accepts its first snapshot at any revision.
-  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: 'next-epoch', revision: 0 });
-  assert.equal(control.snapshot().revision, null); assert.equal(control.snapshot().stopped, true);
-  assert.equal(control.receive(parse(releaseSnapshot({ epoch: 'next-epoch', revision: 1 }))), true);
-  assert.equal(control.snapshot().stopped, false);
-  // A hub without the extension after a stop: unsupported, nothing released.
-  control.receive(parse(snapshot({ epoch: 'next-epoch', revision: 2 })));
-  control.negotiate(null);
-  assert.equal(control.snapshot().supported, false);
-  assert.equal(control.snapshot().stopped, true);
-  assert.equal(control.receive(parse(snapshot({ epoch: 'next-epoch', revision: 3 }))), false);
-  clock.advance(120000);
-  assert.equal(control.snapshot().heartbeatLost, false, 'an unsupported hub has no heartbeat to lose');
-  control.reset();
-  assert.deepEqual(control.snapshot(), initialState);
-  assert.equal(clock.size, 0);
-  control.close();
-  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 0 });
-  assert.deepEqual(control.snapshot(), initialState, 'closed state changes nothing');
-  assert.throws(() => createHubControl({ now: 'later' }), { code: 'INVALID_REQUEST' });
+// --- P3-10 landed: the control state now lives in app/hub/control.js and is
+// covered by tests/hub-control.test.mjs. Only the re-export is asserted here,
+// because main.js imports createHubControl from this module. ---
+test('client.js re-exports the P3-10 control state', async () => {
+  const control = await import('../app/hub/control.js');
+  assert.equal(createHubControl, control.createHubControl);
+  assert.equal(HUB_CONTROL_INITIAL_EPOCH, control.HUB_CONTROL_INITIAL_EPOCH);
 });
