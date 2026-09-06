@@ -877,7 +877,7 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   const app = h.root.childNodes[0];
   assert.equal(h.shell.layout, SHELL_LAYOUTS.STACKED);
   assert.equal(app.getAttribute('data-layout'), 'stacked');
-  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings', 'share-dialog']);
+  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings sheet', 'share-dialog sheet']);
   const header = h.shell.elements.header;
   assert.deepEqual(classNames(header), ['shell-title', 'shell-badges', 'shell-actions']);
   assert.deepEqual(classNames(h.shell.elements.actions),
@@ -991,11 +991,11 @@ test('P3-15 desktop header: the 64rem query moves the tab row between the title 
   assert.equal(headerMedia.listenerCount, 1);
   const app = h.root.childNodes[0];
   const header = h.shell.elements.header;
-  const stacked = ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings', 'share-dialog'];
+  const stacked = ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings sheet', 'share-dialog sheet'];
   assert.equal(h.shell.layout, SHELL_LAYOUTS.DESKTOP);
   assert.equal(app.getAttribute('data-layout'), 'desktop');
   assert.deepEqual(classNames(header), ['shell-title', 'shell-tabs', 'shell-badges', 'shell-actions']);
-  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-main', 'shell-settings', 'share-dialog']);
+  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-main', 'shell-settings sheet', 'share-dialog sheet']);
   assert.deepEqual(focusableIds(header), ['tab-sequential', 'tab-simultaneous', 'shell-mode', 'shell-language', 'shell-language', 'shell-language',
     'shell-display-button', 'share-button', 'shell-settings-button']);
   assert.equal(h.view.layout, SEQ_LAYOUTS.STACKED, 'the window query is the header\'s; the sequential view keeps the document\'s');

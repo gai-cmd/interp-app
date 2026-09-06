@@ -17,6 +17,9 @@ import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { NOTICE_DURATION_MS, keySelectionKeys, resolveKey } from './errors.js';
 import { DESKTOP_LAYOUT_QUERY, createBinder, createSeqView } from './seq-view.js';
 import { createSimView } from './sim-view.js';
+// P3-16: settings, display and share share one modal controller (mutual
+// exclusion, inert background, focus trap, Escape, focus return).
+import { createSheetGroup } from './sheet.js';
 
 export const TABS = Object.freeze(['sequential', 'simultaneous']);
 // P3-02e: simultaneous interpretation is the first screen (owner report
@@ -74,7 +77,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     removers.push(() => attempt(() => target.removeEventListener(type, handler)));
   };
   let snapshot = store.snapshot();
-  let noticeShownAt = null, noticeTimer = null, messageTimer = null, restoreFocus = null;
+  let noticeShownAt = null, noticeTimer = null, messageTimer = null;
 
   const app = element(doc, 'div', { className: 'shell' });
   root.append(app);
@@ -200,57 +203,50 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   }
 
   // Settings container (§7.4 content is P1-16); modal with focus return.
-  const settings = element(doc, 'section', { className: 'shell-settings', attributes: { id: 'shell-settings', role: 'dialog',
+  const settings = element(doc, 'section', { className: 'shell-settings sheet', attributes: { id: 'shell-settings', role: 'dialog',
     'aria-modal': 'true', 'aria-labelledby': 'shell-settings-title' } });
   settings.hidden = true;
-  const settingsHeader = element(doc, 'div', { className: 'shell-settings-header' });
-  const settingsTitle = element(doc, 'h2', { className: 'shell-settings-title', attributes: { id: 'shell-settings-title' } });
+  const settingsHeader = element(doc, 'div', { className: 'shell-settings-header sheet-header' });
+  const settingsTitle = element(doc, 'h2', { className: 'shell-settings-title sheet-title', attributes: { id: 'shell-settings-title' } });
   bind.text(settingsTitle, 'common.settings');
   const settingsClose = element(doc, 'button', { className: 'btn btn-secondary shell-settings-close', attributes: { type: 'button' } });
   bind.text(settingsClose, 'common.close');
   settingsHeader.append(settingsTitle, settingsClose);
-  const settingsBody = element(doc, 'div', { className: 'shell-settings-body' });
+  const settingsBody = element(doc, 'div', { className: 'shell-settings-body sheet-body' });
   settings.append(settingsHeader, settingsBody);
   const inertTargets = [header, notice, message, tabs, main];
   const settingsOpenListeners = new Set();
+  // One group for every modal surface of the shell: opening one closes the
+  // others, the background is inert only while something is open, and focus
+  // returns to whatever had it before (P3-16).
+  const sheetGroup = createSheetGroup({ document: doc, background: inertTargets });
+  const settingsSheet = sheetGroup.register({ id: 'shell-settings', element: settings,
+    openers: [settingsButton, modeBadge, displayButton], initialFocus: settingsClose,
+    // Notified after focus landed on the close button, so a listener that wants
+    // a specific entry (P3-02e 'key') wins over the default focus.
+    onOpened(target) {
+      if (target) for (const listener of [...settingsOpenListeners]) attempt(() => listener(target));
+    } });
 
   // target ('key') asks the mounted settings view (through onSettingsOpen) to
   // focus that entry; an already open dialog still forwards the target.
   function openSettings(target = null) {
-    const wanted = SETTINGS_TARGETS.includes(target) ? target : null;
-    if (settings.hidden) {
-      closeShare();
-      restoreFocus = doc.activeElement ?? settingsButton;
-      settings.hidden = false;
-      for (const opener of [settingsButton, modeBadge, displayButton]) opener.setAttribute('aria-expanded', 'true');
-      for (const target of inertTargets) target.setAttribute('inert', '');
-      attempt(() => settingsClose.focus());
-    }
-    if (wanted) for (const listener of [...settingsOpenListeners]) attempt(() => listener(wanted));
+    settingsSheet.open(SETTINGS_TARGETS.includes(target) ? target : null);
   }
-  function closeSettings() {
-    if (settings.hidden) return;
-    settings.hidden = true;
-    for (const opener of [settingsButton, modeBadge, displayButton]) opener.setAttribute('aria-expanded', 'false');
-    for (const target of inertTargets) target.removeAttribute('inert');
-    const target = restoreFocus;
-    restoreFocus = null;
-    attempt(() => (target ?? settingsButton).focus());
-  }
+  function closeSettings() { settingsSheet.close(); }
   // The display entry point (P3-15); P3-20 replaces the target with its sheet.
   function openDisplay() { openSettings('display'); }
   listen(settingsButton, 'click', () => openSettings());
   listen(modeBadge, 'click', () => openSettings('key'));
   listen(displayButton, 'click', openDisplay);
   listen(settingsClose, 'click', closeSettings);
-  listen(settings, 'keydown', (event) => { if (event.key === 'Escape') { event.preventDefault?.(); closeSettings(); } });
 
   // P2-25: new UI implementation; no translation, Live or QR generation code is ported.
-  const share = element(doc, 'section', { className: 'share-dialog', attributes: {
+  const share = element(doc, 'section', { className: 'share-dialog sheet', attributes: {
     id: 'shell-share', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'share-title' } });
   share.hidden = true;
-  const shareHeader = element(doc, 'div', { className: 'share-header' });
-  const shareTitle = element(doc, 'h2', { attributes: { id: 'share-title' } });
+  const shareHeader = element(doc, 'div', { className: 'share-header sheet-header' });
+  const shareTitle = element(doc, 'h2', { className: 'sheet-title', attributes: { id: 'share-title' } });
   bind.text(shareTitle, 'share.title');
   const shareClose = element(doc, 'button', { className: 'btn btn-secondary share-close', attributes: { type: 'button' } });
   bind.text(shareClose, 'share.close');
@@ -267,38 +263,37 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const shareDeployment = element(doc, 'p', { className: 'share-deployment' });
   bind.text(shareDeployment, 'share.deployment');
   const shareStatus = element(doc, 'p', { attributes: { role: 'status', 'aria-live': 'polite' } });
-  share.append(shareHeader, shareImageHost, shareURL, shareCopy, shareHint, shareDeployment, shareStatus);
-  let shareFocus = null, shareEpoch = 0, shareStatusKey = null;
-  function openShare() {
-    if (destroyed || !share.hidden) return;
-    closeSettings();
-    shareFocus = doc.activeElement ?? shareButton;
-    // Only origin and pathname are read: query/fragment credentials never enter the UI or clipboard.
-    const location = win?.location ?? doc.defaultView?.location;
-    let path = location?.pathname ?? '/';
-    path = path.replace(/\/releases\/[^/]+(?:\/.*)?$/, '/').replace(/\/index\.html$/, '/');
-    if (!path.endsWith('/')) path += '/';
-    shareURL.value = `${location?.origin ?? ''}${path}`;
-    shareImage.setAttribute('src', `${path}icons/qr-site.png`);
-    shareImageHost.append(shareImage);
-    shareDeployment.hidden = location?.hostname === 'gai-cmd.github.io' && location?.protocol === 'https:' && path === '/interp-app/';
-    shareStatusKey = null;
-    shareStatus.textContent = '';
-    share.hidden = false;
-    shareButton.setAttribute('aria-expanded', 'true');
-    for (const target of inertTargets) target.setAttribute('inert', '');
-    attempt(() => shareClose.focus());
-  }
-  function closeShare() {
-    if (share.hidden) return;
-    shareEpoch++;
-    shareImage.remove();
-    share.hidden = true;
-    shareButton.setAttribute('aria-expanded', 'false');
-    for (const target of inertTargets) target.removeAttribute('inert');
-    attempt(() => (shareFocus ?? shareButton).focus());
-    shareFocus = null;
-  }
+  // P3-16: the sheet contract — a fixed title row, a scrolling body and a
+  // sticky action row. The copy action is the only thing in the footer, so it
+  // stays reachable on a small screen without scrolling the QR out of the way.
+  const shareBody = element(doc, 'div', { className: 'sheet-body' });
+  shareBody.append(shareImageHost, shareURL, shareHint, shareDeployment, shareStatus);
+  const shareFooter = element(doc, 'div', { className: 'sheet-footer' });
+  shareFooter.append(shareCopy);
+  share.append(shareHeader, shareBody, shareFooter);
+  let shareEpoch = 0, shareStatusKey = null;
+  // P3-16: the modal mechanics move to the sheet group; the P2-25 URL, QR and
+  // clipboard behaviour below is unchanged, only relocated into onOpen/onClose.
+  const shareSheet = sheetGroup.register({ id: 'shell-share', element: share,
+    openers: [shareButton], initialFocus: shareClose,
+    onOpen() {
+      if (destroyed) return false;
+      // Only origin and pathname are read: query/fragment credentials never enter the UI or clipboard.
+      const location = win?.location ?? doc.defaultView?.location;
+      let path = location?.pathname ?? '/';
+      path = path.replace(/\/releases\/[^/]+(?:\/.*)?$/, '/').replace(/\/index\.html$/, '/');
+      if (!path.endsWith('/')) path += '/';
+      shareURL.value = `${location?.origin ?? ''}${path}`;
+      shareImage.setAttribute('src', `${path}icons/qr-site.png`);
+      shareImageHost.append(shareImage);
+      shareDeployment.hidden = location?.hostname === 'gai-cmd.github.io' && location?.protocol === 'https:' && path === '/interp-app/';
+      shareStatusKey = null;
+      shareStatus.textContent = '';
+      return true;
+    },
+    onClose() { shareEpoch++; shareImage.remove(); } });
+  function openShare() { shareSheet.open(); }
+  function closeShare() { shareSheet.close(); }
   listen(shareButton, 'click', openShare);
   listen(shareClose, 'click', closeShare);
   listen(shareCopy, 'click', async () => {
@@ -313,15 +308,6 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     shareStatusKey = key;
     shareStatus.textContent = i18n.t(key);
     if (key === 'share.copyFailed') attempt(() => { shareURL.focus(); shareURL.select(); });
-  });
-  listen(share, 'keydown', (event) => {
-    if (event.key === 'Escape') { event.preventDefault?.(); closeShare(); }
-    if (event.key !== 'Tab') return;
-    if (event.shiftKey && doc.activeElement === shareClose) {
-      event.preventDefault?.(); shareCopy.focus();
-    } else if (!event.shiftKey && doc.activeElement === shareCopy) {
-      event.preventDefault?.(); shareClose.focus();
-    }
   });
 
   app.append(header, notice, message, tabs, main, settings, share);
@@ -485,6 +471,8 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     render,
     destroy() {
       destroyed = true; transition++;
+      // Before anything else: no sheet, and no inert background, survives a teardown.
+      sheetGroup.destroy();
       simView?.destroy();
       unsubscribe();
       cancelTimer(noticeTimer);

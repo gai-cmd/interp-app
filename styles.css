@@ -475,25 +475,10 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 .shell-planned { margin: 0; color: var(--text-muted); }
 
-/* Settings dialog (content rendered by P1-16; P3-16 moves it onto .sheet). */
-.shell-settings {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  overflow: auto;
-  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--page-x) calc(var(--gap) + env(safe-area-inset-bottom));
-  background: var(--bg);
-}
-
-.shell-settings-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--gap);
-  margin-bottom: var(--gap);
-}
-
-.shell-settings-title { margin: 0; font-size: 1.25rem; }
+/* Settings dialog (content rendered by P1-16). P3-16: the box, the fixed title
+   row, the scrolling body and the centred desktop modal all come from .sheet,
+   which this element now carries; only what is specific to settings is left. */
+.shell-settings-close { min-width: var(--touch); min-height: var(--touch); }
 
 /* 14. Sequential screen (P3-17, DESIGN.md §4 PTT/bubbles, §5, §8). The PTT is
    full width, 64px on mobile and 56px on desktop, growing with text zoom;
@@ -853,18 +838,10 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   --danger: #ffb4ab; --translation-bg: var(--accent-soft);
 }
 
-/* 17. Site sharing uses the shell's modal and touch target tokens (P3-16 moves it onto .sheet). */
-.share-dialog {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  overflow: auto;
-  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--page-x) calc(var(--gap) + env(safe-area-inset-bottom));
-  background: var(--bg);
-}
-.share-dialog > * { max-width: 32rem; margin-inline: auto; }
-.share-header { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); }
-.share-header h2 { font-size: 1.25rem; }
+/* 17. Site sharing (P3-16: on the shared .sheet contract, so the QR and the URL
+   scroll in .sheet-body while the copy action stays in the sticky .sheet-footer).
+   The P2-25 URL, QR and clipboard behaviour is unchanged. */
+.share-dialog .sheet-body > * { max-width: 32rem; margin-inline: auto; }
 .share-button, .share-close, .share-copy { min-width: var(--touch); min-height: var(--touch); }
 .share-image { display: block; width: 100%; height: auto; background: white; }
 .share-url {
@@ -943,7 +920,7 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
   .card, .shell-main, .settings-section { padding: 1.25rem; }
   .caption-text, .turn-text-translation { font-size: 1.5rem; }
   .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 40rem; margin-left: auto; margin-right: auto; width: calc(100% - 2 * var(--page-x)); }
-  .shell-settings-header, .shell-settings-body { max-width: 40rem; margin-inline: auto; }
+  .shell-settings-body { max-width: 40rem; margin-inline: auto; }
   .diag-check { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
   .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
   .pwa-install, .pwa-update { justify-self: start; }
@@ -965,7 +942,7 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 @media (min-width: 64rem) {
   .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 60rem; }
-  .shell-settings-header, .shell-settings-body { max-width: 60rem; }
+  .shell-settings-body { max-width: 60rem; }
   /* Desktop header (P3-15, DESIGN.md §4): app name | tabs | badges | KO EN JA
      | display | share | settings on one wrapping line. The in-header tab
      rules key on the data-layout the shell sets after it has moved the tab
