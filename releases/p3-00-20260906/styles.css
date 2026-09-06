@@ -460,6 +460,40 @@ textarea { width: 100%; resize: vertical; }
 .sim-captions { overflow-y: auto; overflow-anchor: none; max-height: 60vh; min-height: 8rem;
   border: 1px solid var(--border); border-radius: var(--radius); padding: var(--gap); }
 .sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--translation-bg); border-radius: var(--radius); }
-.sim-caption[data-status="partial"] { border-inline-start: 3px dashed var(--accent); }
+.sim-caption[data-status="partial"] { color: var(--text-muted); border-inline-start: 3px dashed var(--accent); }
 .sim-caption[data-status="interrupted"] { border-inline-start: 3px solid var(--danger); }
 .sim-level { width: 100%; min-height: 1rem; }
+
+/* Site sharing uses the shell's modal and touch target tokens. */
+.share-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  overflow: auto;
+  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--gap) calc(var(--gap) + env(safe-area-inset-bottom));
+  background: var(--bg);
+}
+.share-dialog > * { max-width: 32rem; margin-inline: auto; }
+.share-header { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); }
+.share-header h2 { font-size: 1.25rem; }
+.share-button, .share-close, .share-copy { min-width: 44px; min-height: 44px; }
+.share-image { display: block; width: 100%; height: auto; background: white; }
+.share-url {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-block: var(--gap);
+  padding: 0.5rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  resize: vertical;
+  user-select: text;
+}
+.share-copy { display: block; }
+.share-deployment { overflow-wrap: anywhere; }
+
+.settings-key-feedback { display: block; white-space: normal; overflow-wrap: anywhere; }
+.settings-key-feedback[hidden] { display: none; }

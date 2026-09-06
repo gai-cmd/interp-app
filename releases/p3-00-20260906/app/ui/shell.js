@@ -58,7 +58,10 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const settingsButton = element(doc, 'button', { className: 'btn btn-secondary shell-settings-button',
     attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-settings' } });
   bind.text(settingsButton, 'common.settings');
-  header.append(title, badges, settingsButton);
+  const shareButton = element(doc, 'button', { className: 'btn btn-secondary share-button',
+    attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-share' } });
+  bind.text(shareButton, 'share.open');
+  header.append(title, badges, shareButton, settingsButton);
 
   // Live regions: store notices (dismissable) and short shell messages.
   const notice = element(doc, 'div', { className: 'shell-notice', attributes: { role: 'status', 'aria-live': 'polite' } });
@@ -151,6 +154,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
 
   function openSettings() {
     if (!settings.hidden) return;
+    closeShare();
     restoreFocus = doc.activeElement ?? settingsButton;
     settings.hidden = false;
     settingsButton.setAttribute('aria-expanded', 'true');
@@ -170,7 +174,86 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   listen(settingsClose, 'click', closeSettings);
   listen(settings, 'keydown', (event) => { if (event.key === 'Escape') { event.preventDefault?.(); closeSettings(); } });
 
-  app.append(header, notice, message, tabs, main, settings);
+  // P2-25: new UI implementation; no translation, Live or QR generation code is ported.
+  const share = element(doc, 'section', { className: 'share-dialog', attributes: {
+    id: 'shell-share', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'share-title' } });
+  share.hidden = true;
+  const shareHeader = element(doc, 'div', { className: 'share-header' });
+  const shareTitle = element(doc, 'h2', { attributes: { id: 'share-title' } });
+  bind.text(shareTitle, 'share.title');
+  const shareClose = element(doc, 'button', { className: 'btn btn-secondary share-close', attributes: { type: 'button' } });
+  bind.text(shareClose, 'share.close');
+  shareHeader.append(shareTitle, shareClose);
+  const shareImage = element(doc, 'img', { className: 'share-image', attributes: { width: '720', height: '720' } });
+  bind.attribute(shareImage, 'alt', 'share.imageAlt');
+  const shareImageHost = element(doc, 'div', { className: 'share-image-host' });
+  const shareURL = element(doc, 'textarea', { className: 'share-url', attributes: { readonly: '', rows: '2' } });
+  bind.attribute(shareURL, 'aria-label', 'share.urlLabel');
+  const shareCopy = element(doc, 'button', { className: 'btn btn-primary share-copy', attributes: { type: 'button' } });
+  bind.text(shareCopy, 'share.copy');
+  const shareHint = element(doc, 'p');
+  bind.text(shareHint, 'share.hint');
+  const shareDeployment = element(doc, 'p', { className: 'share-deployment' });
+  bind.text(shareDeployment, 'share.deployment');
+  const shareStatus = element(doc, 'p', { attributes: { role: 'status', 'aria-live': 'polite' } });
+  share.append(shareHeader, shareImageHost, shareURL, shareCopy, shareHint, shareDeployment, shareStatus);
+  let shareFocus = null, shareEpoch = 0, shareStatusKey = null;
+  function openShare() {
+    if (destroyed || !share.hidden) return;
+    closeSettings();
+    shareFocus = doc.activeElement ?? shareButton;
+    // Only origin and pathname are read: query/fragment credentials never enter the UI or clipboard.
+    const location = win?.location ?? doc.defaultView?.location;
+    let path = location?.pathname ?? '/';
+    path = path.replace(/\/releases\/[^/]+(?:\/.*)?$/, '/').replace(/\/index\.html$/, '/');
+    if (!path.endsWith('/')) path += '/';
+    shareURL.value = `${location?.origin ?? ''}${path}`;
+    shareImage.setAttribute('src', `${path}icons/qr-site.png`);
+    shareImageHost.append(shareImage);
+    shareDeployment.hidden = location?.hostname === 'gai-cmd.github.io' && location?.protocol === 'https:' && path === '/interp-app/';
+    shareStatusKey = null;
+    shareStatus.textContent = '';
+    share.hidden = false;
+    shareButton.setAttribute('aria-expanded', 'true');
+    for (const target of inertTargets) target.setAttribute('inert', '');
+    attempt(() => shareClose.focus());
+  }
+  function closeShare() {
+    if (share.hidden) return;
+    shareEpoch++;
+    shareImage.remove();
+    share.hidden = true;
+    shareButton.setAttribute('aria-expanded', 'false');
+    for (const target of inertTargets) target.removeAttribute('inert');
+    attempt(() => (shareFocus ?? shareButton).focus());
+    shareFocus = null;
+  }
+  listen(shareButton, 'click', openShare);
+  listen(shareClose, 'click', closeShare);
+  listen(shareCopy, 'click', async () => {
+    const epoch = ++shareEpoch;
+    let key = 'share.copied';
+    try {
+      const clipboard = (win ?? doc.defaultView)?.navigator?.clipboard;
+      if (typeof clipboard?.writeText !== 'function') throw 0;
+      await clipboard.writeText(shareURL.value);
+    } catch { key = 'share.copyFailed'; }
+    if (destroyed || share.hidden || epoch !== shareEpoch) return;
+    shareStatusKey = key;
+    shareStatus.textContent = i18n.t(key);
+    if (key === 'share.copyFailed') attempt(() => { shareURL.focus(); shareURL.select(); });
+  });
+  listen(share, 'keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault?.(); closeShare(); }
+    if (event.key !== 'Tab') return;
+    if (event.shiftKey && doc.activeElement === shareClose) {
+      event.preventDefault?.(); shareCopy.focus();
+    } else if (!event.shiftKey && doc.activeElement === shareCopy) {
+      event.preventDefault?.(); shareClose.focus();
+    }
+  });
+
+  app.append(header, notice, message, tabs, main, settings, share);
 
   // Short shell-level messages (e.g. blocked tab); auto-clear.
   function showMessage(key) {
@@ -241,6 +324,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     if (doc.documentElement) doc.documentElement.setAttribute('lang', i18n.language);
     doc.title = i18n.t('app.name');
     bind.refresh();
+    if (shareStatusKey) shareStatus.textContent = i18n.t(shareStatusKey);
     seqView.refresh();
     simView?.refresh();
     render(snapshot);
@@ -269,6 +353,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     showMessage,
     openSettings,
     closeSettings,
+    openShare, closeShare,
     render,
     destroy() {
       destroyed = true; transition++;

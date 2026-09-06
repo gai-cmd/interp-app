@@ -14,6 +14,12 @@ export const LIVE_MODELS = Object.freeze([DEFAULT_LIVE_MODEL,
 export const LIVE_MODEL_CONFIG = Object.freeze(Object.fromEntries(LIVE_MODELS.map((model) =>
   [model, Object.freeze({ setup: model === DEFAULT_LIVE_MODEL ? 'translation' : 'flash',
     automaticActivityDetection: true, transcriptionMode: 'delta', voices: Object.freeze([]) })])));
+// 400 ms accepts short phrase pauses without the aggressive 100 ms example.
+// Keep 100 ms onset padding and low end sensitivity to limit clipped syllables.
+// Policy values, not measured latency: https://ai.google.dev/gemini-api/docs/live-api/capabilities
+export const LIVE_VAD = Object.freeze({ disabled: false, silenceDurationMs: 400,
+  prefixPaddingMs: 100, startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+  endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' });
 export const SIM_LIMITS = Object.freeze({ inputSampleRate: 16000, outputSampleRate: 24000,
   maxInputBytes: 1024, maxContentBytes: 1048576, maxAudioBytes: 786432, maxTranscriptChars: 16000 });
 const names = Object.freeze({ ko: 'Korean', en: 'English', ja: 'Japanese' });
@@ -24,7 +30,8 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voi
   if (voice !== undefined) throw new ProviderError('SETTINGS_UNSUPPORTED');
   const generationConfig = { responseModalities: ['AUDIO'] };
   const setup = { model: `models/${model}`, generationConfig,
-    inputAudioTranscription: {}, outputAudioTranscription: {} };
+    inputAudioTranscription: {}, outputAudioTranscription: {},
+    realtimeInputConfig: { automaticActivityDetection: { ...LIVE_VAD } } };
   if (LIVE_MODEL_CONFIG[model].setup === 'translation') {
     generationConfig.translationConfig = { targetLanguageCode: targetLanguage, echoTargetLanguage: false };
   } else {
@@ -32,6 +39,7 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voi
     setup.systemInstruction = { parts: [{ text:
       `You are a simultaneous interpreter. Interpret what you hear into ${names[targetLanguage]} immediately, `
       + "in the speaker's own register. Speak only the interpretation: no commentary, never answer questions yourself. "
+      + 'Translate partial phrases as soon as they are intelligible; do not wait for sentence completion. '
       + 'Preserve numbers, names and meaning; do not add content. '
       + `Never repeat an utterance already in ${names[targetLanguage]}. `
       + 'If you hear your own interpreted voice coming back through the speakers, stay silent.' }] };

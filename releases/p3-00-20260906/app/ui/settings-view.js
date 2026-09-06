@@ -7,6 +7,7 @@
 // Saving a key never starts a check, and mode changes are explicit. Key values
 // never reach the DOM, notices or logs; the input is cleared on save.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
+import { LIVE_MODELS, DEFAULT_LIVE_MODEL } from '../providers/gemini/live-config.js';
 import { VOICE_OUTPUTS } from '../state.js';
 import { redact } from '../security/redact.js';
 import { createBinder, SOURCE_OPTIONS } from './seq-view.js';
@@ -57,7 +58,7 @@ export function sharedFragmentFrom(value) {
  * diagnosticsView, destroy }.
  */
 export function createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc = shell?.root?.ownerDocument,
-  persistence = false, app = null, metrics = null, hub = null, getDeviceVoices = null, onUiLanguageChange = null } = {}) {
+  persistence = false, app = null, simEngine = null, metrics = null, hub = null, getDeviceVoices = null, onUiLanguageChange = null } = {}) {
   const root = shell?.elements?.panels?.settingsBody;
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof shell.onLanguageChange !== 'function'
     || typeof config?.keyStore?.subscribe !== 'function' || typeof config.registry?.get !== 'function'
@@ -72,7 +73,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   let snapshot = store.snapshot();
   let providerId = attempt(() => keyStore.getSelection())?.providerId ?? config.defaults?.providerId ?? config.providers[0].id;
   if (!config.providers.some((item) => item.id === providerId)) providerId = config.providers[0].id;
-  let confirmingDelete = false, confirmingClear = false;
+  let confirmingDelete = false, confirmingClear = false, keyFeedbackKey = null;
 
   function notify(key) {
     attempt(() => store.setNotice(resolveKey(i18n, key)));
@@ -178,7 +179,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
 
   // Personal key: input, remember (only with storage), save, delete, check.
   const keySection = section('settings-key', 'settings.personalKey');
-  const keyStatus = element(doc, 'p', { className: 'settings-key-status', attributes: { role: 'status', 'aria-live': 'polite' } });
+  const keyStatus = element(doc, 'p', { className: 'badge settings-key-status', attributes: { role: 'status', 'aria-live': 'polite' } });
   keySection.append(keyStatus);
   const hubOnly = note(keySection, 'settings.hubKey', 'settings-hub-only');
   const keyForm = element(doc, 'form', { className: 'settings-key-form', attributes: { novalidate: '' } });
@@ -190,7 +191,11 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   const rememberInput = element(doc, 'input', { className: 'settings-checkbox', attributes: { type: 'checkbox', id: 'settings-remember' } });
   const rememberLabel = element(doc, 'label', { className: 'settings-label', attributes: { for: 'settings-remember' } });
   bind.text(rememberLabel, 'settings.rememberKey');
+  rememberInput.checked = persistence && (metadata('personal')?.remembered ?? true);
   rememberRow.append(rememberInput, rememberLabel);
+  const storageWarning = note(rememberRow, 'settings.rememberWarning');
+  storageWarning.setAttribute('id', 'settings-remember-warning');
+  rememberInput.setAttribute('aria-describedby', 'settings-remember-warning');
   rememberRow.hidden = !persistence;
   keyForm.append(rememberRow);
   const keyActions = element(doc, 'div', { className: 'settings-actions' });
@@ -200,14 +205,21 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   keyForm.append(keyActions);
   keyForm.addEventListener('submit', (event) => { event.preventDefault?.(); saveKey(); });
   keySection.append(keyForm);
+  const keyFeedback = element(doc, 'p', { className: 'badge settings-key-feedback',
+    attributes: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' } });
+  keySection.append(keyFeedback);
   function saveKey() {
     const value = typeof keyInput.value === 'string' ? keyInput.value.trim() : '';
     // The field is emptied before the store call so the value lives in one place.
     keyInput.value = '';
-    if (!value) { attempt(() => keyInput.focus()); return; }
+    if (!value) { keyFeedbackKey = 'error.INVALID_KEY'; render(); attempt(() => keyInput.focus()); return; }
     const remember = persistence && rememberInput.checked === true;
     // No check runs here: the user starts diagnostics explicitly (§6.2).
-    call(() => keyStore.setPersonal(providerId, value, { remember }), keyStoreErrorKey);
+    try {
+      keyStore.setPersonal(providerId, value, { remember });
+      keyFeedbackKey = remember ? 'settings.keySavedBrowser' : 'settings.keySavedSession';
+    } catch (error) { keyFeedbackKey = keyStoreErrorKey(error); notify(keyFeedbackKey); }
+    render();
   }
   const keyManage = element(doc, 'div', { className: 'settings-actions settings-key-manage' });
   const checkButton = button(keyManage, 'common.check', 'btn-secondary settings-key-check', () => {
@@ -307,6 +319,22 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   deviceField.hidden = typeof getDeviceVoices !== 'function';
   note(voiceSection, 'voice.devicePrivacy');
 
+  const modelSelect = element(doc, 'select', { className: 'settings-select' });
+  for (const [index, value] of LIVE_MODELS.entries()) {
+    const option = element(doc, 'option', { attributes: { value } });
+    bind.text(option, `sim.model${index}`); modelSelect.append(option);
+  }
+  modelSelect.value = simEngine?.model ?? DEFAULT_LIVE_MODEL;
+  const modelField = field(voiceSection, 'settings-live-model', 'sim.model', modelSelect);
+  modelField.hidden = !simEngine;
+  note(modelField, 'sim.modelHelp');
+  modelSelect.addEventListener('change', async () => {
+    modelSelect.disabled = true;
+    try { await simEngine?.setModel(modelSelect.value); }
+    catch (error) { notify(errorKey(error)); }
+    finally { modelSelect.value = simEngine?.model ?? DEFAULT_LIVE_MODEL; modelSelect.disabled = false; }
+  });
+
   // Diagnostics: per-capability checks against the selected provider and key source.
   const diagnosticsSection = section('settings-diagnostics', 'diagnostics.title');
   function checkOptions() {
@@ -366,6 +394,8 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   function selectProvider(id) {
     if (!config.providers.some((item) => item.id === id) || id === providerId) return providerId;
     providerId = id;
+    keyFeedbackKey = null;
+    rememberInput.checked = persistence && (metadata('personal')?.remembered ?? true);
     showDeleteConfirm(false);
     render();
     return providerId;
@@ -471,6 +501,8 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     targetSelect.value = snapshot.interpretation.targetLanguage;
     const desc = descriptor();
     const current = selection();
+    keyFeedback.hidden = !keyFeedbackKey;
+    keyFeedback.textContent = keyFeedbackKey ? i18n.t(resolveKey(i18n, keyFeedbackKey)) : '';
     renderProvider(desc);
     renderKey(desc, current);
     renderShared(desc);
@@ -488,7 +520,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   }
 
   removers.push(store.subscribe(render));
-  removers.push(attempt(() => keyStore.subscribe(() => render())) ?? (() => {}));
+  removers.push(attempt(() => keyStore.subscribe(() => { keyFeedbackKey = null; render(); })) ?? (() => {}));
   removers.push(diagnostics.subscribe(() => render()));
   removers.push(shell.onLanguageChange(refresh));
   render(snapshot);
@@ -496,7 +528,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   return Object.freeze({
     element: container,
     elements: Object.freeze({ uiSelect, sourceSelect, targetSelect, providerSelect, providerTitle, keyInput, rememberInput, saveButton,
-      checkButton, deleteButton, deleteConfirm, keyStatus, sharedInput, sharedImport, sharedEnd, sharedEvent, modeInputs: Object.freeze(
+      checkButton, deleteButton, deleteConfirm, keyStatus, keyFeedback, modelSelect, sharedInput, sharedImport, sharedEnd, sharedEvent, modeInputs: Object.freeze(
         Object.fromEntries(KEY_SOURCES.map((source) => [source, modeInputs[source].input]))),
       outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions, sections: Object.freeze({
         language: languageSection, provider: providerSection, key: keySection, shared: sharedSection, mode: modeSection,

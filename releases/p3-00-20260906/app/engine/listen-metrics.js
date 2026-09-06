@@ -3,7 +3,7 @@
 // AudioContext seconds from this clock. No text, identifiers or audio is kept.
 export const METRICS_POLICY = Object.freeze({ maxSamples: 512, maxValue: Number.MAX_SAFE_INTEGER });
 export const METRIC_NAMES = Object.freeze([
-  'setupMs', 'reconnects', 'recoveryMs', 'closeFailures', 'inputSampleRate', 'sentFrames',
+  'speechToFirstAudioMs', 'speechEndToFirstAudioMs', 'setupMs', 'reconnects', 'recoveryMs', 'closeFailures', 'inputSampleRate', 'sentFrames',
   'inputQueueMax', 'droppedInputMs', 'firstPartialMs', 'firstFinalMs', 'revisions',
   'duplicates', 'interrupted', 'possibleGaps', 'firstAudioReceivedMs', 'firstAudioScheduledMs',
   'queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs', 'droppedAudioMs',
@@ -11,6 +11,7 @@ export const METRIC_NAMES = Object.freeze([
 ]);
 const counters = new Set(['reconnects', 'closeFailures', 'sentFrames', 'droppedInputMs', 'revisions',
   'duplicates', 'interrupted', 'possibleGaps', 'droppedAudioMs', 'skippedSentences', 'speechFailures']);
+const signed = new Set(['speechEndToFirstAudioMs']);
 const firsts = new Set(['setupMs', 'firstPartialMs', 'firstFinalMs', 'firstAudioReceivedMs',
   'firstAudioScheduledMs', 'ttsFirstRequestMs', 'ttsFirstStartMs']);
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -34,6 +35,7 @@ export function createListenMetrics({ now = () => performance.now(), maxSamples 
   const start = clock();
   const values = Object.fromEntries(METRIC_NAMES.map(name => [name, counters.has(name) ? 0 : null]));
   const samples = [];
+  let speechStart = null, lastSpeech = null, firstSpeechAudio = null, speechEnded = false;
   let stopped = false, delayedAt = null, delayed = 0, observations = 0;
   const listeners = new Set();
   function snapshot() {
@@ -48,12 +50,37 @@ export function createListenMetrics({ now = () => performance.now(), maxSamples 
   }
   function notify() { const value = snapshot(); for (const fn of [...listeners]) { try { fn(value); } catch { /* Consumer. */ } } }
   return Object.freeze({ snapshot,
+    // Local RMS is an estimate, never server VAD or physical speaker timing.
+    // 0.01 rejects quiet room noise; 400 ms confirms a pause without gating audio.
+    inputLevel(rms) {
+      if (stopped || !number(rms)) return;
+      const at = clock();
+      if (rms >= 0.01) {
+        if (speechStart === null || speechEnded) {
+          speechStart = at; firstSpeechAudio = null; speechEnded = false;
+          values.speechToFirstAudioMs = null; values.speechEndToFirstAudioMs = null;
+        }
+        lastSpeech = at;
+      } else if (lastSpeech !== null && !speechEnded && at - lastSpeech >= 400) {
+        speechEnded = true;
+        if (firstSpeechAudio !== null) values.speechEndToFirstAudioMs = firstSpeechAudio - lastSpeech;
+        notify();
+      }
+    },
+    audioReceived() {
+      if (stopped || speechStart === null || firstSpeechAudio !== null) return;
+      firstSpeechAudio = clock();
+      values.speechToFirstAudioMs = firstSpeechAudio - speechStart;
+      if (speechEnded) values.speechEndToFirstAudioMs = firstSpeechAudio - lastSpeech;
+      notify();
+    },
+    resetInput() { speechStart = lastSpeech = firstSpeechAudio = null; speechEnded = false; },
     mark(name) {
       if (stopped || !firsts.has(name) || values[name] !== null) return false;
       values[name] = clock() - start; notify(); return true;
     },
     observe(name, value = 1) {
-      if (stopped || !METRIC_NAMES.includes(name) || firsts.has(name) || !number(value)
+      if (stopped || !METRIC_NAMES.includes(name) || firsts.has(name) || !(number(value) || (signed.has(name) && Number.isFinite(value)))
         || ['queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs'].includes(name)) return false;
       values[name] = bounded(counters.has(name) ? values[name] + value
         : name === 'inputQueueMax' ? Math.max(values[name] ?? 0, value) : value);
