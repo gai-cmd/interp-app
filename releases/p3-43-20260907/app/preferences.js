@@ -1,0 +1,281 @@
+// New implementation of design-p3 §1.5, §1.10 and architecture.md "개인 설정
+// 저장소"; no legacy code is ported. This store holds the user's own choices
+// only. Effective values (policy defaults, forced values) are computed by
+// app/policy/resolve.js and are never written here, so lifting an
+// administrator restriction restores the previous personal choice. Importing
+// touches no browser globals; localStorage is injected. Storage rejection and
+// corrupted values never throw out of this module: a corrupt value reads as
+// "no choice" (null) and a rejected write is kept in memory for this run.
+// Device IDs are local-only and must not enter policy, logs or diagnostics.
+import { REGISTERED_SETTINGS } from './policy/schema.js';
+import { SUPPORTED_LANGUAGES } from './i18n/index.js';
+import { APP_DEFAULTS } from './config.js';
+
+// Same key main.js has used since P1-19 for the UI language (§1.11 reuse).
+export const UI_LANGUAGE_STORAGE_KEY = 'interp-app.ui.v1.language';
+export const PREFERENCE_STORAGE_PREFIXES = Object.freeze({
+  ui: 'interp-app.ui.v1.', pref: 'interp-app.pref.v1.', audio: 'interp-app.audio.v1.',
+});
+const DEVICE_ID_MAX_CHARS = 256;
+
+function deepFreeze(value) {
+  if (Array.isArray(value)) { for (const item of value) deepFreeze(item); return Object.freeze(value); }
+  if (value !== null && typeof value === 'object') { for (const item of Object.values(value)) deepFreeze(item); return Object.freeze(value); }
+  return value;
+}
+
+// Local-only names: never policy managed. ui.language is an access path and
+// cannot be locked (§1.4); device IDs stay on the device (§1.14).
+export const LOCAL_SETTINGS = deepFreeze({
+  'ui.language': { kind: 'enum', values: [...SUPPORTED_LANGUAGES], default: null },
+  'audio.inputDeviceId': { kind: 'deviceId', default: null },
+  'audio.outputDeviceId': { kind: 'deviceId', default: null },
+});
+
+// P3-25: the preference name that keeps the choice for each MediaDeviceKind
+// the app lists. Video devices are never enumerated or stored.
+export const AUDIO_DEVICE_PREFERENCES = Object.freeze({
+  audioinput: 'audio.inputDeviceId', audiooutput: 'audio.outputDeviceId',
+});
+// Identifiers a browser uses for "the system's current device" rather than a
+// device: the empty ID enumerateDevices exposes before permission, and the
+// `default` / `communications` pseudo IDs Chromium lists. None is a device the
+// user can pick apart from the system default, so none is ever stored: the
+// stored value null already means "system default" and follows the OS choice.
+export const SYSTEM_DEFAULT_DEVICE_IDS = Object.freeze(['', 'default', 'communications']);
+
+/** True for null/undefined and every browser pseudo ID that means the system default. */
+export function isSystemDefaultDeviceId(value) {
+  return value === null || value === undefined || (typeof value === 'string' && SYSTEM_DEFAULT_DEVICE_IDS.includes(value));
+}
+
+// P3-18: the caption size contract of design-p3 §1.10 — one 1~2rem scale in
+// 0.125rem steps that the 가−/가+ buttons, the caption-only slider and the
+// settings screen all move. The numbers are not repeated here: they are the
+// registered `captions.size` spec, so the policy schema stays the only source.
+export const CAPTION_SIZE = Object.freeze({
+  min: REGISTERED_SETTINGS['captions.size'].min,
+  max: REGISTERED_SETTINGS['captions.size'].max,
+  step: REGISTERED_SETTINGS['captions.size'].step,
+  initial: REGISTERED_SETTINGS['captions.size'].default,
+});
+/** Nearest valid caption size; anything unreadable falls back to the default. */
+export function clampCaptionSize(value) {
+  const number = typeof value === 'string' ? Number.parseFloat(value) : value;
+  if (!Number.isFinite(number)) return CAPTION_SIZE.initial;
+  const steps = Math.round((number - CAPTION_SIZE.min) / CAPTION_SIZE.step);
+  const size = CAPTION_SIZE.min + steps * CAPTION_SIZE.step;
+  // Steps of 0.125 are exact in binary, but rounding keeps the text short.
+  return Number(Math.min(CAPTION_SIZE.max, Math.max(CAPTION_SIZE.min, size)).toFixed(3));
+}
+/** One 가− / 가+ press: the next size in that direction, clamped to the range. */
+export function stepCaptionSize(value, direction) {
+  return clampCaptionSize(clampCaptionSize(value) + Math.sign(direction) * CAPTION_SIZE.step);
+}
+
+// Registered policy settings first (resolve.js iterates the same order), then local ones.
+export const PREFERENCE_NAMES = Object.freeze([...Object.keys(REGISTERED_SETTINGS), ...Object.keys(LOCAL_SETTINGS)]);
+// Stored per provider (§1.13): the key carries the provider ID of the instance.
+export const PROVIDER_SCOPED_NAMES = Object.freeze(['billing.plan']);
+
+// Storage key table from architecture.md (P3-01 decision).
+const STORAGE_KEYS = Object.freeze({
+  'ui.language': UI_LANGUAGE_STORAGE_KEY,
+  'ui.mode': `${PREFERENCE_STORAGE_PREFIXES.ui}mode`,
+  'ui.tone': `${PREFERENCE_STORAGE_PREFIXES.ui}tone`,
+  'ui.text': `${PREFERENCE_STORAGE_PREFIXES.ui}text`,
+  'captions.size': `${PREFERENCE_STORAGE_PREFIXES.ui}captionSize`,
+  'interpretation.sourceLanguage': `${PREFERENCE_STORAGE_PREFIXES.pref}interpretation.sourceLanguage`,
+  'interpretation.targetLanguage': `${PREFERENCE_STORAGE_PREFIXES.pref}interpretation.targetLanguage`,
+  'voice.output': `${PREFERENCE_STORAGE_PREFIXES.pref}voice.output`,
+  'billing.plan': `${PREFERENCE_STORAGE_PREFIXES.pref}billing.plan`,
+  'audio.inputDeviceId': `${PREFERENCE_STORAGE_PREFIXES.audio}inputDeviceId`,
+  'audio.outputDeviceId': `${PREFERENCE_STORAGE_PREFIXES.audio}outputDeviceId`,
+});
+
+const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const NUMBER_TEXT = /^-?\d+(?:\.\d+)?$/;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const invalid = () => { throw new TypeError('INVALID_REQUEST'); };
+
+/** Spec of a registered or local-only name; unknown (incl. prototype) names throw. */
+export function preferenceSpec(name) {
+  if (typeof name !== 'string') invalid();
+  if (Object.hasOwn(REGISTERED_SETTINGS, name)) return REGISTERED_SETTINGS[name];
+  if (Object.hasOwn(LOCAL_SETTINGS, name)) return LOCAL_SETTINGS[name];
+  throw new TypeError('PREFERENCE_UNKNOWN');
+}
+
+/** localStorage key for a name; provider-scoped names append the provider ID. */
+export function storageKeyFor(name, providerId = APP_DEFAULTS.providerId) {
+  preferenceSpec(name);
+  if (!PROVIDER_SCOPED_NAMES.includes(name)) return STORAGE_KEYS[name];
+  if (typeof providerId !== 'string' || !PROVIDER_ID_PATTERN.test(providerId)) invalid();
+  return `${STORAGE_KEYS[name]}.${providerId}`;
+}
+
+const onGrid = (value, origin, step) => {
+  const steps = (value - origin) / step;
+  return Math.abs(steps - Math.round(steps)) < 1e-9;
+};
+
+/**
+ * The one value interpretation shared by the store, the resolver (P3-05), the
+ * appearance boot script and runtime (P3-13/14): returns the accepted value or
+ * null. Accepts the stored string form as well as typed values; never throws
+ * for values, only for unknown names.
+ */
+export function normalizePreference(name, value) {
+  const spec = preferenceSpec(name);
+  if (value === null || value === undefined) return null;
+  if (spec.kind === 'enum') return typeof value === 'string' && spec.values.includes(value) ? value : null;
+  if (spec.kind === 'number') {
+    let number;
+    if (typeof value === 'number') number = value;
+    else if (typeof value === 'string' && NUMBER_TEXT.test(value.trim())) number = Number(value.trim());
+    else return null;
+    return Number.isFinite(number) && number >= spec.min && number <= spec.max && onGrid(number, spec.min, spec.step)
+      ? number : null;
+  }
+  // deviceId: opaque browser identifier, valid for this origin and browser
+  // profile only (it may change after site data is cleared or, in some
+  // browsers, per session). A pseudo ID for the system default is "no choice".
+  return typeof value === 'string' && !isSystemDefaultDeviceId(value) && Array.from(value).length <= DEVICE_ID_MAX_CHARS
+    && !CONTROL_CHARS.test(value) ? value : null;
+}
+
+/** String form written to storage (numbers use the shortest round-trip text). */
+export function serializePreference(name, value) {
+  const accepted = normalizePreference(name, value);
+  return accepted === null ? null : String(accepted);
+}
+
+function usable(storage) {
+  return !!storage && typeof storage.getItem === 'function' && typeof storage.setItem === 'function'
+    && typeof storage.removeItem === 'function';
+}
+
+/**
+ * The name a storage key belongs to, or null for keys owned elsewhere (the
+ * personal key store, the PWA install hint, foreign keys). Used to route a
+ * `storage` event from another tab (P3-14) to the one name it changed.
+ */
+export function nameForStorageKey(key, providerId = APP_DEFAULTS.providerId) {
+  if (typeof key !== 'string') return null;
+  for (const name of PREFERENCE_NAMES) {
+    if (storageKeyFor(name, providerId) === key) return name;
+  }
+  return null;
+}
+
+/**
+ * Read one personal choice straight from storage without an instance (boot
+ * paths). Storage exceptions and corrupt values yield null.
+ */
+export function readPreference(storage, name, { providerId = APP_DEFAULTS.providerId } = {}) {
+  const key = storageKeyFor(name, providerId);
+  if (!usable(storage)) return null;
+  let raw;
+  try { raw = storage.getItem(key); } catch { return null; }
+  return normalizePreference(name, raw);
+}
+
+/**
+ * createPreferences({ storage?, now?, providerId? }) returns a frozen store:
+ * get(name), set(name, value) -> { ok, persisted }, remove(name) -> { ok, persisted },
+ * snapshot() -> frozen { [name]: value | null }, subscribe(fn) -> unsubscribe,
+ * sync(key) -> frozen [name] (P3-14: another tab's `storage` event),
+ * persisted (storage usable and the last access succeeded), providerId.
+ * Reads go through to storage on every call so another tab's change is seen
+ * without a cache; values that could not be written are kept in memory for
+ * this run only. Values are validated with normalizePreference before any
+ * write; an invalid value is rejected ({ ok: false }) and storage is untouched.
+ * The store never records effective values: policy defaults and forced values
+ * live only in resolveEffective() results.
+ * Listener events are frozen { type: 'set' | 'remove' | 'sync', name, value,
+ * persisted, at }; `sync` carries the value now read from storage.
+ */
+export function createPreferences({ storage = null, now = Date.now, providerId = APP_DEFAULTS.providerId } = {}) {
+  if (typeof now !== 'function') invalid();
+  if (typeof providerId !== 'string' || !PROVIDER_ID_PATTERN.test(providerId)) invalid();
+  const backing = usable(storage) ? storage : null;
+  const memory = new Map();
+  const listeners = new Set();
+  let healthy = backing !== null;
+  const keyOf = (name) => storageKeyFor(name, providerId);
+
+  function access(fn) {
+    if (!backing) return { ok: false, value: undefined };
+    try {
+      const value = fn(backing);
+      healthy = true;
+      return { ok: true, value };
+    } catch {
+      // Quota, SecurityError, disabled storage: never rethrown, never logged.
+      healthy = false;
+      return { ok: false, value: undefined };
+    }
+  }
+  // A memory copy exists only while this run's last write of the name was
+  // rejected and no newer write arrived (a successful write or another tab's
+  // sync() drops it), so it is the newest known choice and wins over the older
+  // stored value (P3-14: the page must follow a choice whose save failed).
+  function read(name) {
+    if (memory.has(name)) return memory.get(name);
+    const key = keyOf(name);
+    const result = access((store) => store.getItem(key));
+    return result.ok ? normalizePreference(name, result.value) : null;
+  }
+  function notify(type, name, value, persisted) {
+    const event = Object.freeze({ type, name, value, persisted, at: now() });
+    for (const listener of [...listeners]) {
+      try { listener(event); } catch { /* Consumer-owned failure. */ }
+    }
+  }
+
+  const api = {
+    providerId,
+    get persisted() { return healthy; },
+    get(name) { return read(name); },
+    set(name, value) {
+      const accepted = normalizePreference(name, value);
+      if (accepted === null) return Object.freeze({ ok: false, persisted: healthy });
+      const key = keyOf(name);
+      const text = String(accepted);
+      const written = access((store) => { store.setItem(key, text); }).ok;
+      if (written) memory.delete(name);
+      else memory.set(name, accepted);
+      notify('set', name, accepted, written);
+      return Object.freeze({ ok: true, persisted: written });
+    },
+    remove(name) {
+      const key = keyOf(name);
+      const removed = access((store) => { store.removeItem(key); }).ok;
+      memory.delete(name);
+      notify('remove', name, null, removed);
+      return Object.freeze({ ok: true, persisted: removed });
+    },
+    snapshot() {
+      return Object.freeze(Object.fromEntries(PREFERENCE_NAMES.map((name) => [name, read(name)])));
+    },
+    // Another tab changed storage (a `storage` event; key null is that tab's
+    // clear()). Reads already go through to storage, so this only drops the
+    // stale memory copy of the changed name (the other tab's write is the
+    // newer intent) and tells subscribers to recompute. Keys owned elsewhere
+    // are ignored; nothing is written or thrown.
+    sync(key) {
+      const names = key === null ? [...PREFERENCE_NAMES] : [nameForStorageKey(key, providerId)].filter((name) => name !== null);
+      for (const name of names) {
+        memory.delete(name);
+        notify('sync', name, read(name), healthy);
+      }
+      return Object.freeze(names);
+    },
+    subscribe(listener) {
+      if (typeof listener !== 'function') invalid();
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  return Object.freeze(api);
+}
