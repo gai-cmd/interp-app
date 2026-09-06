@@ -329,3 +329,180 @@ Node v24.18.0에서 다음 명령을 직접 실행했다.
 모든 테스트의 실패·취소·skip·todo는 0이다. 신규 파일은 activity.js와
 activity.test.mjs이며, session-manager.js·session-manager.test.mjs·이 문서를
 수정했다. git 커밋은 만들지 않았다.
+
+## P3-01 P3 공통 인터페이스와 경계
+
+기준은 [design-p3.md](design-p3.md) §1·§3·§4다. 아래는 P3-02 이후 과제가 서로 import할 계약이며,
+P3-01은 코드를 만들지 않는다. 구현 과제는 이 형태를 따르되 정당한 이유로 바꾸면 보고서에 적는다.
+공통 스타일: `createX({ 주입 의존성 })`은 import만으로 브라우저 전역·네트워크·저장소를 건드리지 않고,
+동결된 객체를 반환하며, `snapshot()`은 동결된 비밀 없는 값을, `subscribe(fn)`은 해제 함수를 준다.
+시계·타이머는 `now/setTimeout/clearTimeout`으로 주입한다.
+
+### 정책 모듈 (`app/policy/`)
+
+| 파일 | 과제 | 계약 |
+|---|---|---|
+| `schema.js` | P3-04 | `POLICY_SCHEMA_VERSION = 1`, `POLICY_LIMITS`(본문 65,536바이트·공지 10·행사 100·본문 1,000자·긴급 이유 300자), `REGISTERED_SETTINGS`(§1.4의 여덟 설정 이름과 종류·허용값·범위), `REGISTERED_FEATURES`(여섯 기능 이름), `compareVersions(a, b)`(숫자 비교, 잘못된 형식은 예외), `validatePolicy(input, { registeredHubIds, now })` |
+| `resolve.js` | P3-05·08 | `resolveEffective({ policy, preferences, event, hubControl, capabilities })` 순수 함수 |
+| `client.js` | P3-06 | `createPolicyClient({ fetch, location, now, setTimeout, clearTimeout, appVersion, registeredHubIds })` |
+| `runtime.js` | P3-07 | `createPolicyRuntime({ client, preferences, activity, sessionManager, now })` |
+
+`validatePolicy`는 입력을 변경하지 않고 `{ ok: true, policy }` 또는 `{ ok: false, issues }`를 돌려준다.
+`policy`는 검증된 필드만 새 객체에 복사해 깊이 동결한 값이고, `issues`는 `{ code, path }` 배열이다
+(`path`는 `settings.ui.tone.default`처럼 점 경로, 값·원문은 넣지 않는다). 이슈 코드는
+`POLICY_SCHEMA`, `POLICY_FIELD`, `POLICY_RANGE`, `POLICY_TEXT`, `POLICY_REFERENCE`, `POLICY_CONFLICT`,
+`POLICY_UNKNOWN_KEY`, `POLICY_TOO_LARGE`로 시작하는 대문자 식별자만 쓴다. 관리자 콘솔·`check-release`·앱은
+모두 이 함수 하나를 쓴다. `__proto__`·`constructor`·`prototype` 키와 미등록 키는 거부한다.
+
+`resolveEffective`의 결과:
+
+```text
+{
+  blocked: null | { code, revision },        // 실행 전체 차단 사유 (아래 코드 표)
+  settings: { [name]: { value, source, allowed, locked, reasonKey } },
+  features: { [name]: { enabled, reasonKey } },
+  event: null | { id, providerId, expiresAt, allowedCapabilities },
+}
+```
+
+`source`는 `personal | policyDefault | forced | appDefault`, `reasonKey`는 잠금·제한 설명의 사전 키다.
+개인 선택 원본은 결과에 덮어쓰지 않으며 저장소에 실효값을 쓰지 않는다. `ui.language`는 정책 대상이 아니다.
+
+`createPolicyClient`는 `start()`, `stop()`, `refresh({ reason })`, `snapshot()`, `subscribe()`를 제공한다.
+상태는 `loading | ready | stale | failed | expired`, `snapshot()`은 `{ status, policy, revision, fetchedAt, error }`이며
+`error`는 코드 문자열뿐이다. 요청 세대 카운터로 늦은 응답을 버리고, 60초 전경 갱신·전경 복귀 갱신·5분 stale
+유지는 §1.5 값이다. 정책 URL은 `location.pathname`의 마지막 `/`까지를 배포 루트로 삼은 `policy.json`
+하나이며 `redirect: 'error'`, `cache: 'no-store'`, 5초 제한, 64KiB 본문 상한을 적용한다. 본문·정책은 영구
+저장하지 않는다.
+
+`createPolicyRuntime`은 `snapshot()`, `subscribe()`, `assertAction(kind)`를 제공한다. `kind`는
+`seq.start | seq.retry | seq.replay | diagnostics | sim.direct | hub.join | event.join`이다.
+차단 시 `PolicyError`(`runtime.js`에서 정의, `name = 'PolicyError'`, `code` 필드)를 던진다. 코드:
+
+| 코드 | 뜻 |
+|---|---|
+| `POLICY_LOADING` | 첫 조회 중 |
+| `POLICY_UNAVAILABLE` | 첫 조회 실패·잘못된 정책·5분 stale 초과 |
+| `POLICY_EXPIRED` | `validUntil` 경과 |
+| `POLICY_STOPPED` | 긴급 중지 |
+| `POLICY_FEATURE_DISABLED` | 해당 기능 토글 OFF |
+| `APP_VERSION_TOO_OLD` | `minAppVersion` 미달 |
+| `EVENT_ENDED` | 참가 행사 만료·중지·목록 제거 |
+| `HUB_CONTROL_STOPPED` | 허브 통제 중지 latch |
+| `HUB_CONTROL_LOST` | 협상한 제어의 heartbeat 상실 |
+
+이 코드는 `ERROR_CODES`(제공자 계약)에 넣지 않는다. 화면은 `errorCodeKey(error.code)`로 `error.<CODE>`
+키를 만들며 `redact()`를 거치지 않는다. P3-02가 아홉 코드의 `error.*` 키를 세 언어로 추가한다.
+런타임은 정책 축소·중지 시 `activity.close()`와 기존 `stopWork()` 경로만 호출하고, 소켓 종료 확인 실패를
+성공으로 바꾸거나 Live 점유를 강제 해제하지 않는다. 허용 확대·중지 해제는 게이트만 열고 자동 시작하지 않는다.
+
+### 개인 설정 저장소 (`app/preferences.js`, P3-05·14·18·25·29)
+
+`createPreferences({ storage, now })`는 `get(name)`, `set(name, value)`, `remove(name)`, `snapshot()`,
+`subscribe(fn)`, `persisted`(저장소 사용 가능 여부)를 제공한다. `name`은 `REGISTERED_SETTINGS`와 아래 로컬
+전용 이름만 받고, 값은 등록된 종류·허용값으로 검증한 뒤 저장한다. 오염값·저장소 거부는 기본값으로
+대체하고 예외를 밖으로 내지 않는다. 다른 탭의 `storage` 이벤트는 P3-14가 구독한다.
+
+| 이름 | 저장 키 | 비고 |
+|---|---|---|
+| `ui.language` | `interp-app.ui.v1.language` | 기존 키 재사용, 정책 잠금 불가 |
+| `ui.mode` / `ui.tone` / `ui.text` | `interp-app.ui.v1.mode` / `.tone` / `.text` | DESIGN.md §10, 부트 스크립트와 같은 해석 |
+| `captions.size` | `interp-app.ui.v1.captionSize` | 1~2rem, 0.125 단위 |
+| `interpretation.sourceLanguage` / `targetLanguage` | `interp-app.pref.v1.interpretation.sourceLanguage` / `.targetLanguage` | P3-01 결정: 표시 설정 외 등록 설정은 `interp-app.pref.v1.<이름>` |
+| `voice.output` | `interp-app.pref.v1.voice.output` | 위와 같음 |
+| `billing.plan` | `interp-app.pref.v1.billing.plan.<providerId>` | 제공자별 |
+| `audio.inputDeviceId` / `audio.outputDeviceId` | `interp-app.audio.v1.inputDeviceId` / `.outputDeviceId` | 로컬 전용, 정책·로그·진단 내보내기 제외 |
+| `usage.rates.<providerId>` | `interp-app.pref.v1.usage.rates.<providerId>` | 정책 `allowLocalOverride=true`일 때만 |
+
+`interp-app.personal-key.v1.<providerId>`와 `interp-app.ui.v1.install-hint`는 기존 소유자(키 저장소·PWA)가
+계속 관리하며 preferences를 거치지 않는다.
+
+### 표시 설정 (`app/ui/appearance-boot.js`, `app/ui/appearance.js`, P3-13·14)
+
+부트 스크립트는 모듈이 아닌 동기 스크립트로 `<head>`의 스타일시트 앞에 놓인다. 저장된 `ui.mode/tone/text`만
+읽어 `<html data-mode|data-tone|data-text>`를 설정하고, `system`이면 `data-mode`를 제거한다. 저장소 예외·
+오염값은 `system/navy/m`으로 진행한다. 네트워크·키·정책 접근이 없고 전역을 남기지 않는다. `appearance.js`의
+`createAppearance({ document, matchMedia, preferences, runtime })`는 같은 값 해석 함수를 export해 부트와 런타임이
+한 규칙을 쓰고, `apply(effectiveSettings)`, `destroy()`를 제공한다. 관리자 HTML도 같은 부트 스크립트를 쓴다.
+
+### 허브 통제 (`app/hub/protocol.js`, `app/hub/control.js`, P3-09·10·11)
+
+`parseHubMessage`는 `policy.control` 봉투를 추가로 정규화한다(최대 16,384바이트, `ttlSeconds` 10~120,
+`disabledFeatures`는 `REGISTERED_FEATURES` 부분집합, `notice`는 세 언어 본문). `createHubProtocol`은
+`hello`에 선택 `control: { version: 1, eventId, epoch, revision }`을 붙이는 `buildHello(session, control)`을 제공한다.
+`createHubControl({ now, setTimeout, clearTimeout })`는 `negotiate({ eventId, epoch })`, `receive(snapshot)`,
+`disconnected()`, `reset()`, `snapshot()`, `subscribe()`를 제공하며 snapshot은 `{ supported, eventId, epoch, revision,
+stopped, disabledFeatures, notice, heartbeatLost, expiresAt }`다. 중복·역순 revision·다른 epoch·TTL 초과 메시지는
+무시하고, 중지 latch는 더 높은 revision의 유효 snapshot으로만 풀린다. 단절·TTL 만료는 `heartbeatLost`만 세운다.
+`resolveEffective`가 `hubControl`을 교집합으로만 적용한다. 서버 프로토콜 문서는 `docs/hub-control-protocol.md`(P3-09·10)다.
+
+### 마이크 권한·장치·출력 (`app/audio/permissions.js`, `devices.js`, `output-device.js`, P3-23~28)
+
+- `createMicrophonePermission({ navigator, now })`: `query()`, `request({ signal })`, `snapshot()`, `subscribe()`.
+  상태 `granted | denied | prompt | unsupported`, 오류 구분 `denied | noDevice | busy | unknown`. `request`는
+  사용자 제스처 안에서만 호출하며, 취소 뒤 늦게 도착한 스트림의 트랙을 즉시 중지한다. 결과 스트림은
+  호출자가 소유하며 `probe` 용도는 즉시 정리한다. `NotReadableError`는 `busy`이지 `denied`가 아니다.
+- `createAudioDevices({ navigator, preferences })`: `refresh()`, `list()`(`{ kind, deviceId, label }`, 시스템 기본값 항상
+  포함), `subscribe()`. 권한 전 라벨은 비워 둔다. 사라진 저장 ID는 기본값으로 복귀한다.
+- `createOutputDevice({ preferences })`: `supports(context)`(실제 `AudioContext.prototype.setSinkId` 검사),
+  `apply(context)`, `snapshot()`. 기기 `speechSynthesis`에는 적용하지 않는다.
+- `createPlatform`은 `getUserMedia(constraints)`에 선택 장치를 병합하되 `channelCount: 1`과 sampleRate 요청을 잃지 않는다.
+
+### 사용량·추정 비용 (`app/engine/usage.js`, P3-29~31)
+
+`createUsage({ now, preferences, getRates })`는 `begin({ capability, model, providerId, keySource })`가 반환하는 구간
+핸들의 `end()`(멱등)로 활성 시간을 기록하고, `snapshot()`으로 `{ segments, totals: { [capability]: { seconds, model } },
+estimate: { status: 'unavailable' | 'partial' | 'complete', amount, currency, ratesRevision, basis } }`를 준다.
+요율은 구간 시작 시점의 `pricing.revision`으로 고정한다. 허브 청취(`keySource: 'hub'`)와 공용 행사 사용량은 개인
+합계에 더하지 않는다. 키·원문·오디오는 이벤트에 넣지 않는다. Free/Paid는 표시만 바꾼다.
+
+### 관리자 콘솔 (`admin/index.html`, `app/admin/`, P3-32~34)
+
+`admin/index.html`은 배포 루트의 두 번째 진입 HTML이며 `app/admin/main.js` 모듈 하나와 부트 스크립트 하나만
+참조한다. `createPolicyEditor({ document, i18n, validatePolicy, current })`는 편집 상태·검증·미리보기를,
+`createPolicyExport({ document, Blob, URL, clipboard })`는 다운로드·복사를, `createSharedPayloadTool({ document, i18n,
+policy, parseSharedFragment })`는 v2 payload 생성을 맡는다. 편집 상태는 앱 정책 서비스와 연결하지 않으며, 키는
+메모리에만 있고 닫기·`pagehide`에서 지운다. 관리자 페이지에서는 마이크·정책 갱신·제공자 호출을 시작하지 않는다.
+
+### 공용 키 payload v2 (`app/security/shared-key.js`, P3-08·34)
+
+`parseSharedFragment`는 `version: 1`과 `version: 2`를 모두 받는다. v2는 `{ version, providerId, eventId, eventName,
+key, expiresAt }`이며 `eventId`는 `^[a-z0-9-]{1,64}$`다. 정책 대조(`resolve.js`)는 파서 밖에서 한다: v2는 활성
+행사 ID·제공자·행사명·만료가 모두 일치해야 하고, v1은 활성 행사와 제공자·행사명·만료가 **유일하게** 일치할 때만
+쓴다. 기존 길이 상한(`MAX_FRAGMENT_LENGTH`)과 메모리 전용 보관은 유지한다. 행사 ID는 서명이 아니다.
+
+### 릴리스·서비스 워커 (P3-13·35·36)
+
+- 진입 HTML 검사: 동기 부트 스크립트(경로 고정 `./releases/<id>/app/ui/appearance-boot.js`) 하나와
+  `./releases/<id>/app/main.js` 모듈 하나. 그 외 스크립트·inline은 `RELEASE_ENTRY_INVALID`.
+- 루트 파일에 `policy.json`, `admin/index.html`을 추가하되 `shellFor()`의 precache에는 넣지 않는다. 정책 요청은
+  SW에서 network-only이고 실패해도 셸 설치를 막지 않는다.
+- `check-release`는 정책을 `validatePolicy`로 검사하고 `minAppVersion ≤ APP_VERSION`, `allowedHubIds ⊆ REGISTERED_HUBS`,
+  정책·관리자 자산의 비밀 패턴을 확인한다. `--point` 롤백은 정책 파일을 덮어쓰지 않는다.
+- `_headers` 통과는 GitHub Pages 실제 헤더 적용의 증거가 아니다.
+
+### i18n 키 접두사 (P3-02·03이 추가, 이후 과제가 사용)
+
+| 접두사 | 용도 |
+|---|---|
+| `policy.status.<상태>` | 정책 조회 상태: loading·ready·stale·failed·expired |
+| `policy.source.<출처>` | 설정 출처 표시: personal·policyDefault·forced·appDefault |
+| `policy.lock.*`, `policy.blocked.*`, `policy.notice.*` | 잠금 설명·차단 배너·공지 |
+| `error.POLICY_*`, `error.APP_VERSION_TOO_OLD`, `error.EVENT_ENDED`, `error.HUB_CONTROL_*` | 위 `PolicyError` 코드 |
+| `admin.section.*`, `admin.action.*`, `admin.issue.<코드>`, `admin.preview.*`, `admin.publish.*` | 관리자 콘솔 |
+| `event.*` | 공용 키 행사 상태 |
+| `display.mode.<값>`, `display.tone.<값>`, `display.text.<값>`, `display.captions.*` | 표시 설정: system·light·dark / navy·warm·forest·mono / s·m·l·xl |
+| `keyGuide.*` | 키 발급 안내 카드(3단계·링크·제한 안내) |
+| `permission.<상태>`, `permission.help.<플랫폼>` | 마이크 권한: granted·denied·prompt·unsupported·noDevice·busy / ios·android·desktop |
+| `device.*` | 입력·출력 장치 |
+| `billing.plan.<값>`, `billing.estimate.<상태>`, `billing.*` | 요금제: free·paid / 추정: unavailable·partial·complete |
+| `settings.section.<이름>`, `settings.sectionHint.<이름>` | 설정 섹션 제목·설명: display·interpretation·provider·sharedKey·billing·audio·diagnostics·records·app·terms |
+| `hubControl.<상태>` | 허브 실시간 통제: supported·unsupported·stopped·lost |
+
+동적으로 조합하는 열거 키는 `scripts/check-i18n.mjs`의 명시 목록에 등록한다(P3-32가 관리자 소스 경로도 추가).
+
+### 변경하지 않는 기존 계약
+
+`createAppConfig`·라우터·`createKeyStore`·`createActivity`·`createSessionManager`·`createLiveRecovery`·
+허브 청취 엔진·자막 저장소·스트림 재생기의 계약과 이 문서의 P1/P2 절은 그대로다. 정책 런타임은 이들을
+호출하는 쪽이지 대체하지 않는다. 새 모듈은 브라우저에 Node 전용 API를 들이지 않으며 레거시 코드를 이식하지 않는다.

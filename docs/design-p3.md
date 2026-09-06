@@ -1015,3 +1015,76 @@ git diff --check
 | 미지원 허브 운영 | 기존 청취 유지 + 실시간 관리 미지원 표시. 지원하지 않는 통제를 지원한다고 표시하지 않음 |
 
 위 추천안을 기본 구현 기준으로 삼으면 P3-01부터 진행할 수 있다. 실제 행사 허브 ID·활성 행사·초기 가격표는 검증된 운영 입력이 들어올 때 정책으로 발행한다.
+
+---
+
+# 4. P3-01 계약 고정
+
+2026-09-06, P3-01(Fable 구현, Astra 검수 대상). 위 §1~§3은 Astra의 설계 원문이며 이 절은 그것을 **바꾸지 않고** 구현자가 공유할 경계를 고정한다. 본 절과 §1~§3이 충돌하면 §1~§3이 우선하고, 충돌 자체를 검수 항목으로 보고한다. 이 절에서 정한 인터페이스의 실제 형태는 [architecture.md](architecture.md#p3-01-p3-공통-인터페이스와-경계)에, 검증 구분은 [p3-verification.md](p3-verification.md)에 둔다.
+
+## 4.1 확정 기준과 문서 우선순위
+
+- 구현 기준은 §1 본 설계와 §3 오너 결정 항목의 추천안 전부다. 추천안을 다시 승인 요청하지 않는다.
+- 문서 우선순위: 사용자 과제 본문 > 이 문서(§1~§4) > [DESIGN.md](DESIGN.md) > [design-p2.md](design-p2.md) > [design-v0.6.md](design-v0.6.md)(편입된 v0.5 포함). 과제 본문이 이 문서와 다르면 과제 본문을 따르고 보고서에 적는다.
+- DESIGN.md §10의 "`app/main.js` 최상단에서 동기 설정"은 §1.10의 외부 동기 부트 스크립트로 **대체**한다. 두 문장이 남아 있어도 구현은 §1.10을 따른다.
+- v0.6 §11.1 표의 "영구 기록 IndexedDB, P3부터"와 §13.2·§16 P3 산출물의 기록·xlsx 항목은 §4.3에 따라 이번 P3 범위가 아니다.
+- P3-00은 이 문서에 절이 없는 선행 과제였다. [P3-00 보고](p3-00-review.md)의 결정은 P3 기준선에 포함한다: 개인 키 저장 체크 기본 ON(저장소가 있을 때), 저장 결과·오류의 키 섹션 인라인 표시, 동시통역 모델 선택(3.5 기본), `LIVE_VAD` 명시, 직접 엔진 운영 계측의 진단 연결. P3-19·22는 이 동작을 보존한 채 재배치한다.
+
+## 4.2 P1/P2 계약 중 P3가 바꾸는 것과 바꾸지 않는 것
+
+| 계약 | P3 처리 |
+|---|---|
+| 릴리스 진입 HTML은 모듈 스크립트 하나만, inline 스크립트·핸들러·스타일 금지(`check-release`의 `entryReferences`) | P3-13에서 **지정된 동기 부트 스크립트 하나 + `app/main.js` 모듈 하나**로 좁게 변경. 그 외 스크립트·inline은 계속 거부 |
+| 개인 키 "전체 보기 기본 미제공"(v0.6 §11.2) | P3-22에서 **입력 중인 개인 키의 명시적 표시 토글**만 허용. 저장 키 재표시·공용 키 표시는 계속 금지 |
+| 정책 부재 시 앱 동작 | 새 계약: 정책 조회 전·실패 시 시작 게이트 차단(§1.5). P1/P2 테스트 fixture는 유효 정책 응답을 주입해야 하며, 기존 단언의 정당한 수정은 과제 보고서에 기록 |
+| `(providerId, keySource)` 키 경계, Live 단일 소유권, 실제 소켓 종료 확인, 늦은 결과 폐기, 자동 개인/공용 전환 금지 | 변경 없음 |
+| 허브 청취에 키·마이크 불필요, 허브는 제공자 Live 슬롯을 쓰지 않음 | 변경 없음. 제어 전용 연결도 같은 규칙 |
+| endpoint·모델·제공자 등록은 코드 검토, QR·설정·정책으로 추가 불가 | 변경 없음. 정책 `allowedHubIds`는 `REGISTERED_HUBS`의 부분집합만 허용 |
+| 앱 작업 소유권(`createActivity`)과 세션 관리자 정리 경로 | 변경 없음. 정책 중지는 이 경로를 호출한다 |
+| 기록 저장 OFF, 공용 종료 시 현재 대화 삭제 | 변경 없음 |
+
+## 4.3 기록·xlsx 이관
+
+v0.6 §14·§16 P3 산출물 중 다음은 **이번 P3(P3-01~39) 범위 밖의 후속 백로그**로 옮긴다. 별도 과제 번호는 오너가 부여한다.
+
+| 항목 | 원 설계 | 이관 후 상태 |
+|---|---|---|
+| 개인 모드 IndexedDB 기록 | v0.6 §11.1·§14.2·§14.3 | 후속 백로그. `records.persist=false` 유지, 설정 "기록" 섹션은 저장 OFF·현재 내용 지우기만 제공 |
+| xlsx 브라우저 이식·내보내기 | v0.6 §14.4, [reuse-map.md](reuse-map.md)의 `app/records/xlsx.js` 행 | 후속 백로그. reuse-map의 행과 원본 해시는 그대로 두고 파일을 만들지 않는다 |
+| 저장 실패·삭제·보관 기간 30일·마이그레이션 | v0.6 §14.3·§13.2 | 후속 백로그 |
+| 오프라인 셸에서 저장 기록 열람 | v0.6 §16 P3 완료 기준 | 후속 백로그 |
+| 공용 모드 영구 기록·파일 내보내기 차단 | v0.6 §14.1 | 현재도 저장 기능 자체가 없어 충족. 기록 도입 시 다시 검증 |
+| PWA 업데이트·장시간 사용 회귀, 세 언어 안내·지원표 | v0.6 §16 P3 | P3-36·37·39와 P2-23·24 보류 항목에서 다룬다 |
+
+이관은 기능 삭제가 아니라 순서 변경이다. 기록 관련 i18n 키(`records.*`)와 상태(`records.persist`)는 제거하지 않는다.
+
+## 4.4 P2-25 인계점
+
+- 코드 상태: 사이트 공유 다이얼로그는 `app/ui/shell.js`(`shell-share` 대화상자, `share.*` 키 6개 이상), `styles.css`의 `.share-*`, `scripts/stage-release.mjs`의 `ICON_FILES`에 `icons/qr-site.png`로 이미 트리에 있다. 코드는 커밋 `154e115`에 실렸고 보고서는 `69ecde8`([P2-25.last.md](build/P2-25.last.md))이다. P2-25 완료 확인 명령(스테이징·`check-release` 72개 파일)은 당시 통과했다.
+- 미완: P2-25는 파일 수 제한 때문에 **공유 열기·닫기·URL 텍스트·복사 호출의 회귀 단언을 추가하지 못했다**. 2026-09-06 현재 `tests/`에 공유 다이얼로그 단언은 없다. 실제 브라우저 접근성 확인도 남아 있다.
+- P3 연결: P3-15가 헤더 배치를 DESIGN.md 순서(앱 이름 | 탭 | 배지 | KO EN JA | 화면 | 공유 | 설정)로 옮기면서 `tests/ui-format.test.mjs`에 위 회귀 단언을 추가한다. P3-16은 공유 창을 공통 시트/모달(`app/ui/sheet.js`)로 옮기되 URL 계산·복사·배포 안내 문구의 동작은 재구현하지 않고 옮긴다. 공유 QR 이미지는 정적 파일 표시이며 관리자 공용 키 payload(P3-34)와 섞지 않는다.
+- 브라우저 확인은 [p3-verification.md](p3-verification.md)의 수동 항목이다.
+
+## 4.5 기준선 수치와 파일 사실
+
+2026-09-06 HEAD `b20575c`에서 직접 실행·확인했다.
+
+| 항목 | 값 |
+|---|---|
+| `node --test tests/*.test.mjs` | 607 통과, 실패·취소·skip·todo 0 |
+| `node scripts/check-i18n.mjs` | I18N_OK, 3개 언어·321개 키·57개 소스 |
+| `package.json` version | `0.6.0` (P3-04가 `0.7.0`으로 올리고 `app/version.js`를 만든다. 현재 `app/version.js`는 없다) |
+| 설정의 "버전" 표시 | 릴리스 ID(`VERSION_PATTERN`)이며 앱 버전이 아니다. P3-19는 둘을 구분해 표시한다 |
+| `REGISTERED_HUBS` | 빈 배열. 정책 `allowedHubIds`·`hubControl.enabled=true`는 등록 전까지 검증 실패 또는 무의미 |
+| 저장 키 | `interp-app.ui.v1.language`, `interp-app.ui.v1.install-hint`, `interp-app.personal-key.v1.<providerId>` |
+| 릴리스 루트 파일 | `index.html`, `sw.js`, `_headers`, `manifest.{ko,en,ja}.webmanifest`, `icons/icon-192.png`, `icons/icon-512.png`, `icons/qr-site.png` |
+| SW 셸 | `shellFor()` = `./` + 버전 경로 전체. `policy.json`·`admin/index.html`은 P3-35에서 명시적으로 제외해야 한다 |
+| 정책 URL | 릴리스 밖 배포 루트의 `policy.json`. `location.pathname`의 마지막 `/`까지를 배포 루트로 계산하며 `import.meta.url`을 쓰지 않는다 |
+
+## 4.6 과제 목록 적용 규칙
+
+- `app/i18n/{ko,en,ja}.json`은 3개 파일이다. 문서 파일도 파일 수에 든다.
+- 여러 과제가 같은 문서를 지정한 경우(`docs/p3-verification.md`: P3-01·12·17·38·39, `docs/hub-control-protocol.md`: P3-09·10, `docs/policy-operations.md`: P3-06·33·39, `docs/release-checklist.md`: P3-36·39, `docs/architecture.md`: P3-01) **기존 절을 덮어쓰지 않고 과제 ID 절을 추가**한다. 이전 과제의 미검증 표시를 지우지 않는다.
+- 정책 오류·잠금·행사·관리자·표시·권한·장치·요금제 문구의 키 접두사는 architecture.md의 P3-01 절이 정한다. P3-02·03은 그 접두사와 열거 목록을 따른다.
+- 완료 확인 명령 G(`node --test tests/*.test.mjs`, `node scripts/check-i18n.mjs`, `git diff --check`)에 더해 `node --test tests/`도 통과해야 한다.
+- 자동 검사 통과는 구현 완료의 증거이며, 실기기·배포·규모의 수동 완료 증거가 아니다. 각 과제 보고서는 둘을 나눠 적는다.
