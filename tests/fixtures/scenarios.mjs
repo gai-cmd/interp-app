@@ -14,6 +14,23 @@ import { REST_ENDPOINT } from '../../app/providers/gemini/config.js';
 import { createSocketFixture } from './live.mjs';
 import { envelope, response as restResponse } from './gemini.mjs';
 import { tone } from './audio.mjs';
+import { policyWith } from './policy.mjs';
+
+// P3-07: the app fetches the site policy from the deployed root (design-p3
+// §1.3, §4.2 "P1/P2 테스트 fixture는 유효 정책 응답을 주입"). The fake
+// browser lives at this origin and serves the §1.4 example policy unless a
+// test scripts something else through createBrowser({ policy }). The P1/P2
+// shared-mode scenarios predate the event list, so the served default turns
+// the sharedKeys feature on; P3-08 binds v1 fragments to active events.
+export const APP_ORIGIN = 'https://app.example.test';
+export const POLICY_URL = `${APP_ORIGIN}/policy.json`;
+export function scenarioPolicy(mutate = () => {}) {
+  return policyWith((policy) => { policy.features.sharedKeys = true; mutate(policy); });
+}
+/** Same-origin 200 JSON reply for a policy document (or any JSON value). */
+export function policyReply(policy = scenarioPolicy(), { status = 200 } = {}) {
+  return new Response(JSON.stringify(policy), { status, headers: { 'content-type': 'application/json' } });
+}
 
 // The marker every leak scan looks for; the keys carry it and nothing else does.
 export const SECRET_MARK = 'SECRET';
@@ -323,15 +340,19 @@ export const live = Object.freeze({
 // ---------------------------------------------------------------------------
 /**
  * createBrowser(options) builds the fake window. fetch serves app/i18n/*.json
- * from disk and scripted Gemini REST responses; WebSocket is the P1-11 socket
- * fixture (URLs recorded, never thrown on); everything else is refused.
+ * from disk, the site policy at POLICY_URL and scripted Gemini REST responses;
+ * WebSocket is the P1-11 socket fixture (URLs recorded, never thrown on);
+ * everything else is refused. `policy` is the served policy document, a
+ * function (call, index) -> Response | document | Error, or null to refuse;
+ * every policy request is recorded in `policyCalls`.
  */
 export function createBrowser({ hash = '', storage: storageInit = {}, withStorage = true, languages = ['ko-KR', 'en-US'],
   controller = null, waiting = null, clients = 1, clock = createVirtualClock(), online = true,
-  deviceVoices = [...DEVICE_VOICES] } = {}) {
+  deviceVoices = [...DEVICE_VOICES], policy = scenarioPolicy() } = {}) {
   const ops = [];
   const { doc, root, manifest } = createDocument();
   const gemini = { calls: [], script: [] };
+  const policyCalls = [];
   const socketURLs = [];
   const fixture = createSocketFixture({ autoClose: false, inspectURL: (url) => { socketURLs.push(String(url)); } });
   // A browser delivers the close event as a later task, never in the same
@@ -364,7 +385,8 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
   win.setTimeout = clock.setTimeout;
   win.clearTimeout = clock.clearTimeout;
   win.matchMedia = () => ({ matches: false });
-  win.location = { hash, pathname: '/', search: '', reloads: 0, reload() { this.reloads += 1; } };
+  win.location = { hash, pathname: '/', search: '', origin: APP_ORIGIN, protocol: 'https:', host: 'app.example.test',
+    get href() { return `${APP_ORIGIN}${this.pathname}${this.search}${this.hash}`; }, reloads: 0, reload() { this.reloads += 1; } };
   win.history = { states: [], replaceState(state, title, url) { this.states.push({ state, title, url }); ops.push(`replaceState:${url}`); win.location.hash = ''; } };
   if (withStorage) win.localStorage = fakeStorage(ops, storageInit);
   const container = new FakeElement(doc, 'serviceworker');
@@ -382,6 +404,15 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
       assert.match(url, /\/app\/i18n\/(?:ko|en|ja)\.json$/);
       return new Response(await readFile(fileURLToPath(url)), { status: 200, headers: { 'content-type': 'application/json' } });
     }
+    if (url === POLICY_URL) {
+      ops.push('fetch:policy');
+      const call = { url, init, signal: init.signal ?? null, index: policyCalls.length };
+      policyCalls.push(call);
+      if (policy === null) throw new Error('UNEXPECTED_FETCH');
+      const produced = typeof policy === 'function' ? await policy(call, call.index) : policy;
+      if (produced instanceof Error) throw produced;
+      return produced instanceof Response ? produced : policyReply(produced);
+    }
     if (url.startsWith(`${REST_ENDPOINT}/`)) {
       ops.push('fetch:gemini');
       const call = { url, method: init.method, headers: { ...init.headers }, signal: init.signal, body: init.body,
@@ -393,7 +424,7 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
     throw new Error('UNEXPECTED_FETCH');
   };
   return { win, doc, root, manifest, ops, clock, gemini, audio, speech, synth, microphone: { ...microphone, streams: microphoneRecord.streams },
-    container, registration, sockets: sockets.sockets, socketURLs,
+    container, registration, sockets: sockets.sockets, socketURLs, policyCalls,
     get storage() { return win.localStorage?.map; },
     /** Every URL the app opened over either transport. */
     get networkURLs() { return [...gemini.calls.map((call) => call.url), ...socketURLs]; } };
