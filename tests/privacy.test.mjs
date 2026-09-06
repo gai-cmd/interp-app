@@ -351,3 +351,60 @@ test('network drop on the Live socket falls back to device speech before audio a
   }
   assert.deepEqual(console_.calls, []);
 });
+
+// P2 observes the same application boundary as P1, including raw remote errors.
+// Authentication URLs and audience join URLs are inspected separately below.
+import { scenario, observations, roomCode, hubs, caption, holdClose } from './fixtures/p2-scenarios.mjs';
+
+test('P2 direct errors and key deletion leave no secret in application URLs, logs, storage, errors or DOM', async t => {
+  const captured = captureConsole(); t.after(captured.restore);
+  const b = await scenario(t);
+  const { ws, handle } = await b.direct();
+  const history = [];
+  const unsubscribe = b.app.listenEngines.direct.subscribe(value => history.push(value));
+  t.after(unsubscribe);
+  ws.json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: secrets.personal,
+    details: [{ reason: secrets.personal, detail: secrets.shared }] } });
+  const result = await handle.done;
+  assert.equal(result.errorCode, 'UNKNOWN_429');
+  assert.equal(leaks({ result, history, observations: observations(b), logs: captured.calls }), false);
+  assert.equal(b.socketURLs[0], `${LIVE_ENDPOINT}?key=${encodeURIComponent(secrets.personal)}`);
+  assert.equal(b.storage.size, 0);
+  await until(() => !b.app.activity.occupied);
+  b.app.config.keyStore.deleteKey('gemini', 'personal');
+  let error;
+  try { b.app.listenEngines.direct.start({ targetLanguage: 'ja' }); } catch (value) { error = value; }
+  assert.equal(error.code, 'CREDENTIAL_REQUIRED');
+  assert.equal(leaks(inspect(error, { showHidden: true, depth: null })), false);
+  assert.equal(leaks(observations(b)), false);
+  assert.deepEqual(captured.calls, []);
+});
+
+test('P2 hub strips fatal details and close reasons; room code is confined to its join carrier', async t => {
+  const captured = captureConsole(); t.after(captured.restore);
+  const b = await scenario(t, { personal: false });
+  const { ws, handle } = await b.hub();
+  const history = [];
+  const unsubscribe = b.app.listenEngines.hub.subscribe(value => history.push(value)); t.after(unsubscribe);
+  ws.json(caption({ text: '<img src=x onerror=alert(1)>字幕。', final: true }));
+  await until(() => b.app.listenEngines.hub.snapshot().translations.length === 1);
+  assert.ok(b.text().includes('<img src=x onerror=alert(1)>'), 'caption is plain text');
+  assert.equal(allElements(b.root).some(node => node.tagName === 'IMG'), false);
+  holdClose(ws);
+  ws.json({ type: 'cast.status', lang: 'ja', state: 'fatal', detail: `${secrets.shared} ${roomCode}` });
+  await until(() => ws.closeCalls > 0);
+  ws.finishClose(1006, `${secrets.personal} ${roomCode}`);
+  const result = await handle.done;
+  assert.equal(b.socketURLs[0], `${hubs[0].url}?room=${encodeURIComponent(roomCode)}`);
+  const seen = { observations: observations(b), history, result, logs: captured.calls };
+  assert.equal(leaks(seen), false);
+  assert.equal(inspect(seen, { depth: null }).includes(roomCode), false);
+  assert.equal(b.microphone.streams.length, 0);
+  assert.equal(b.gemini.calls.length, 0);
+  assert.equal(b.storage.size, 0);
+  assert.deepEqual(captured.calls, []);
+});
+
+function allElements(node) {
+  return [node, ...node.childNodes.flatMap(allElements)];
+}
