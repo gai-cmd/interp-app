@@ -1,6 +1,6 @@
 {
-  "id": "p3-00-20260906",
-  "createdAt": "2026-09-06T01:37:24.339Z",
+  "id": "p3-00b-20260906",
+  "createdAt": "2026-09-06T01:47:44.838Z",
   "files": {
     "styles.css": "3b4e22b0eeea2dc02afb890390b3e922b8f3ebbd4c464b713eb8aeeb793bc11d",
     "app/audio/caption-speaker.js": "2d97e60963036acad891c88c0c10236664b4ccde6bb9695824db17162895c0a9",
@@ -43,7 +43,7 @@
     "app/providers/gemini/errors.js": "89b1a0d9ad7b286a0b14d2acf938699d33196fcef2261a61a36cf9cc2fd30d1e",
     "app/providers/gemini/index.js": "c0a7c41801060d15e1894a387a80a6acaa7c0fa0d0bdcdf5ab41125b043f647d",
     "app/providers/gemini/live-client.js": "bee5efd4606af09f61fc77d562aebc556268a3db66eb46282c116293fa469778",
-    "app/providers/gemini/live-config.js": "acc2187e8444c2e5b35959ec49cc1185b012a8183a277b63012b355bc4938d58",
+    "app/providers/gemini/live-config.js": "5b6079ff0d68d7e670d66f20a087be652f5dd21b60140833ee66de4c367d90c4",
     "app/providers/gemini/live.js": "546aae05a7a26c68e2ee4b53f3e77ae9df3760fab0d49416d2621b9de114dd78",
     "app/providers/gemini/prompts.js": "82e30ad94e759315267fcbdd69c0b13b8384a09f5ec414191a8f3b7a5cfd6c2d",
     "app/providers/gemini/rest.js": "30e7027dba3a131af0aad0610939628d46aa5921951a8bd6400882c1b543f854",
