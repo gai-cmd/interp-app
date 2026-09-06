@@ -297,6 +297,7 @@
   "diagnostics.inputQueueMax": "Maximum input queue frames",
   "diagnostics.inputSampleRate": "Input sample rate (Hz)",
   "diagnostics.interrupted": "Interrupted captions",
+  "diagnostics.lastError": "Last error identifier: {code} (no raw messages or keys recorded)",
   "diagnostics.live": "Test simultaneous interpretation",
   "diagnostics.liveScope": "The Live test is a short connection test for the selected provider, model, and key source. Voice tests and hub reception are separate results.",
   "diagnostics.metrics": "Observations on this device",
@@ -495,10 +496,10 @@
   "language.en": "English",
   "language.ja": "Japanese",
   "language.ko": "Korean",
-  "language.source": "Source language",
-  "language.swap": "Swap interpretation languages",
+  "language.source": "Spoken language",
+  "language.swap": "Swap spoken and target languages",
   "language.swapShort": "Swap",
-  "language.target": "Target language",
+  "language.target": "Interpret into",
   "language.ui": "Display language",
   "mode.changed": "The active task ended because settings changed.",
   "mode.endShared": "End shared use",
@@ -753,6 +754,7 @@
   "sim.sequentialFallback": "Interpret in short consecutive turns",
   "sim.settingsChanged": "Listening stopped because settings changed. Start with the new settings.",
   "sim.sourceAuto": "Auto-detect: interpret speech into the target language. Speech already in the target language stays silent.",
+  "sim.sourceHint": "The spoken language is a hint, not a filter. Translation-only models always detect it automatically.",
   "sim.speech.detected": "Speech detected",
   "sim.speech.none": "No speech",
   "sim.status.connecting": "Connecting",
@@ -796,7 +798,5 @@
   "voice.previewNotOutput": "Voice output is set to “{output}”, so interpretation will not use this voice. The preview still plays it.",
   "voice.previewRunning": "The preview is available once the running check finishes.",
   "voice.provider": "Provider voice",
-  "voice.select": "Select voice",
-  "sim.sourceHint": "The spoken language is a hint, not a filter. Translation-only models always detect it automatically.",
-  "diagnostics.lastError": "Last error identifier: {code} (no raw messages or keys recorded)"
+  "voice.select": "Select voice"
 }

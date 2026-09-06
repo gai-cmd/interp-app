@@ -297,6 +297,7 @@
   "diagnostics.inputQueueMax": "입력 큐 최대 프레임 수",
   "diagnostics.inputSampleRate": "입력 샘플레이트(Hz)",
   "diagnostics.interrupted": "중단된 자막 수",
+  "diagnostics.lastError": "최근 오류 식별자: {code} (원문·키는 기록하지 않아요)",
   "diagnostics.live": "동시통역 검사",
   "diagnostics.liveScope": "Live 검사는 선택한 제공자·모델·키 출처의 짧은 연결 검사예요. 목소리 검사나 허브 수신 결과와 별개예요.",
   "diagnostics.metrics": "이 기기의 관측 지표",
@@ -495,10 +496,10 @@
   "language.en": "영어",
   "language.ja": "일본어",
   "language.ko": "한국어",
-  "language.source": "입력 언어",
-  "language.swap": "통역 언어 교환",
+  "language.source": "발화 언어",
+  "language.swap": "발화·도착 언어 교환",
   "language.swapShort": "교환",
-  "language.target": "번역 언어",
+  "language.target": "도착 언어",
   "language.ui": "표시 언어",
   "mode.changed": "설정이 변경되어 진행 중인 작업을 종료했어요.",
   "mode.endShared": "공용 이용 종료",
@@ -753,6 +754,7 @@
   "sim.sequentialFallback": "짧게 나눠 순차통역",
   "sim.settingsChanged": "설정이 바뀌어 청취를 중지했어요. 새 설정으로 시작하세요.",
   "sim.sourceAuto": "자동 감지: 들리는 말을 도착 언어로 통역해요. 이미 도착 언어인 말은 읽지 않아요.",
+  "sim.sourceHint": "발화 언어는 참고 선택이며 다른 언어를 차단하지 않아요. 번역 전용 모델은 항상 자동 감지해요.",
   "sim.speech.detected": "발화 감지",
   "sim.speech.none": "발화 없음",
   "sim.status.connecting": "연결 중",
@@ -796,7 +798,5 @@
   "voice.previewNotOutput": "지금 음성 출력이 “{output}”이라 통역에는 이 목소리가 쓰이지 않아요. 미리듣기는 그대로 들을 수 있어요.",
   "voice.previewRunning": "다른 검사가 끝나면 미리듣기를 할 수 있어요.",
   "voice.provider": "제공자 목소리",
-  "voice.select": "목소리 선택",
-  "sim.sourceHint": "발화 언어는 참고 선택이며 다른 언어를 차단하지 않아요. 번역 전용 모델은 항상 자동 감지해요.",
-  "diagnostics.lastError": "최근 오류 식별자: {code} (원문·키는 기록하지 않아요)"
+  "voice.select": "목소리 선택"
 }

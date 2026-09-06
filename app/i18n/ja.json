@@ -297,6 +297,7 @@
   "diagnostics.inputQueueMax": "入力キューの最大フレーム数",
   "diagnostics.inputSampleRate": "入力サンプルレート（Hz）",
   "diagnostics.interrupted": "未完の字幕数",
+  "diagnostics.lastError": "直近のエラー識別子：{code}（原文やキーは記録しません）",
   "diagnostics.live": "同時通訳を確認",
   "diagnostics.liveScope": "Liveテストは選択したプロバイダー・モデル・キーの種類で行う短い接続テストです。音声テストやハブの受信結果とは別です。",
   "diagnostics.metrics": "この端末の観測値",
@@ -495,10 +496,10 @@
   "language.en": "英語",
   "language.ja": "日本語",
   "language.ko": "韓国語",
-  "language.source": "入力言語",
-  "language.swap": "通訳言語を入れ替える",
+  "language.source": "話す言語",
+  "language.swap": "話す言語と通訳先を入れ替える",
   "language.swapShort": "入替",
-  "language.target": "翻訳言語",
+  "language.target": "通訳先の言語",
   "language.ui": "表示言語",
   "mode.changed": "設定が変更されたため、実行中の処理を終了しました。",
   "mode.endShared": "共有利用を終了",
@@ -753,6 +754,7 @@
   "sim.sequentialFallback": "短く区切って逐次通訳する",
   "sim.settingsChanged": "設定が変わったため聴取を停止しました。新しい設定で開始してください。",
   "sim.sourceAuto": "自動検出：聞こえた発話を到着言語に通訳します。すでに到着言語の発話は読み上げません。",
+  "sim.sourceHint": "発話言語は参考情報で、他の言語を除外しません。翻訳専用モデルは常に自動検出します。",
   "sim.speech.detected": "発話を検出",
   "sim.speech.none": "発話なし",
   "sim.status.connecting": "接続中",
@@ -796,7 +798,5 @@
   "voice.previewNotOutput": "音声出力が「{output}」なので、通訳ではこの声は使われません。試聴では再生します。",
   "voice.previewRunning": "実行中の検査が終わると試聴できます。",
   "voice.provider": "プロバイダー音声",
-  "voice.select": "音声を選択",
-  "sim.sourceHint": "発話言語は参考情報で、他の言語を除外しません。翻訳専用モデルは常に自動検出します。",
-  "diagnostics.lastError": "直近のエラー識別子：{code}（原文やキーは記録しません）"
+  "voice.select": "音声を選択"
 }
