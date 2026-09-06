@@ -113,6 +113,19 @@ function usable(storage) {
 }
 
 /**
+ * The name a storage key belongs to, or null for keys owned elsewhere (the
+ * personal key store, the PWA install hint, foreign keys). Used to route a
+ * `storage` event from another tab (P3-14) to the one name it changed.
+ */
+export function nameForStorageKey(key, providerId = APP_DEFAULTS.providerId) {
+  if (typeof key !== 'string') return null;
+  for (const name of PREFERENCE_NAMES) {
+    if (storageKeyFor(name, providerId) === key) return name;
+  }
+  return null;
+}
+
+/**
  * Read one personal choice straight from storage without an instance (boot
  * paths). Storage exceptions and corrupt values yield null.
  */
@@ -128,6 +141,7 @@ export function readPreference(storage, name, { providerId = APP_DEFAULTS.provid
  * createPreferences({ storage?, now?, providerId? }) returns a frozen store:
  * get(name), set(name, value) -> { ok, persisted }, remove(name) -> { ok, persisted },
  * snapshot() -> frozen { [name]: value | null }, subscribe(fn) -> unsubscribe,
+ * sync(key) -> frozen [name] (P3-14: another tab's `storage` event),
  * persisted (storage usable and the last access succeeded), providerId.
  * Reads go through to storage on every call so another tab's change is seen
  * without a cache; values that could not be written are kept in memory for
@@ -135,6 +149,8 @@ export function readPreference(storage, name, { providerId = APP_DEFAULTS.provid
  * write; an invalid value is rejected ({ ok: false }) and storage is untouched.
  * The store never records effective values: policy defaults and forced values
  * live only in resolveEffective() results.
+ * Listener events are frozen { type: 'set' | 'remove' | 'sync', name, value,
+ * persisted, at }; `sync` carries the value now read from storage.
  */
 export function createPreferences({ storage = null, now = Date.now, providerId = APP_DEFAULTS.providerId } = {}) {
   if (typeof now !== 'function') invalid();
@@ -157,14 +173,15 @@ export function createPreferences({ storage = null, now = Date.now, providerId =
       return { ok: false, value: undefined };
     }
   }
+  // A memory copy exists only while this run's last write of the name was
+  // rejected and no newer write arrived (a successful write or another tab's
+  // sync() drops it), so it is the newest known choice and wins over the older
+  // stored value (P3-14: the page must follow a choice whose save failed).
   function read(name) {
+    if (memory.has(name)) return memory.get(name);
     const key = keyOf(name);
     const result = access((store) => store.getItem(key));
-    if (result.ok) {
-      const stored = normalizePreference(name, result.value);
-      if (stored !== null || !memory.has(name)) return stored;
-    }
-    return memory.has(name) ? memory.get(name) : null;
+    return result.ok ? normalizePreference(name, result.value) : null;
   }
   function notify(type, name, value, persisted) {
     const event = Object.freeze({ type, name, value, persisted, at: now() });
@@ -197,6 +214,19 @@ export function createPreferences({ storage = null, now = Date.now, providerId =
     },
     snapshot() {
       return Object.freeze(Object.fromEntries(PREFERENCE_NAMES.map((name) => [name, read(name)])));
+    },
+    // Another tab changed storage (a `storage` event; key null is that tab's
+    // clear()). Reads already go through to storage, so this only drops the
+    // stale memory copy of the changed name (the other tab's write is the
+    // newer intent) and tells subscribers to recompute. Keys owned elsewhere
+    // are ignored; nothing is written or thrown.
+    sync(key) {
+      const names = key === null ? [...PREFERENCE_NAMES] : [nameForStorageKey(key, providerId)].filter((name) => name !== null);
+      for (const name of names) {
+        memory.delete(name);
+        notify('sync', name, read(name), healthy);
+      }
+      return Object.freeze(names);
     },
     subscribe(listener) {
       if (typeof listener !== 'function') invalid();
