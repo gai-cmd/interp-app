@@ -47,8 +47,11 @@ export function resolveLiveVoice({ gender = DEFAULT_LIVE_VOICE_GENDER, voice = n
     if (!VOICE_NAMES.includes(voice)) throw new ProviderError('INVALID_REQUEST');
     return voice;
   }
-  if (!LIVE_VOICE_GENDERS.includes(gender)) throw new ProviderError('INVALID_REQUEST');
-  return LIVE_GENDER_VOICES[gender];
+  // null means "no gender claimed" (an explicit voice was chosen and then
+  // cleared); the app default speaks rather than nothing.
+  const wanted = gender === null ? DEFAULT_LIVE_VOICE_GENDER : gender;
+  if (!LIVE_VOICE_GENDERS.includes(wanted)) throw new ProviderError('INVALID_REQUEST');
+  return LIVE_GENDER_VOICES[wanted];
 }
 
 /**
@@ -62,8 +65,14 @@ export function resolveLiveVoice({ gender = DEFAULT_LIVE_VOICE_GENDER, voice = n
 export function createLiveVoicePreference(initial = {}) {
   const listeners = new Set();
   let state;
+  // The gender to return to when an explicit voice is cleared. It is kept
+  // separately from the reported gender: while a named voice is selected the
+  // snapshot claims no gender (so no screen can show 여자 while Puck speaks),
+  // but clearing that voice still restores the gender the person last chose.
+  let lastGender = DEFAULT_LIVE_VOICE_GENDER;
   const commit = (gender, voice) => {
-    state = Object.freeze({ gender, voice, voiceName: resolveLiveVoice({ gender, voice }) });
+    if (gender !== null) lastGender = gender;
+    state = Object.freeze({ gender, voice, voiceName: resolveLiveVoice({ gender: gender ?? lastGender, voice }) });
   };
   commit(DEFAULT_LIVE_VOICE_GENDER, null);
   const store = Object.freeze({
@@ -78,7 +87,14 @@ export function createLiveVoicePreference(initial = {}) {
         if (voice !== null && !VOICE_NAMES.includes(voice)) throw new ProviderError('INVALID_REQUEST');
         nextVoice = voice;
         const owner = LIVE_VOICE_GENDERS.find((g) => LIVE_GENDER_VOICES[g] === voice);
+        // A voice that is one of the two gender defaults IS that gender.
+        // Any other registered voice has no gender this app can claim, so the
+        // gender becomes null rather than keeping a stale value: a screen that
+        // renders snapshot().gender must not show 여자 while Puck is speaking.
         if (owner) { nextGender = owner; nextVoice = null; }
+        else if (voice !== null) nextGender = null;
+        // Clearing a named voice goes back to the last gender actually chosen.
+        else if (nextGender === null) nextGender = lastGender;
       }
       if (nextGender === state.gender && nextVoice === state.voice) return state;
       commit(nextGender, nextVoice);

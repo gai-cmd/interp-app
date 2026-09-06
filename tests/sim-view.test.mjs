@@ -204,7 +204,10 @@ test('voice choice: female default, male/female only, shared preference, restart
   const storage = fakeStorage();
   const f = setup({ storage });
   const voice = f.get('voice');
-  assert.deepEqual(voice.children.map(n => n.getAttribute('value')), ['female', 'male'], 'gender only: no role personas');
+  // The third entry is hidden unless the settings screen picked a voice that
+  // belongs to neither gender; it shows that voice's name instead of lying.
+  assert.deepEqual(voice.children.map(n => n.getAttribute('value')), ['female', 'male', ''], 'gender only: no role personas');
+  assert.equal(byClass(voice, 'sim-voice-custom').hidden, true);
   assert.equal(voice.children[0].textContent, dictionaries.en['sim.voice.female']);
   assert.equal(voice.parentNode.children[0].textContent, dictionaries.en['sim.voice']);
   assert.equal(voice.value, 'female');
@@ -222,9 +225,29 @@ test('voice choice: female default, male/female only, shared preference, restart
   assert.equal(f.get('notice').textContent, dictionaries.en['sim.voiceRestart']);
   assert.equal(f.direct.calls.length, 1, 'no stop or restart on a voice change');
   assert.equal(storage.map.has(VOICE_GENDER_STORAGE_KEY), false, 'the default gender is not stored');
-  // The settings picker (an explicit voice) is mirrored: Orus shows as male, another voice keeps the gender.
+  // The settings picker (an explicit voice) is mirrored: Orus IS the male voice,
+  // so it shows as male. Any other registered voice belongs to neither gender,
+  // so the select stops claiming one and shows the voice name instead — showing
+  // 여자 while Puck speaks is what made the choice look broken.
   f.voicePreference.set({ voice: 'Orus' }); assert.equal(voice.value, 'male');
-  f.voicePreference.set({ voice: 'Zephyr' }); assert.equal(voice.value, 'male');
+  assert.equal(byClass(voice, 'sim-voice-custom').hidden, true);
+  f.voicePreference.set({ voice: 'Zephyr' });
+  assert.equal(f.voicePreference.snapshot().gender, null, 'no gender is claimed for a voice that has none');
+  assert.equal(voice.value, '');
+  assert.equal(byClass(voice, 'sim-voice-custom').hidden, false);
+  assert.equal(byClass(voice, 'sim-voice-custom').textContent, 'Zephyr');
+  assert.equal(storage.map.get(VOICE_GENDER_STORAGE_KEY), 'male', 'the remembered gender is untouched by a named voice');
+  // Picking the displayed gender again must still take effect (the defect the
+  // owner hit: 여자 selected, a male voice speaking, and re-picking did nothing).
+  f.choose('voice', 'female');
+  assert.equal(f.voicePreference.snapshot().voiceName, 'Kore');
+  assert.equal(voice.value, 'female');
+  assert.equal(byClass(voice, 'sim-voice-custom').hidden, true);
+  f.voicePreference.set({ voice: 'Puck' });
+  assert.equal(f.voicePreference.snapshot().gender, null);
+  f.choose('voice', 'female');
+  assert.equal(f.voicePreference.snapshot().voiceName, 'Kore', 'the gender the user sees is the voice they get');
+  f.choose('voice', 'male');
   assert.equal(storage.map.get(VOICE_GENDER_STORAGE_KEY), 'male');
   f.i18n.setLanguage('ja'); f.view.refresh();
   assert.equal(voice.children[1].textContent, dictionaries.ja['sim.voice.male']);

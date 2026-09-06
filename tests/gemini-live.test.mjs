@@ -92,8 +92,11 @@ test('the shared voice preference decides when the request names no voice; gende
   assert.equal(pref.set({}), pref.snapshot());
   pref.set({ gender: 'male' });
   assert.deepEqual(pref.snapshot(), { gender: 'male', voice: null, voiceName: 'Orus' });
+  // A voice that is neither gender default has no gender this app can claim, so
+  // the preference stops reporting one instead of keeping the previous value:
+  // a screen rendering `gender` must not show 남자/여자 while Zephyr speaks.
   pref.set({ voice: 'Zephyr' });
-  assert.deepEqual(pref.snapshot(), { gender: 'male', voice: 'Zephyr', voiceName: 'Zephyr' });
+  assert.deepEqual(pref.snapshot(), { gender: null, voice: 'Zephyr', voiceName: 'Zephyr' });
   pref.set({ gender: 'female' });
   assert.deepEqual(pref.snapshot(), { gender: 'female', voice: null, voiceName: 'Kore' }, 'a gender choice clears the explicit voice');
   pref.set({ voice: 'Orus' });
@@ -113,7 +116,14 @@ test('the shared voice preference decides when the request names no voice; gende
     assert.equal(name(buildLiveSetup({ targetLanguage: 'ja', gender: 'female' })), 'Kore', 'an explicit request field wins');
     liveVoicePreference.set({ voice: 'Puck' });
     assert.equal(name(buildLiveSetup({ targetLanguage: 'ko' })), 'Puck');
-    assert.equal(name(buildLiveSetup({ targetLanguage: 'ko', voice: null })), 'Orus', 'voice null falls back to the preferred gender');
+    // An explicit `voice: null` asks for "no named voice". The preference is on
+    // a named voice and therefore claims no gender, so the app default speaks
+    // rather than a gender left over from before that voice was picked.
+    assert.equal(name(buildLiveSetup({ targetLanguage: 'ko', voice: null })), 'Kore', 'voice null falls back to the app default');
+    // Clearing the named voice through the store does restore the last gender
+    // the person actually chose (male, above).
+    liveVoicePreference.set({ voice: null });
+    assert.deepEqual(liveVoicePreference.snapshot(), { gender: 'male', voice: null, voiceName: 'Orus' });
   } finally { liveVoicePreference.set({ gender: 'female' }); }
   assert.equal(name(buildLiveSetup({ targetLanguage: 'ko' })), 'Kore');
 });

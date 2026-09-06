@@ -17,7 +17,7 @@
 // venue's notice text. Joining never starts the microphone, a key or speech.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { normalizeError } from '../providers/contract.js';
-import { LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
+import { LIVE_VOICE_GENDERS, LIVE_GENDER_VOICES, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder } from './seq-view.js';
 import { createCaptionBoard, DEFAULT_DISPLAY } from './caption-board.js';
 import { CAPTION_SIZE, stepCaptionSize } from '../preferences.js';
@@ -256,7 +256,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   // A voice change never stops the session: it applies at the next start (restart notice).
   listen(voice, 'change', () => {
     const next = voice.value;
-    if (!LIVE_VOICE_GENDERS.includes(next) || next === voicePreference.snapshot().gender) return;
+    if (!LIVE_VOICE_GENDERS.includes(next)) return;
+    // Comparing genders alone was not enough: the settings screen can select a
+    // voice that belongs to neither gender (Puck, Charon, ...), which leaves the
+    // gender unclaimed. Re-picking the gender shown must then still take effect,
+    // so the decision is made on the voice that would actually speak.
+    if (voicePreference.snapshot().voiceName === LIVE_GENDER_VOICES[next]) return;
     call(() => voicePreference.set({ gender: next }));
     if (mode === 'direct' && running()) setText(notice, i18n.t('sim.voiceRestart'));
   });
@@ -264,11 +269,30 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     try { if (value === DEFAULT_LIVE_VOICE_GENDER) store?.removeItem(VOICE_GENDER_STORAGE_KEY); else store?.setItem(VOICE_GENDER_STORAGE_KEY, value); }
     catch { /* Storage refusal keeps the in-memory choice. */ }
   }
-  const unsubscribeVoice = voicePreference.subscribe(value => { if (!disposed) { voice.value = value.gender; rememberVoice(value.gender); } });
+  // A voice chosen by name in settings has no gender this app can claim; the
+  // select then shows that voice name rather than lying about the gender.
+  const customVoice = node('option', 'sim-voice-custom', voice, null, { value: '' });
+  function showVoice(value) {
+    const named = value.gender === null && typeof value.voiceName === 'string';
+    customVoice.hidden = !named;
+    // Provider voice identifiers are registered data, not dictionary text
+    // (the settings picker renders them the same way).
+    customVoice.textContent = named ? value.voiceName : '';
+    voice.value = named ? '' : value.gender;
+  }
+  const unsubscribeVoice = voicePreference.subscribe(value => {
+    if (disposed) return;
+    showVoice(value);
+    if (value.gender !== null) rememberVoice(value.gender);
+  });
   function restoreVoice() {
     const remembered = readVoiceGender(store);
-    if (remembered !== voicePreference.snapshot().gender) call(() => voicePreference.set({ gender: remembered }));
-    voice.value = voicePreference.snapshot().gender;
+    // An explicit voice picked in settings outranks a remembered gender; only a
+    // still-gendered preference is restored from storage.
+    if (voicePreference.snapshot().gender !== null && remembered !== voicePreference.snapshot().gender) {
+      call(() => voicePreference.set({ gender: remembered }));
+    }
+    showVoice(voicePreference.snapshot());
   }
   restoreVoice();
   for (const el of [start, fsPrimary]) listen(el, 'click', startSession);
