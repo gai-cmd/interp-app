@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  BLOCK_CODES, EVENT_STATUSES, FEATURE_CAPABILITIES, REASON_KEYS, SETTING_SOURCES, resolveEffective,
+  BLOCK_CODES, EVENT_REASON_KEYS, EVENT_STATUSES, FEATURE_CAPABILITIES, REASON_KEYS, SETTING_SOURCES, resolveEffective,
 } from '../app/policy/resolve.js';
 import { REGISTERED_FEATURES, REGISTERED_SETTINGS, validatePolicy } from '../app/policy/schema.js';
 import { createPreferences } from '../app/preferences.js';
@@ -290,10 +290,13 @@ test('joined shared-key event: status against the policy list and clock, capabil
   assert.equal(resolveEffective({ policy: sharedOff, now: NOW, event: 'service-20260906' }).event.status, 'disabled');
   assert.equal(resolveEffective({ policy: null, now: NOW, event: 'service-20260906' }).event.status, 'removed');
   // Not joined, or an ID that is not even well formed, yields null rather than echoing input.
-  for (const event of [null, undefined, '', 'Service 1', 'x'.repeat(65), { id: 42 }, { eventId: 'service-20260906' }, 7, '__proto__']) {
+  // (P3-08: { eventId } is the key store's shared-metadata shape and is accepted like { id }.)
+  for (const event of [null, undefined, '', 'Service 1', 'x'.repeat(65), { id: 42 }, { eventId: 'Service 1' }, 7, '__proto__']) {
     assert.equal(resolveEffective({ policy, now: NOW, event }).event, null, String(event));
   }
-  assert.deepEqual([...EVENT_STATUSES], ['upcoming', 'active', 'expired', 'disabled', 'removed']);
+  assert.deepEqual(resolveEffective({ policy, now: NOW, event: { eventId: 'service-20260906' } }).event, active.event);
+  // P3-08 adds `mismatch` (payload differs from the listed event) to the P3-02 five.
+  assert.deepEqual([...EVENT_STATUSES], ['upcoming', 'active', 'expired', 'disabled', 'removed', 'mismatch']);
 });
 
 test('inputs are never mutated and every reason key exists in all three dictionaries', async () => {
@@ -318,7 +321,8 @@ test('inputs are never mutated and every reason key exists in all three dictiona
     if (result.blocked) used.add(`error.${result.blocked.code}`);
   }
   for (const code of BLOCK_CODES) used.add(`error.${code}`);
-  for (const status of EVENT_STATUSES) used.add(`event.status.${status}`);
+  // P3-08: `mismatch` maps to event.payloadMismatch, the others to event.status.<status>.
+  for (const status of EVENT_STATUSES) used.add(EVENT_REASON_KEYS[status]);
   assert.ok(used.size >= 12);
   for (const key of used) {
     for (const language of SUPPORTED_LANGUAGES) assert.ok(dictionaries[language][key]?.trim(), `${language}: ${key}`);

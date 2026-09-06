@@ -1,4 +1,5 @@
-// New implementation of design-v0.6 §11/20; no legacy code is ported.
+// New implementation of design-v0.6 §11/20 and design-p3 §1.7 (P3-08: shared
+// metadata carries the payload version and event ID); no legacy code is ported.
 import { ProviderError, assertActive } from '../providers/contract.js';
 import { assertKeyPolicy, parseSharedFragment, validateKey } from './shared-key.js';
 import { SecurityError } from './redact.js';
@@ -10,6 +11,14 @@ import { SecurityError } from './redact.js';
  * must stop requests/sockets/audio and clear shared temporary records on these
  * events; key revocation alone cannot recall keys already given to a provider.
  * UI eventName is untrusted text, never an administrator identity or HTML.
+ *
+ * Shared keys live in memory only and are never persisted. Their metadata
+ * ({ version, eventId, eventName, usageEndsAt, providerId }) is the descriptor
+ * the composition root hands to the policy runtime, which resolves it against
+ * the listed events (policy/resolve.js): v2 by eventId plus provider, name and
+ * expiry; v1 (eventId null) by a unique provider, name and expiry match. The
+ * store itself never consults the policy and treats no eventId as a signature.
+ * A personal key stays selected when a shared payload arrives (personal first).
  */
 export function createKeyStore({ registry, storage, now = Date.now,
   setTimeout: schedule = globalThis.setTimeout,
@@ -126,9 +135,11 @@ export function createKeyStore({ registry, storage, now = Date.now,
       expireShared();
       const entry = mapFor(keySource).get(providerId);
       if (!entry) return null;
+      // Shared metadata is the policy-matching descriptor (never the key):
+      // version and eventId (null for v1) come straight from the payload.
       return Object.freeze(keySource === 'personal'
         ? { providerId, keySource, remembered: entry.remembered }
-        : { providerId, keySource, eventName: entry.eventName,
+        : { providerId, keySource, version: entry.version, eventId: entry.eventId, eventName: entry.eventName,
           usageEndsAt: entry.expiresAt, administratorVerified: false, networkRestrictionVerified: false });
     },
     getCredentialRef({ providerId, keySource, transport }, { signal } = {}) {
