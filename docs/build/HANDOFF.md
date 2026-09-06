@@ -8,3 +8,4 @@
 - 2026-09-05 21:0x JST · P1-21 시작 직후 Codex 한도 재소진(`try again at 10:22 PM`) → **P1-21은 Fable**. P1-20b(Astra 검수·수정)는 완료·커밋됨.
 - 2026-09-05 21:40 JST · 오너 지시: **P2 설계는 Astra 단독**. Fable 초안 작업은 시작 단계에서 중단·폐기. 22:22 한도 해제 후 Astra 3라운드(설계·과제 목록) → Astra 코딩. Fable은 Astra가 막힐 때만 코딩 인계.
 - 2026-09-05 21:5x JST · 두 번째 ChatGPT 계정(gpt@try-n.com, `~/.codex-astra2`) 추가. 오너 규칙: **Astra 두 프로필을 번갈아 쓰고, 둘 다 한도면 멈췄다가 재개**(설계가 가장 중요 · P2는 Fable 인계 없음). `tools/run-until-done.sh`가 이를 자동화.
+- 2026-09-06 10:2x JST · 오너: **관리자(P3-01)부터는 설계서대로 Fable/Opus가 코딩해도 됨**. 규칙: Astra 가능하면 Astra, 두 프로필 모두 한도면 대기 대신 Fable 인계(`tools/run-with-handoff.sh`). P3-00은 Astra가 진행 중.
