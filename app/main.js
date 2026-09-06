@@ -54,6 +54,7 @@ import { createDisplayControls } from './ui/display-view.js';
 import { createKeyGuide } from './ui/key-guide.js';
 import { discoverLiveModels } from './providers/gemini/model-discovery.js';
 import { createMicrophonePermission } from './audio/permissions.js';
+import { createAudioDevices } from './audio/devices.js';
 import { createAudioSettings } from './ui/audio-settings.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
@@ -208,7 +209,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   const displayViews = [];
   const keyGuides = [];
-  let audioSettings = null;
+  let audioSettings = null, audioDevices = null;
   // Set once the key guide cards exist; the simultaneous card follows the tab.
   let onTabChanged = null;
   let audioContext = null, closing = null;
@@ -393,6 +394,22 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // section and by the direct-listening start. Nothing requests on its own.
     micPermission = createMicrophonePermission({ navigator: nav, now });
     void micPermission.query();
+    // P3-25/26: the device lists and the chosen microphone. The selection is
+    // applied in one place — the shared platform — so both capture paths follow
+    // it without either rebuilding its own constraints.
+    audioDevices = createAudioDevices({ navigator: nav, preferences, permission: micPermission,
+      document: doc, now });
+    const applyInputDevice = () => {
+      const chosen = attempt(() => audioDevices.snapshot().selected?.audioinput?.deviceId) ?? null;
+      const changed = platform.inputDeviceId !== (chosen ?? null);
+      attempt(() => platform.setInputDevice(chosen));
+      // §1.14: a new microphone ends the current capture and applies from the
+      // next manual start; nothing restarts on its own.
+      if (changed && busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
+    };
+    applyInputDevice();
+    removers.push(audioDevices.subscribe(() => applyInputDevice()));
+    void audioDevices.refresh({ reason: 'manual' }).catch(() => {});
     capture = createCapture({ platform,
       onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
     voiceEngine = createVoiceEngine({ router: config.router, deviceTTS, getAudioContext, sessionManager: config.sessionManager, ...timing });
@@ -631,7 +648,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // the one route that works without credentials.
     // P3-24: the microphone permission and device controls, in the audio section.
     audioSettings = createAudioSettings({ permission: micPermission, i18n, document: doc,
-      onRequest: ({ purpose }) => micPermission.request({ purpose }) });
+      devices: audioDevices, onRequest: ({ purpose }) => micPermission.request({ purpose }) });
     settingsView.elements.audioControls.append(audioSettings.element);
     removers.push(shell.onLanguageChange(() => audioSettings.refresh()));
 
@@ -752,6 +769,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
     audioSettings?.destroy(); audioSettings = null;
+    audioDevices?.destroy(); audioDevices = null;
     micPermission?.destroy(); micPermission = null;
     for (const guide of keyGuides.splice(0)) attempt(() => guide.destroy());
     for (const view of displayViews.splice(0)) attempt(() => view.destroy());

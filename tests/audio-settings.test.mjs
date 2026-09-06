@@ -187,3 +187,79 @@ test('main.js offers the start stream synchronously and shares one platform', as
   assert.match(source, /onRequest: \(\{ purpose \}\) => micPermission\.request\(\{ purpose \}\)/);
   assert.match(source, /micPermission\?\.destroy\(\)/);
 });
+
+// --- P3-26: the selected microphone reaches both capture paths ---
+
+test('the chosen device is merged into the constraints without losing any of them', async () => {
+  const asked = [];
+  const platform = createPlatform({ navigator: { mediaDevices: {
+    getUserMedia: async (c) => { asked.push(c); return streamOf(track()); } } } });
+
+  // The sequential path's constraints (capture.js) and the direct path's
+  // (stream-capture.js) are both merged here, so neither can lose mono, echo
+  // cancellation or noise suppression while gaining a device.
+  const sequential = { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true,
+    autoGainControl: true, voiceIsolation: { ideal: true } }, video: false };
+  const direct = { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true,
+    autoGainControl: true }, video: false };
+
+  await platform.getUserMedia(sequential);
+  assert.deepEqual(asked.at(-1), sequential, 'the system default adds nothing');
+
+  assert.equal(platform.setInputDevice('mic-2'), 'mic-2');
+  for (const constraints of [sequential, direct]) {
+    await platform.getUserMedia(constraints);
+    const sent = asked.at(-1);
+    // Everything the caller asked for survives...
+    for (const [name, value] of Object.entries(constraints.audio)) {
+      assert.deepEqual(sent.audio[name], value, `${name} survives the merge`);
+    }
+    assert.equal(sent.video, false);
+    // ...and the device is ideal, never exact: a device that has gone away must
+    // fall back to the system default rather than failing the request.
+    assert.deepEqual(sent.audio.deviceId, { ideal: 'mic-2' });
+  }
+  // The caller's object is not mutated.
+  assert.equal('deviceId' in sequential.audio, false);
+
+  // Back to the system default.
+  assert.equal(platform.setInputDevice(null), null);
+  await platform.getUserMedia(direct);
+  assert.equal('deviceId' in asked.at(-1).audio, false);
+  assert.equal(platform.setInputDevice(''), null, 'an empty id is the system default');
+});
+
+test('a pre-acquired stream follows the same choice, and a device change drops it', async () => {
+  const browserStream = streamOf(track());
+  const platform = createPlatform({ navigator: { mediaDevices: {
+    getUserMedia: async () => browserStream } } });
+  const from = (deviceId) => ({ getAudioTracks: () => [{ ...track(), getSettings: () => ({ deviceId }) }] });
+
+  platform.setInputDevice('mic-2');
+  platform.provideStream(from('mic-2'));
+  const same = await platform.getUserMedia({ audio: true });
+  assert.notEqual(same, browserStream, 'a stream from the selected device is used');
+
+  // A stream captured from another microphone is not reused.
+  platform.provideStream(from('mic-1'));
+  assert.equal(await platform.getUserMedia({ audio: true }), browserStream, 'the wrong device is asked again');
+
+  // Changing the device drops an offer made for the old one.
+  platform.provideStream(from('mic-2'));
+  platform.setInputDevice('mic-3');
+  assert.equal(platform.offeredStream, null, 'the stale offer is dropped');
+  assert.equal(await platform.getUserMedia({ audio: true }), browserStream);
+
+  // A browser that reports no device id is trusted rather than asked twice.
+  platform.provideStream(streamOf(track()));
+  assert.notEqual(await platform.getUserMedia({ audio: true }), browserStream);
+});
+
+test('main.js applies the choice in one place and ends the capture on a change', async () => {
+  const source = await readFile(new URL('../app/main.js', import.meta.url), 'utf8');
+  assert.match(source, /platform\.setInputDevice\(chosen\)/);
+  assert.equal((source.match(/setInputDevice\(/g) ?? []).length, 1, 'one place applies the device');
+  // A new microphone ends the current capture; nothing restarts on its own.
+  assert.match(source, /if \(changed && busy\(\)\) stopWork\(\)/);
+  assert.equal(/setInputDevice[\s\S]{0,400}\.start\(/.test(source), false, 'no automatic restart after a change');
+});
