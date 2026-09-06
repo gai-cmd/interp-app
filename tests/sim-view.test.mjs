@@ -125,6 +125,37 @@ test('hub language intersection, recent notice, independent output and cause-spe
   f.hub.patch({ allowedLangs: [] }); assert.ok(f.get('target').children.every(n => n.disabled));
 });
 
+test('status line always shows the active model and route; fallback and reply skips are visible', async () => {
+  const f = setup();
+  f.direct.patch({ model: 'gemini-3.5-live-translate-preview', route: 'translation', fallback: false, skippedSegments: [] });
+  assert.equal(f.get('route').hidden, false);
+  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.translation']} · gemini-3.5-live-translate-preview`);
+  f.direct.patch({ model: 'gemini-3.1-flash-live-preview', route: 'flash' });
+  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.flash']} · gemini-3.1-flash-live-preview`);
+  f.direct.patch({ fallback: true });
+  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.fallback']} · gemini-3.1-flash-live-preview`);
+  f.i18n.setLanguage('ko'); f.view.refresh();
+  assert.equal(f.get('route').textContent, `${dictionaries.ko['sim.route.fallback']} · gemini-3.1-flash-live-preview`);
+  caption(f.direct, 1, 'interrupted', 'Sure, I can help you with that');
+  f.direct.patch({ skippedSegments: ['translation-1'] });
+  const row = f.get('caption');
+  assert.equal(row.getAttribute('data-skipped'), 'true');
+  assert.ok(all(row, n => n.classes.has('turn-label'))[0].textContent.includes(dictionaries.ko['sim.captions.skipped']));
+  assert.equal(f.get('announcement').textContent, '');
+  caption(f.direct, 2, 'final', 'Good morning');
+  assert.equal(all(f.root, n => n.getAttribute('data-skipped') === 'true').length, 1);
+  f.choose('mode', 'hub'); await tick();
+  assert.equal(f.get('route').hidden, true);
+});
+
+test('headphone warning is stressed once at the first direct start', () => {
+  const f = setup();
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.en['sim.headphonesStart']);
+  f.get('stop').dispatch('click'); f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, '');
+});
+
 test('unregistered hubs are hidden and rejected promises expose no raw error', async () => {
   const f = setup({ hubs: false }); assert.equal(f.get('mode').children.length, 1);
   f.direct.start = () => { throw new Error('SECRET endpoint detail'); };

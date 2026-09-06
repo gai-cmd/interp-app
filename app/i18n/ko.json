@@ -574,5 +574,11 @@
   "admin.notices.empty": "공지가 없어요.",
   "admin.control.emergencyHint": "긴급 중지는 발행 후 앱이 정책을 다시 확인할 때 적용돼요. 즉시 중지가 보장되지 않아요.",
   "admin.control.featureHint": "기능 토글은 구현된 능력만 끄거나 켜요. 새 능력을 부여하지 않아요.",
-  "admin.settings.lockedHint": "잠금은 기본값을 강제해요. 허용값이 하나면 실질 잠금으로 표시돼요."
+  "admin.settings.lockedHint": "잠금은 기본값을 강제해요. 허용값이 하나면 실질 잠금으로 표시돼요.",
+  "sim.route.translation": "번역 전용 모델",
+  "sim.route.flash": "보조 모델(범용 Live, 선택함)",
+  "sim.route.fallback": "보조 모델로 통역 중 — 번역 전용 모델 연결에 실패했어요",
+  "sim.captions.skipped": "대답 감지 · 건너뜀",
+  "sim.headphonesStart": "이어폰을 꼭 사용하세요. 스피커로 들으면 통역 음성이 마이크로 되돌아가 대화로 오인될 수 있어요.",
+  "diagnostics.repliesSkipped": "대답으로 판단해 건너뛴 턴 수"
 }

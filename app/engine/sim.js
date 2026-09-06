@@ -7,7 +7,7 @@
  */
 import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
 import { createListenMetrics } from './listen-metrics.js';
-import { LIVE_MODELS, DEFAULT_LIVE_MODEL } from '../providers/gemini/live-config.js';
+import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply } from '../providers/gemini/live-config.js';
 import { createSessionManager } from './session-manager.js';
 import { createLiveRecovery } from './live-recovery.js';
 import { createListenState } from './listen-state.js';
@@ -23,6 +23,9 @@ const deferred = () => {
 };
 const attempt = fn => { try { return fn(); } catch { /* Observer-owned failure. */ } };
 const captureCodes = new Set(['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'TIMEOUT']);
+const MAX_SKIPPED = 100;
+// 24 kHz PCM16 mono: 48 bytes per millisecond.
+const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
 
 /** start(request, {sessionId, turnId?, providerId, keySource, signal?}) must be
  * called from a gesture, after the app has stopped its previous activity.
@@ -33,6 +36,11 @@ const captureCodes = new Set(['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'TI
  * Capture has no ready event: its first complete frame proves preparation and
  * is discarded. The adapter already assembles subtitles; do not assemble twice.
  * snapshot/subscribe expose memory-only captions and separate output state.
+ * The translation-only model is always first; a flash model is used only by
+ * explicit selection or by the registered fallback after the translation model
+ * failed (snapshot.fallback). On the flash route, a translation segment that
+ * looks like a reply discards the rest of that turn's audio and captions
+ * (snapshot.skippedSegments, metrics.repliesSkipped).
  */
 export function createSimEngine({ router, sessionManager = createSessionManager(),
   getAudioContext, platform, resolveFallback, onLevel,
@@ -45,12 +53,17 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   const timing = { now, setTimeout, clearTimeout, random };
   const clock = { now, setTimeout, clearTimeout };
   let selectedModel = DEFAULT_LIVE_MODEL, metrics;
-  let active, store, errorCode = null, disposed = false, lastResult;
-  const snapshot = () => Object.freeze({ ...state.snapshot(), errorCode,
-    messageKey: errorCode ? `error.${errorCode}` : null,
-    metrics: metrics?.snapshot() ?? null, model: active?.model ?? selectedModel,
-    captions: store?.snapshot() ?? null, busy: Boolean(active),
-    retries: active?.recovery.retries ?? lastResult?.retries ?? 0 });
+  let active, store, errorCode = null, disposed = false, lastResult, skipped = [];
+  const snapshot = () => {
+    const model = active?.model ?? lastResult?.model ?? selectedModel;
+    return Object.freeze({ ...state.snapshot(), errorCode,
+      messageKey: errorCode ? `error.${errorCode}` : null,
+      metrics: metrics?.snapshot() ?? null, model, route: liveRoute(model),
+      fallback: active?.fallback ?? lastResult?.fallback ?? false, defaultModel: DEFAULT_LIVE_MODEL,
+      skippedSegments: Object.freeze([...skipped]),
+      captions: store?.snapshot() ?? null, busy: Boolean(active),
+      retries: active?.recovery.retries ?? lastResult?.retries ?? 0 });
+  };
   const notify = () => { const value = snapshot(); for (const fn of [...listeners]) attempt(() => fn(value)); };
   state.subscribe(notify);
   const alive = op => active === op && !op.controller.signal.aborted;
@@ -74,7 +87,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     }
     const player = createStreamPlayer({ ...timing, context: op.audioContext, muted: op.muted,
       onState(value) { if (alive(op)) state.setOutput(value.state, op.generation); },
-      onDrop(value) { if (alive(op) && value.durationMs > 0) store.markGap('audio'); } });
+      // Audio discarded for a detected reply is not a playback gap.
+      onDrop(value) { if (alive(op) && value.durationMs > 0 && !op.connection?.skipping) store.markGap('audio'); } });
     op.player = player;
   }
   function fault(op, c, error, goAway = false) {
@@ -93,21 +107,35 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       }
       if (ev.type === 'audio') {
         op.recovery.activity(); metrics.mark('firstAudioReceivedMs'); metrics.audioReceived();
+        if (c.skipping) { metrics.observe('droppedAudioMs', audioMs(ev.audio)); return; }
         if (op.player?.enqueue(ev.audio)) metrics.mark('firstAudioScheduledMs');
         if (op.player) metrics.queue(op.player.snapshot().queuedSeconds * 1000);
         notify();
       } else if (ev.type === 'subtitle') {
         op.recovery.activity();
         const at = now();
+        const translation = ev.role === 'translation';
+        // The rest of a rejected turn never reaches captions or the player.
+        if (translation && c.skipping) return;
+        const reply = translation && c.flash ? detectReply(ev.translatedText, op.targetLanguage, { final: ev.final }) : null;
+        if (reply) {
+          c.skipping = true;
+          op.player?.interrupt();
+          metrics.observe('repliesSkipped');
+          if (skipped.length >= MAX_SKIPPED) skipped.shift();
+          skipped.push(ev.segmentId);
+        }
         metrics.mark(ev.final ? 'firstFinalMs' : 'firstPartialMs');
         store.upsertDirect({ id: ev.segmentId, sessionId: op.sessionId, generation: c.generation,
           role: ev.role, sequence: ev.seq, revision: ev.revision,
           sourceText: ev.sourceText, translatedText: ev.translatedText,
-          status: ev.final ? 'final' : 'partial', receivedAt: at, finalizedAt: ev.final ? at : null,
+          status: reply ? 'interrupted' : ev.final ? 'final' : 'partial', receivedAt: at,
+          finalizedAt: reply || ev.final ? at : null,
           gapBefore: c.gapRoles.has(ev.role) });
         c.gapRoles.delete(ev.role);
-      } else if (ev.type === 'complete') op.player?.turnComplete();
-      else if (ev.type === 'interrupted') { store.interrupt(); op.player?.interrupt(); }
+        if (reply) notify();
+      } else if (ev.type === 'complete') { c.skipping = false; op.player?.turnComplete(); }
+      else if (ev.type === 'interrupted') { c.skipping = false; store.interrupt(); op.player?.interrupt(); }
     } catch { fault(op, c, new ProviderError('INVALID_RESULT')); }
   }
   async function run(op, request, route) {
@@ -117,7 +145,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       assertActive(op.controller.signal);
       state.transition('connecting', op.generation);
       for (;;) {
-        const c = { enabled: true, fault: deferred(),
+        const c = { enabled: true, fault: deferred(), skipping: false,
+          flash: liveRoute(request.model) === 'flash',
           gapRoles: new Set(op.recovery.budget.used ? ['source', 'translation'] : []) };
         op.connection = c;
         if (!op.player) makePlayer(op);
@@ -132,7 +161,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
             onEvent: ev => event(op, c, ev) });
           assertActive(op.controller.signal);
           if (c.enabled) {
-            op.recovery.opened(); op.model = request.model ?? DEFAULT_LIVE_MODEL; metrics.mark('setupMs');
+            op.recovery.opened(); op.model = sanitizeLiveModel(request.model); metrics.mark('setupMs');
             op.uplink = createUplinkQueue({ clock, sendAudio: async pcm => { await op.lease.sendAudio(pcm); metrics.observe('sentFrames'); },
               onDrop: () => { if (alive(op)) store.markGap('input'); },
               onError: err => fault(op, c, err) });
@@ -156,6 +185,11 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         if (!op.recovery.budget.used) throw outcome.error;
         request = await op.recovery.wait(outcome.error, { signal: op.controller.signal,
           closed: true, goAway: outcome.goAway, request, resolveFallback });
+        // Registered fallback only: the translation-only model stays first and a
+        // flash model replaces it solely after it failed. Surface the switch.
+        op.model = sanitizeLiveModel(request.model);
+        if (op.model !== op.requestedModel) op.fallback = true;
+        notify();
       }
     } catch (raw) {
       failure = op.failure ?? (op.controller.signal.aborted ? null : normalizeError(raw).code);
@@ -173,7 +207,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         state.transition('stopped');
       }
       lastResult = Object.freeze({ status: failure ? 'failed' : 'stopped', errorCode: failure,
-        messageKey: failure ? `error.${failure}` : null, retries: op.recovery.retries });
+        messageKey: failure ? `error.${failure}` : null, retries: op.recovery.retries,
+        model: op.model, fallback: op.fallback });
       metrics.stop(); active = null; notify(); op.ready.resolve(lastResult); op.done.resolve(lastResult);
     }
   }
@@ -185,9 +220,13 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     assertActive(context.signal);
     const op = { controller: new AbortController(), prepared: deferred(), ready: deferred(), done: deferred(),
       sessionId: context.sessionId, turnId: context.turnId ?? context.sessionId,
-      muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {} };
+      muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {},
+      targetLanguage: request.targetLanguage, fallback: false };
     metrics = createListenMetrics({ now });
-    op.model = request.model ?? selectedModel;
+    // A corrupted stored selection never reaches the router: fall back to the
+    // translation-only default rather than failing or steering to flash.
+    op.model = request.model === undefined ? selectedModel : sanitizeLiveModel(request.model);
+    op.requestedModel = op.model; skipped = [];
     store?.close(); store = createCaptionStore({ sessionId: op.sessionId, now }); store.subscribe(notify);
     errorCode = null; active = op;
     state.transition('preparing'); op.generation = state.snapshot().generation;
@@ -223,10 +262,17 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   function stop() { if (active) { const op = active; cancel(op); return op.done.promise; } return Promise.resolve(lastResult); }
   return Object.freeze({ start, stop, cancel: stop, snapshot,
     get model() { return selectedModel; },
+    get defaultModel() { return DEFAULT_LIVE_MODEL; },
     async setModel(model) {
       if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
       if (model === selectedModel) return;
       await stop(); selectedModel = model; notify();
+    },
+    // Restores a persisted selection; anything unrecognised becomes the default.
+    async restoreModel(model) {
+      const next = sanitizeLiveModel(model);
+      if (next !== selectedModel) { await stop(); selectedModel = next; notify(); }
+      return next;
     },
     subscribe(fn) {
       if (typeof fn !== 'function') throw new ProviderError('INVALID_REQUEST');

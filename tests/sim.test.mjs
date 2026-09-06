@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { simFixture, content, audioContent, deferred, tick } from './fixtures/sim.mjs';
 import { DelayedBlob } from './fixtures/live.mjs';
+import { buildLiveSetup, DEFAULT_LIVE_MODEL, LIVE_MODELS } from '../app/providers/gemini/live-config.js';
+const FLASH = 'gemini-3.1-flash-live-preview';
 
 async function advanceInput(f, ms) {
   while (ms > 0) { f.frame(); const step = Math.min(ms, 500); f.audio.advance(step); await tick(); ms -= step; }
@@ -141,7 +143,9 @@ test('missing credentials preserve routing failure before any budget charge', as
 test('registered model fallback and goAway share three additional connections', async t => {
   const f = simFixture(); t.after(() => f.close());
   const h = f.start(); await tick(); f.frame(); await tick();
+  assert.deepEqual([f.engine.snapshot().route, f.engine.snapshot().fallback], ['translation', false]);
   f.sockets[0].open();
+  assert.equal(f.sockets[0].sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
   f.sockets[0].json({ error: { code: 404, details: [
     { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'MODEL_NOT_SUPPORTED' },
   ] } }); await tick();
@@ -149,14 +153,95 @@ test('registered model fallback and goAway share three additional connections', 
   assert.equal(f.sockets.length, 2);
   await f.open(); await h.ready;
   assert.match(f.sockets[1].sent[0].setup.model, /gemini-3.1-flash-live-preview/);
+  // The switch to the auxiliary model is visible, never silent.
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [FLASH, 'flash', true]);
   for (const delay of [2250, 4500]) {
     f.sockets.at(-1).json({ goAway: { timeLeft: '10s' } }); await tick();
     await advanceInput(f, delay); await f.open();
   }
   assert.equal(f.sockets.length, 4);
+  // Every reopened flash session carries the current interpreter-only rules, built fresh each time.
+  const rules = buildLiveSetup({ model: FLASH, targetLanguage: 'ko' }).systemInstruction;
+  for (const socket of f.sockets.slice(1)) {
+    assert.deepEqual(socket.sent[0].setup.systemInstruction, rules);
+    assert.match(socket.sent[0].setup.systemInstruction.parts[0].text, /NOT an assistant[\s\S]*never answer questions/);
+    assert.equal(socket.sent[0].setup.generationConfig.translationConfig, undefined);
+  }
+  assert.equal(f.sockets[0].sent[0].setup.systemInstruction, undefined);
   f.sockets.at(-1).json({ goAway: { timeLeft: '10s' } });
   assert.equal((await h.done).errorCode, 'BUDGET_EXHAUSTED');
   assert.equal(f.sockets.length, 4); assert.deepEqual(f.calls, ['live', 'live', 'live', 'live']);
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().fallback], [FLASH, true]);
+});
+
+test('translation-only model is the default and corrupted selections recover to it', async t => {
+  const f = simFixture(); t.after(() => f.close());
+  assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL);
+  assert.equal(buildLiveSetup({ targetLanguage: 'ja' }).generationConfig.translationConfig.targetLanguageCode, 'ja');
+  assert.deepEqual([f.engine.model, f.engine.defaultModel, f.engine.snapshot().defaultModel], [DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL]);
+  await assert.rejects(f.engine.setModel('gemini-3.1-flash-live-preview-corrupted'), { code: 'MODEL_UNSUPPORTED' });
+  assert.equal(await f.engine.restoreModel({ model: 'SECRET' }), DEFAULT_LIVE_MODEL);
+  assert.equal(await f.engine.restoreModel(FLASH), FLASH); assert.equal(f.engine.model, FLASH);
+  assert.equal(await f.engine.restoreModel(null), DEFAULT_LIVE_MODEL); assert.equal(f.engine.model, DEFAULT_LIVE_MODEL);
+  await f.running({ model: 'models/evil; DROP' });
+  assert.equal(f.sockets[0].sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [DEFAULT_LIVE_MODEL, 'translation', false]);
+  assert.doesNotMatch(JSON.stringify(f.engine.snapshot()), /evil|SECRET/);
+  await f.engine.stop();
+  // Explicit selection of a flash model is a route, not a fallback.
+  f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
+  await f.engine.setModel(FLASH); await f.running();
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [FLASH, 'flash', false]);
+});
+
+test('flash route discards the rest of a turn once a reply is detected; translation route never filters', async t => {
+  const f = simFixture(); t.after(() => f.close());
+  await f.running({ model: FLASH, targetLanguage: 'en' });
+  const s = f.sockets[0];
+  content(s, { inputTranscription: { text: '도와줄 수 있어' }, ...audioContent }); await tick();
+  assert.equal(f.audio.made.length, 1);
+  content(s, { outputTranscription: { text: 'Sure, I can help you with that' } }); await tick();
+  const snap = f.engine.snapshot();
+  assert.equal(snap.metrics.repliesSkipped, 1);
+  assert.equal(snap.skippedSegments.length, 1);
+  assert.ok(f.audio.made[0].stopped);
+  const row = snap.captions.captions.find(c => c.role === 'translation');
+  assert.equal(row.status, 'interrupted'); assert.equal(row.segmentId, snap.skippedSegments[0]);
+  assert.equal(snap.captions.gaps.audio, false);
+  assert.equal(snap.captions.captions.find(c => c.role === 'source').status, 'partial');
+  // Later audio and captions of the same turn are dropped; source captions continue.
+  const hundredMs = { modelTurn: { parts: [{ inlineData: { data: btoa('\0'.repeat(4800)), mimeType: 'audio/pcm;rate=24000' } }] } };
+  content(s, { ...hundredMs, outputTranscription: { text: ' What would you like to know?', finished: true },
+    inputTranscription: { text: ' 응', finished: true } }); await tick();
+  assert.equal(f.audio.made.length, 1);
+  assert.equal(f.engine.snapshot().metrics.droppedAudioMs, 100);
+  assert.equal(f.engine.snapshot().captions.captions.filter(c => c.role === 'translation').length, 1);
+  assert.equal(f.engine.snapshot().captions.captions.find(c => c.role === 'source').status, 'final');
+  content(s, { turnComplete: true }); await tick();
+  content(s, { outputTranscription: { text: 'Good morning, everyone.', finished: true }, ...audioContent }); await tick();
+  assert.equal(f.audio.made.length, 2);
+  const next = f.engine.snapshot().captions.captions.at(-1);
+  assert.deepEqual([next.translatedText, next.status], ['Good morning, everyone.', 'final']);
+  assert.equal(f.engine.snapshot().skippedSegments.length, 1);
+  // A speaker's question stays a question; a foreign-script fragment is only judged when finished.
+  content(s, { outputTranscription: { text: 'Can you help me?', finished: true }, turnComplete: true }); await tick();
+  assert.equal(f.engine.snapshot().captions.captions.at(-1).status, 'final');
+  content(s, { outputTranscription: { text: '오늘 여러분 모두 환영합니다' } }); await tick();
+  assert.equal(f.engine.snapshot().captions.captions.at(-1).status, 'partial');
+  content(s, { outputTranscription: { finished: true } }); await tick();
+  assert.equal(f.engine.snapshot().captions.captions.at(-1).status, 'interrupted');
+  assert.equal(f.engine.snapshot().metrics.repliesSkipped, 2);
+  content(s, { turnComplete: true }); await tick();
+  await f.engine.stop();
+  assert.equal(f.engine.snapshot().skippedSegments.length, 2);
+  // Translation-only route: translationConfig prevents replies structurally, so nothing is filtered.
+  f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
+  await f.running({ targetLanguage: 'en' });
+  assert.equal(f.engine.snapshot().skippedSegments.length, 0);
+  content(f.sockets[1], { outputTranscription: { text: 'Sure, I can help you with that', finished: true }, ...audioContent }); await tick();
+  assert.equal(f.engine.snapshot().captions.captions.at(-1).status, 'final');
+  assert.equal(f.engine.snapshot().metrics.repliesSkipped, 0);
+  assert.equal(f.audio.made.at(-1).stopped, false);
 });
 
 test('remote close recovers; stop during retry wait cancels every future open', async t => {

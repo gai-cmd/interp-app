@@ -574,5 +574,11 @@
   "admin.notices.empty": "お知らせはありません。",
   "admin.control.emergencyHint": "緊急停止は公開後にアプリがポリシーを再確認したときに適用されます。即時停止は保証されません。",
   "admin.control.featureHint": "機能の切り替えは実装済みの機能をオン・オフするだけで、新しい機能を付与しません。",
-  "admin.settings.lockedHint": "ロックは初期値を強制します。許可値が一つだけの場合は実質ロックとして表示されます。"
+  "admin.settings.lockedHint": "ロックは初期値を強制します。許可値が一つだけの場合は実質ロックとして表示されます。",
+  "sim.route.translation": "翻訳専用モデル",
+  "sim.route.flash": "補助モデル（汎用Live・選択中）",
+  "sim.route.fallback": "補助モデルで通訳中 — 翻訳専用モデルに接続できませんでした",
+  "sim.captions.skipped": "応答を検出 · スキップ",
+  "sim.headphonesStart": "イヤホンを必ず使用してください。スピーカーで聞くと通訳音声がマイクに戻り、会話と誤認されることがあります。",
+  "diagnostics.repliesSkipped": "応答と判断してスキップしたターン数"
 }

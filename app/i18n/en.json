@@ -574,5 +574,11 @@
   "admin.notices.empty": "No notices.",
   "admin.control.emergencyHint": "An emergency stop takes effect when apps recheck the policy after publishing. Immediate stopping is not guaranteed.",
   "admin.control.featureHint": "Feature toggles only turn implemented capabilities on or off. They never grant new capabilities.",
-  "admin.settings.lockedHint": "Locking forces the default. A single allowed value is shown as effectively locked."
+  "admin.settings.lockedHint": "Locking forces the default. A single allowed value is shown as effectively locked.",
+  "sim.route.translation": "Translation-only model",
+  "sim.route.flash": "Auxiliary model (general Live, selected)",
+  "sim.route.fallback": "Interpreting with the auxiliary model — the translation-only model failed to connect",
+  "sim.captions.skipped": "Reply detected · skipped",
+  "sim.headphonesStart": "Please use headphones. Through a speaker, the interpreted voice re-enters the microphone and can be mistaken for conversation.",
+  "diagnostics.repliesSkipped": "Turns skipped as replies"
 }
