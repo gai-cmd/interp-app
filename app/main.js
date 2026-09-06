@@ -30,7 +30,7 @@ import { createDeviceTTS } from './audio/device-tts.js';
 import { createVoiceEngine } from './engine/voice.js';
 import { createSeqEngine } from './engine/seq.js';
 import { createDiagnostics } from './engine/diagnostics.js';
-import { mount } from './ui/shell.js';
+import { DEFAULT_TAB, TABS, mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
@@ -49,6 +49,8 @@ import { createPwa, createPwaControls, UPDATE_KEYS } from './pwa.js';
 // UI settings live in localStorage per device (§11.1); keys are ours alone.
 export const UI_LANGUAGE_STORAGE_KEY = 'interp-app.ui.v1.language';
 export const INSTALL_HINT_STORAGE_KEY = 'interp-app.ui.v1.install-hint';
+// P3-02e: the last selected tab; a first visit opens simultaneous interpretation.
+export const UI_TAB_STORAGE_KEY = 'interp-app.ui.v1.tab';
 export const ROOT_ID = 'app';
 // Application startup deadline, not a provider retry budget.
 export const BOOT_TIMEOUT_MS = 10000;
@@ -77,6 +79,15 @@ export function readUiLanguage(storage) {
 export function writeUiLanguage(storage, language) {
   if (!languagePattern.test(language)) return false;
   return attempt(() => { storage.setItem(UI_LANGUAGE_STORAGE_KEY, language); return true; }) === true;
+}
+/** The remembered tab, or undefined for a first visit or a corrupt value. */
+export function readUiTab(storage) {
+  const value = attempt(() => storage?.getItem(UI_TAB_STORAGE_KEY));
+  return typeof value === 'string' && TABS.includes(value) ? value : undefined;
+}
+export function writeUiTab(storage, tab) {
+  if (!TABS.includes(tab)) return false;
+  return attempt(() => { storage.setItem(UI_TAB_STORAGE_KEY, tab); return true; }) === true;
 }
 /** The manifest link follows the UI language (§12: one manifest per language). */
 export function applyManifestLanguage(doc, language) {
@@ -245,6 +256,11 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
           const selection = config.keyStore.getSelection();
           if (!selection || selection.keySource !== 'personal'
             || !config.keyStore.getMetadata(selection.providerId, selection.keySource)) throw new ProviderError('CREDENTIAL_REQUIRED');
+          // P3-02e: name the missing browser feature instead of a late generic
+          // microphone failure (no getUserMedia: insecure context or old browser;
+          // no AudioWorklet: streaming capture cannot run).
+          if (typeof nav.mediaDevices?.getUserMedia !== 'function' || typeof win.AudioWorkletNode !== 'function'
+            || typeof (win.AudioContext ?? win.webkitAudioContext) !== 'function') throw new ProviderError('INPUT_UNSUPPORTED');
           handle = raw.start(request, { ...selection, signal: owned.signal,
             sessionId: `listen-${owned.generation}` });
         } else handle = raw.join(request, { signal: owned.signal });
@@ -328,7 +344,10 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     hubEngine = createHubListenEngine({ client: createHubClient({ hubs, WebSocket: win.WebSocket, ...timing }), deviceTTS: hubTTS, ...timing });
     listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
     shell = mount({ root, i18n, engine: gatedEngine, listenEngines, hubs,
-      beforeTabChange: stopWork, document: doc, window: win, ...timing });
+      beforeTabChange: stopWork, document: doc, window: win, ...timing,
+      // The last tab is remembered per device; the first visit opens simultaneous interpretation.
+      initialTab: readUiTab(storage) ?? DEFAULT_TAB,
+      onTabChange: (tab) => { if (storage) writeUiTab(storage, tab); } });
     // P3-02c: caption board preferences share the UI storage; only this module reads localStorage.
     if (storage) shell.simView?.setStorage(storage);
     removers.push(config.keyStore.subscribe(() => {
@@ -360,6 +379,23 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
         subscribe: fn => simEngine.subscribe(() => fn()) },
       onUiLanguageChange: (language) => { if (storage) writeUiLanguage(storage, language); applyManifestLanguage(doc, language); } });
     controls = createPwaControls({ root: settingsView.elements.appActions, document: doc, i18n, shell, pwa, notify });
+    // P3-02e: the key badge and the simultaneous screen's "open settings"
+    // action land on the key entry; a stored key can still be gone on this
+    // device (iOS keeps separate storage for Safari and the home-screen app
+    // and evicts script storage after seven days without use), so the key
+    // section says that the key may have to be entered again here.
+    removers.push(shell.onSettingsOpen((target) => {
+      if (target !== 'key') return;
+      const input = settingsView.elements.keyInput;
+      attempt(() => input.scrollIntoView?.({ block: 'center' }));
+      attempt(() => input.focus());
+    }));
+    const retentionNote = doc.createElement('p');
+    retentionNote.setAttribute('class', 'settings-note settings-key-retention');
+    const renderRetentionNote = () => { retentionNote.textContent = i18n.t('settings.keyRetentionHint'); };
+    renderRetentionNote();
+    settingsView.elements.sections.key.append(retentionNote);
+    removers.push(shell.onLanguageChange(renderRetentionNote));
     listen(win.speechSynthesis, 'voiceschanged', () => settingsView.render());
     for (const key of startupNotices) notify(key);
   } catch {

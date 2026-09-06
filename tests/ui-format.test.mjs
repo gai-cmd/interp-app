@@ -239,9 +239,10 @@ test('mount builds the shell in three languages, shows key badges and manages th
   assert.equal(h.doc.documentElement.getAttribute('lang'), 'ko');
   assert.equal(byClass(h.root, 'shell-title').textContent, ko['app.name']);
   assert.equal(h.shell.elements.tabButtons.sequential.textContent, ko['tabs.sequential']);
-  assert.equal(h.shell.elements.tabButtons.sequential.getAttribute('aria-selected'), 'true');
-  assert.equal(h.shell.elements.panels.sequential.hidden, false);
-  assert.equal(h.shell.elements.panels.simultaneous.hidden, true);
+  // P3-02e: simultaneous interpretation is the first screen by default.
+  assert.equal(h.shell.elements.tabButtons.simultaneous.getAttribute('aria-selected'), 'true');
+  assert.equal(h.shell.elements.panels.sequential.hidden, true);
+  assert.equal(h.shell.elements.panels.simultaneous.hidden, false);
   assert.equal(h.shell.elements.panels.settings.hidden, true);
   assert.equal(h.shell.elements.modeBadge.textContent, ko['settings.noKey']);
   assert.equal(h.shell.elements.providerBadge.hidden, true);
@@ -325,7 +326,8 @@ test('the simultaneous tab is enabled without starting work; selectTab stays syn
 
 test('tab cleanup is awaited, reselection discards late results, and failed cleanup keeps the current panel', async () => {
   const pending = [];
-  const h = harness({ beforeTabChange: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+  // P3-02e: the default tab moved to simultaneous; this test switches away from a remembered sequential tab.
+  const h = harness({ initialTab: 'sequential', beforeTabChange: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
   assert.equal(h.shell.selectTab('simultaneous'), 'sequential');
   assert.equal(h.shell.selectedTab, 'sequential');
   // Selecting the current panel withdraws the pending navigation.
@@ -472,7 +474,8 @@ test('text input submits from the form, clears on success and turns engine error
 });
 
 test('bubbles render provider text with textContent and offer retry, play, device re-read and stop', () => {
-  const h = harness();
+  // P3-02e: bubbles live on the sequential panel, which is no longer the default tab.
+  const h = harness({ initialTab: 'sequential' });
   const { turnId } = h.engine.submitText('<script>alert(1)</script> & "quotes"');
   const turn = () => byClass(h.root, 'turn');
   assert.equal(turn().getAttribute('data-turn-id'), turnId);

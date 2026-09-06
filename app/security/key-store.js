@@ -43,6 +43,18 @@ export function createKeyStore({ registry, storage, now = Date.now,
       return storage[method](storageName(providerId), ...(method === 'setItem' ? [key] : []));
     } catch { throw new SecurityError('STORAGE_FAILED'); }
   }
+  // P3-02e: a write that raised nothing is not proof of persistence (private
+  // browsing, evicted or quota-limited storage). Read the value back; on a
+  // mismatch remove whatever was written and report the failure, so the UI
+  // never claims "saved in this browser" for a key that will not survive.
+  function persistVerified(providerId, key) {
+    persist('setItem', providerId, key);
+    let stored;
+    try { stored = storage.getItem(storageName(providerId)); } catch { stored = undefined; }
+    if (stored === key) return;
+    try { storage.removeItem(storageName(providerId)); } catch { /* Nothing readable was kept. */ }
+    throw new SecurityError('STORAGE_FAILED');
+  }
   function armExpiry() {
     if (timer !== undefined) unschedule(timer);
     timer = undefined;
@@ -76,7 +88,7 @@ export function createKeyStore({ registry, storage, now = Date.now,
       // Invalidate the old key even if removing its persistent copy fails.
       personal.delete(providerId);
       notify('key-deleted', providerId, 'personal');
-      if (remember) persist('setItem', providerId, key);
+      if (remember) persistVerified(providerId, key);
       else if (storage) persist('removeItem', providerId);
       personal.set(providerId, { key, remembered: remember });
       if (!selection) selection = Object.freeze({ providerId, keySource: 'personal' });

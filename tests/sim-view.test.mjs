@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createSimView, VOICE_GENDER_STORAGE_KEY, readVoiceGender } from '../app/ui/sim-view.js';
+import { createSimView, KEY_FAILURE_CODES, VOICE_GENDER_STORAGE_KEY, listenFailure, readVoiceGender } from '../app/ui/sim-view.js';
+import { ProviderError } from '../app/providers/contract.js';
 import { createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { BAR_HIDE_MS, CAPTION_ONLY_STORAGE_KEYS, CAPTION_SIZE, CAPTION_SIZE_STORAGE_KEY, clampCaptionSize,
   createCaptionBoard, readPreferences } from '../app/ui/caption-board.js';
@@ -66,7 +67,8 @@ function fake(mode) {
     setMuted(value) { calls.push(['mute', value]); state.setOutput(value ? 'muted' : 'ready'); },
   };
 }
-function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers(), voicePreference = createLiveVoicePreference() } = {}) {
+function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers(), voicePreference = createLiveVoicePreference(),
+  onOpenSettings } = {}) {
   const doc = { createElement(tag) { return new BoardElement(doc, tag); }, activeElement: null, hidden: false,
     fullscreenElement: null, fullscreenRequests: [], exits: 0, listeners: new Map(),
     async exitFullscreen() { doc.exits++; doc.fullscreenElement = null; },
@@ -77,7 +79,7 @@ function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers 
   const root = doc.createElement('main'), direct = fake('direct'), hub = fake('hub');
   const i18n = createI18n({ dictionaries, language: 'en' });
   const view = createSimView({ root, i18n, engines: { direct, hub }, document: doc, window: win, storage, ...timers, voicePreference,
-    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request) });
+    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings });
   const get = name => byClass(root, `sim-${name}`);
   const choose = (name, value) => { get(name).value = value; get(name).dispatch('change'); };
   return { root, doc, win, direct, hub, i18n, view, get, choose, storage, wakeLock, timers, voicePreference,
@@ -294,6 +296,102 @@ test('unregistered hubs are hidden and rejected promises expose no raw error', a
   f.direct.start = () => ({ ready: Promise.reject(new Error('SECRET')), done: Promise.reject(new Error('SECRET')) });
   f.get('start').dispatch('click'); await tick();
   assert.equal(f.root.textContent.includes('SECRET'), false);
+});
+
+// P3-02e: failures are named by code; key problems lead to the settings key entry.
+test('a missing or rejected key is named (never the generic text) and "open settings" leads to the key entry', async () => {
+  let opened = 0;
+  const f = setup({ onOpenSettings: () => { opened++; } });
+  assert.equal(f.get('open-settings').hidden, true);
+  // The app adapter rejects before the engine runs (no key selected).
+  f.direct.start = () => { throw new ProviderError('CREDENTIAL_REQUIRED'); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.en['sim.error.CREDENTIAL_REQUIRED']);
+  assert.notEqual(f.get('notice').textContent, dictionaries.en['error.unknown']);
+  assert.equal(f.get('open-settings').hidden, false);
+  f.get('open-settings').dispatch('click'); assert.equal(opened, 1);
+  f.i18n.setLanguage('ja'); f.view.refresh();
+  assert.equal(f.get('notice').textContent, dictionaries.ja['sim.error.CREDENTIAL_REQUIRED']);
+  // A policy block from the app gate shows its own reason; no key entry is offered.
+  f.direct.start = () => { throw Object.assign(new Error('SECRET detail'), { code: 'POLICY_STOPPED' }); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.ja['error.POLICY_STOPPED']);
+  assert.equal(f.get('open-settings').hidden, true);
+  // A browser without streaming capture is named; a rejected key (engine result) offers settings again.
+  f.direct.start = () => { throw new ProviderError('INPUT_UNSUPPORTED'); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.ja['sim.error.INPUT_UNSUPPORTED']);
+  f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'INVALID_KEY' }); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.ja['sim.error.INVALID_KEY']);
+  assert.equal(f.get('open-settings').hidden, false);
+  assert.equal(f.get('start').textContent, dictionaries.ja['sim.reopen'], 'after a failure the primary action reopens the session');
+  assert.equal(f.get('fs-primary').textContent, dictionaries.ja['sim.reopen']);
+  f.get('open-settings').dispatch('click'); assert.equal(opened, 2);
+  // Starting again clears the screen failure; a stopped session says "restart".
+  f.direct.patch({ status: 'idle', errorCode: null });
+  f.direct.start = (request) => { f.direct.calls.push(['start', request]); f.direct.patch({ status: 'running' }); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('open-settings').hidden, true);
+  f.direct.patch({ status: 'stopped' });
+  assert.equal(f.get('start').textContent, dictionaries.ja['sim.restart']);
+  // Hub failures never point to the personal key entry.
+  f.choose('mode', 'hub'); await tick();
+  f.hub.patch({ status: 'failed', errorCode: 'CREDENTIAL_REQUIRED' });
+  assert.equal(f.get('open-settings').hidden, true);
+  assert.equal(f.root.textContent.includes('SECRET'), false);
+  // The mapping alone: known codes, app codes with a dictionary entry, and nothing else.
+  assert.deepEqual(listenFailure(f.i18n, new Error('SECRET')), { code: null, key: 'error.unknown' });
+  assert.deepEqual(listenFailure(f.i18n, { code: 'SECRET_CODE' }), { code: null, key: 'error.unknown' });
+  assert.deepEqual(listenFailure(f.i18n, new ProviderError('NETWORK_ERROR')), { code: 'NETWORK_ERROR', key: 'error.NETWORK_ERROR' });
+  // Capture codes arrive as the engine's errorCode string, not as ProviderError codes.
+  assert.deepEqual(listenFailure(f.i18n, { code: 'MICROPHONE_DENIED' }), { code: 'MICROPHONE_DENIED', key: 'sim.error.MICROPHONE_DENIED' });
+  assert.deepEqual(listenFailure(f.i18n, { code: 'RATE_LIMITED' }), { code: 'RATE_LIMITED', key: 'sim.error.RATE_LIMITED' });
+  assert.deepEqual([...KEY_FAILURE_CODES], ['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED']);
+  // Without an onOpenSettings adapter the action is never shown.
+  const g = setup();
+  g.direct.start = () => { throw new ProviderError('CREDENTIAL_REQUIRED'); };
+  g.get('start').dispatch('click');
+  assert.equal(g.get('notice').textContent, dictionaries.en['sim.error.CREDENTIAL_REQUIRED']);
+  assert.equal(g.get('open-settings').hidden, true);
+});
+
+test('reopen session: offered while a direct session exists, closes it and starts again; the status counts automatic replacements', async () => {
+  const f = setup();
+  assert.equal(f.get('reopen').hidden, true); assert.equal(f.get('fs-reopen').hidden, true);
+  assert.ok(f.bar.contains(f.get('fs-reopen')), 'the full-screen bar carries the reopen control');
+  f.get('start').dispatch('click');
+  assert.equal(f.get('reopen').hidden, false); assert.equal(f.get('fs-reopen').hidden, false);
+  assert.equal(f.get('reopen').textContent, dictionaries.en['sim.reopen']);
+  assert.equal(f.get('status').textContent, dictionaries.en['sim.status.running']);
+  // Automatic replacement in progress: "replacing session · n".
+  f.direct.state.transition('reconnecting'); f.direct.patch({ retries: 2 });
+  assert.equal(f.get('status').textContent, dictionaries.en['sim.status.replacing'].replace('{count}', '2'));
+  assert.equal(f.get('reopen').hidden, false, 'a stuck replacement can be reopened by hand');
+  f.i18n.setLanguage('ko'); f.view.refresh();
+  assert.equal(f.get('status').textContent, dictionaries.ko['sim.status.replacing'].replace('{count}', '2'));
+  f.direct.state.transition('running');
+  assert.equal(f.get('status').textContent, dictionaries.ko['sim.status.running']);
+  // Manual reopen: physical stop, then a fresh start with the same settings.
+  f.get('fs-reopen').dispatch('click');
+  assert.equal(f.get('reopen').disabled, true);
+  await tick();
+  assert.deepEqual(f.direct.calls.map(call => call[0]), ['start', 'stop', 'start']);
+  assert.deepEqual(f.direct.calls.at(-1)[1], { targetLanguage: 'ja' });
+  assert.equal(f.direct.snapshot().status, 'running');
+  assert.equal(f.get('reopen').disabled, false);
+  // A failing close is reported by its code and nothing restarts.
+  f.direct.stop = () => { f.direct.calls.push(['stop']); throw new ProviderError('SESSION_CLOSED'); };
+  f.get('reopen').dispatch('click'); await tick();
+  assert.equal(f.get('notice').textContent, dictionaries.ko['error.SESSION_CLOSED']);
+  assert.equal(f.direct.calls.filter(call => call[0] === 'start').length, 2);
+  // Hub listening has no reopen control; the hub status line is unchanged.
+  f.direct.stop = () => { f.direct.calls.push(['stop']); f.direct.state.transition('stopping'); f.direct.state.transition('stopped'); };
+  f.choose('mode', 'hub'); await tick();
+  assert.equal(f.get('reopen').hidden, true);
+  f.hub.patch({ status: 'reconnecting', retries: 1 });
+  assert.equal(f.get('status').textContent, dictionaries.ko['sim.status.reconnecting']);
+  f.view.destroy();
 });
 
 test('captions-only mode: full screen, wake lock, auto-hiding bar, Escape and focus return', async () => {

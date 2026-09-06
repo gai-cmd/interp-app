@@ -185,7 +185,7 @@
   "error.INVALID_SHARED_PAYLOAD": "공용 키 정보를 확인할 수 없어요. 관리자에게 새 QR을 요청하세요.",
   "error.SHARED_USE_ENDED": "공용 이용이 종료됐어요.",
   "error.URL_CLEANUP_FAILED": "공용 링크를 안전하게 처리하지 못해 시작을 중단했어요.",
-  "error.STORAGE_FAILED": "기기 저장소에 접근하지 못했어요. 저장 설정을 확인해 주세요.",
+  "error.STORAGE_FAILED": "기기 저장소에 키를 저장하거나 읽지 못했어요. 프라이빗 모드이거나 저장 공간이 부족할 수 있어요. 저장을 끄면 이번 실행 동안만 키를 사용할 수 있어요.",
   "error.STORE_CLOSED": "키 보관이 종료됐어요. 앱을 다시 열어 주세요.",
   "error.SECURITY_ERROR": "키를 안전하게 처리하지 못했어요. 설정을 확인해 주세요.",
   "error.INVALID_PROVIDER": "작업을 완료하지 못했어요. 설정을 확인하고 다시 시도해 주세요.",
@@ -767,5 +767,17 @@
   "settings.sectionHint.diagnostics": "선택한 제공자·키·능력별로 연결을 검사하고 현장 허브 상태를 확인해요.",
   "settings.sectionHint.records": "기록 저장은 꺼져 있어요. 현재 내용은 여기서 지울 수 있어요.",
   "settings.sectionHint.app": "설치·업데이트, 앱 버전과 정책 revision, 잠금 이유를 확인해요.",
-  "settings.sectionHint.terms": "데이터 처리와 이용 조건 안내예요."
+  "settings.sectionHint.terms": "데이터 처리와 이용 조건 안내예요.",
+  "sim.reopen": "세션 다시 열기",
+  "sim.openSettings": "설정 열기",
+  "sim.status.replacing": "세션 교체 중 · {count}회",
+  "sim.error.CREDENTIAL_REQUIRED": "개인 API 키가 없어 동시통역을 시작할 수 없어요. 설정 열기를 눌러 키를 입력하세요. 이 폰에 전에 저장했더라도 브라우저가 지웠을 수 있어요.",
+  "sim.error.INVALID_KEY": "API 키가 거부됐어요. 설정에서 키를 다시 확인하세요.",
+  "sim.error.PERMISSION_DENIED": "이 키로는 Live API를 쓸 수 없어요. 키 제한과 API 사용 설정을 확인하세요.",
+  "sim.error.MICROPHONE_DENIED": "마이크 권한이 없어요. 브라우저의 사이트 설정에서 마이크를 허용한 뒤 다시 시작하세요.",
+  "sim.error.MICROPHONE_UNAVAILABLE": "마이크를 열 수 없어요. 다른 앱이 마이크를 쓰고 있거나 입력 장치가 없어요.",
+  "sim.error.INPUT_UNSUPPORTED": "이 브라우저는 실시간 마이크 스트리밍(AudioWorklet)을 지원하지 않거나 HTTPS가 아니에요. 최신 Safari 또는 Chrome에서 여세요.",
+  "sim.error.RATE_LIMITED": "요청 한도(429)에 걸려 세션을 닫았어요. 남은 한도를 아끼기 위해 자동으로 다시 열지 않아요. 잠시 후 세션 다시 열기를 누르세요.",
+  "sim.error.BUDGET_EXHAUSTED": "세션을 3회 다시 열었지만 연결이 이어지지 않았어요. 네트워크를 확인한 뒤 세션 다시 열기를 누르세요.",
+  "settings.keyRetentionHint": "iPhone·iPad에서는 홈 화면 앱과 Safari가 저장소를 따로 쓰고, 7일 동안 열지 않으면 브라우저가 저장한 키를 지울 수 있어요. 헤더에 \"키 없음\"이 보이면 이 폰에서 키를 다시 입력하세요."
 }

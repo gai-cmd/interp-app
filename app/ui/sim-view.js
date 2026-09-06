@@ -5,13 +5,36 @@
 // P3-02d: a female/male voice choice (shared with the settings voice picker
 // through liveVoicePreference, gender remembered in UI storage) and a speech
 // gate indicator beside the level meter.
+// P3-02e: failures are shown by code (never the generic error.unknown when a
+// code is known); a missing or rejected key offers "open settings"; a manual
+// "reopen session" button replaces the running Live session; the status line
+// counts automatic session replacements while the engine reconnects.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
+import { normalizeError } from '../providers/contract.js';
 import { LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder } from './seq-view.js';
 import { createCaptionBoard } from './caption-board.js';
-import { errorKey, levelPercent } from './errors.js';
+import { UNKNOWN_KEY, errorCodeKey, levelPercent } from './errors.js';
 
 export const VOICE_GENDER_STORAGE_KEY = 'interp-app.ui.v1.voiceGender';
+// Failure codes whose remedy is the key entry in settings.
+export const KEY_FAILURE_CODES = Object.freeze(['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED']);
+const codePattern = /^[A-Z][A-Z0-9_]{0,39}$/;
+
+/**
+ * The dictionary key for a failure of the listening screen: a simultaneous-
+ * specific text (sim.error.CODE) when one exists, else the shared error.CODE;
+ * only recognised codes are used, so no raw error text can reach the DOM.
+ * Returns { code, key }; code is null when nothing specific is known.
+ */
+export function listenFailure(i18n, error) {
+  const own = typeof error?.code === 'string' && codePattern.test(error.code) ? error.code : null;
+  const normalized = normalizeError(error).code;
+  const code = own && i18n.has(errorCodeKey(own)) ? own : normalized !== 'PROVIDER_ERROR' ? normalized : null;
+  if (!code) return { code: null, key: UNKNOWN_KEY };
+  const specific = `sim.error.${code}`;
+  return { code, key: i18n.has(specific) ? specific : errorCodeKey(code) };
+}
 /** The remembered gender, or the default for a missing/corrupt value. */
 export function readVoiceGender(storage) {
   let value;
@@ -27,9 +50,10 @@ export function readVoiceGender(storage) {
  * window (wake lock) and timers default to the document's view so the shell
  * needs no new wiring; the app hands its usable storage over with
  * setStorage(storage) after mount (only app/main.js reads localStorage).
+ * onOpenSettings() is offered as an action when the failure is a key problem.
  */
 export function createSimView({ root, i18n, engines, engine, hubs = [], startDirect,
-  targetLanguage = 'ja', onSequential, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
+  targetLanguage = 'ja', onSequential, onOpenSettings, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
   storage = null, voicePreference = liveVoicePreference,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   engines ??= { direct: engine };
@@ -37,6 +61,9 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const bind = createBinder(i18n), listeners = [];
   let mode = 'direct', target = SUPPORTED_LANGUAGES.includes(targetLanguage) ? targetLanguage : 'ja';
   let disposed = false, pending = false, snapshot, unsubscribe, headphonesHinted = false, store = storage, speaking = false;
+  // The last failure of this screen (start rejected before the engine ran, or
+  // a rejected handle); the engine's own errorCode is read from the snapshot.
+  let failure = null;
   const current = () => engines[mode];
   const node = (tag, name, parent, key, attrs = {}) => {
     const el = doc.createElement(tag);
@@ -76,7 +103,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   source.setAttribute('aria-pressed', 'false');
   const captionOnly = button('sim-caption-only', 'captionOnly.enter');
   captionOnly.setAttribute('aria-pressed', 'false');
+  // Manual session replacement while a direct session runs or reconnects.
+  const reopen = button('sim-reopen', 'sim.reopen');
   const fallback = button('sim-fallback', 'sim.sequentialFallback');
+  // Key problems point to the settings key entry instead of a generic notice.
+  const openSettings = button('sim-open-settings', 'sim.openSettings');
+  openSettings.setAttribute('aria-haspopup', 'dialog');
   const directHints = node('div', 'sim-hints', section);
   for (const key of ['sim.sourceAuto', 'sim.headphones', 'sim.seatAudio', 'sim.personalKey', 'sim.liveVoice']) node('p', '', directHints, key);
   const hubHints = node('div', 'sim-hints', section);
@@ -98,9 +130,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const fsSound = button('sim-fs-sound', 'sim.enableSound', null);
   const fsSource = button('sim-fs-source', 'sim.captions.showSource', null);
   fsSource.setAttribute('aria-pressed', 'false');
+  const fsReopen = button('sim-fs-reopen', 'sim.reopen', null);
   const fsPrimary = node('button', 'btn btn-primary sim-fs-primary', null, 'common.start', { type: 'button' });
   const board = createCaptionBoard({ parent: section, i18n, document: doc, window: win, storage,
-    controls: [fsStop, fsSound, fsSource], primary: fsPrimary,
+    controls: [fsStop, fsSound, fsSource, fsReopen], primary: fsPrimary,
     setTimeout: schedule, clearTimeout: cancelTimer,
     onToggle(on) {
       section.setAttribute('data-caption-only', String(on));
@@ -109,15 +142,20 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     } });
   const setText = (el, value) => { if (el.textContent !== value) el.textContent = value; };
   const listen = (el, event, fn) => { el.addEventListener(event, fn); listeners.push(() => el.removeEventListener(event, fn)); };
+  // A failure is rendered by its code; the raw error is dropped here.
+  function fail(error) {
+    if (disposed) return;
+    failure = listenFailure(i18n, error);
+    render();
+  }
   function call(fn) {
     if (disposed) return;
     try {
       const result = fn();
-      const failed = () => { if (!disposed) setText(notice, i18n.t('error.unknown')); };
-      if (result?.then) result.catch(failed);
-      result?.ready?.catch(failed); result?.done?.catch(failed);
+      if (result?.then) result.catch(fail);
+      result?.ready?.catch(fail); result?.done?.catch(fail);
       return result;
-    } catch { setText(notice, i18n.t('error.unknown')); }
+    } catch (error) { fail(error); }
   }
   const end = () => mode === 'hub' ? current().leave() : current().stop();
   async function change(apply) {
@@ -127,12 +165,13 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
       await end();
       if (disposed) return;
       apply(); subscribe(); setText(notice, i18n.t('sim.settingsChanged'));
-    } catch { if (!disposed) setText(notice, i18n.t('error.unknown')); }
+    } catch (error) { fail(error); }
     finally { pending = false; if (!disposed) render(); }
   }
   const canStart = () => !pending && !snapshot.busy && ['idle', 'stopped', 'failed'].includes(snapshot.status);
   function startSession() {
     if (!canStart()) return;
+    failure = null;
     setText(notice, '');
     // Speaker playback re-enters the microphone and can read as conversation; stress headphones once.
     if (mode === 'direct' && !headphonesHinted) { headphonesHinted = true; setText(notice, i18n.t('sim.headphonesStart')); }
@@ -140,6 +179,19 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
       : (startDirect ?? (request => current().start(request)))({ targetLanguage: target }));
   }
   const stopSession = () => call(end);
+  // Manual "reopen session": physical close of the current direct session,
+  // then a fresh start with the same settings (a new recovery budget).
+  function reopenSession() {
+    if (pending || disposed || mode !== 'direct' || !running()) return;
+    pending = true; render();
+    call(async () => {
+      try { await end(); }
+      finally { pending = false; }
+      if (disposed) return;
+      render();
+      startSession();
+    });
+  }
   const toggleSound = () => call(() => current().setMuted(!['muted', 'blocked', 'unavailable'].includes(snapshot.output)));
   const sourceShown = () => source.getAttribute('aria-pressed') === 'true';
   function toggleSource() {
@@ -176,6 +228,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const el of [stop, fsStop]) listen(el, 'click', stopSession);
   for (const el of [sound, fsSound]) listen(el, 'click', toggleSound);
   for (const el of [source, fsSource]) listen(el, 'click', toggleSource);
+  for (const el of [reopen, fsReopen]) listen(el, 'click', reopenSession);
+  listen(openSettings, 'click', () => { if (typeof onOpenSettings === 'function') call(onOpenSettings); });
   listen(captionOnly, 'click', () => board.setCaptionOnly(!board.captionOnly));
   listen(fallback, 'click', () => call(async () => { await end(); if (!disposed) onSequential?.(); }));
 
@@ -204,7 +258,9 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     start.disabled = busy || pending || !allowed.includes(target);
     stop.disabled = fsStop.disabled = !busy || pending;
     sound.disabled = fsSound.disabled = pending || snapshot.status !== 'running';
-    const startKey = snapshot.status === 'failed' || snapshot.status === 'stopped' ? (hub ? 'hub.reconnect' : 'sim.restart') : (hub ? 'hub.join' : 'common.start');
+    // After a failure the primary action reads "reopen session"; after a user stop, "restart".
+    const startKey = hub ? (snapshot.status === 'failed' || snapshot.status === 'stopped' ? 'hub.reconnect' : 'hub.join')
+      : snapshot.status === 'failed' ? 'sim.reopen' : snapshot.status === 'stopped' ? 'sim.restart' : 'common.start';
     for (const el of [start, fsPrimary]) setText(el, i18n.t(startKey));
     for (const el of [stop, fsStop]) setText(el, i18n.t(hub ? 'hub.leave' : 'common.stop'));
     const soundKey = ['muted', 'blocked', 'unavailable'].includes(snapshot.output) ? 'sim.enableSound' : 'sim.mute';
@@ -212,13 +268,22 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     // Before a session the full screen shows one large start button; the bar shows stop while busy.
     fsPrimary.hidden = start.disabled;
     fsStop.hidden = !busy;
-    setText(status, i18n.t(`sim.status.${snapshot.status}`));
+    // Manual replacement is offered only while a direct session exists.
+    reopen.hidden = fsReopen.hidden = hub || !busy;
+    reopen.disabled = fsReopen.disabled = pending;
+    // Automatic replacement shows its count: "replacing session · n".
+    const retries = Number.isInteger(snapshot.retries) && snapshot.retries > 0 ? snapshot.retries : 0;
+    setText(status, !hub && snapshot.status === 'reconnecting' ? i18n.t('sim.status.replacing', { count: retries })
+      : i18n.t(`sim.status.${snapshot.status}`));
     route.hidden = hub;
     const routeKey = snapshot.fallback === true ? 'sim.route.fallback' : snapshot.route === 'flash' ? 'sim.route.flash' : 'sim.route.translation';
     setText(route, hub ? '' : `${i18n.t(routeKey)} · ${typeof snapshot.model === 'string' ? snapshot.model : ''}`);
     setText(output, i18n.t(`sim.output.${snapshot.output.replaceAll('-', '_')}`));
     setText(broadcast, hub ? i18n.t(`hub.broadcast.${snapshot.broadcast}`) : '');
-    if (snapshot.errorCode) setText(notice, i18n.t(errorKey({ code: snapshot.errorCode })));
+    // A failure of this screen wins over the engine's last result; both are codes only.
+    const shown = failure ?? (snapshot.errorCode ? listenFailure(i18n, { code: snapshot.errorCode }) : null);
+    if (shown) setText(notice, i18n.t(shown.key));
+    openSettings.hidden = hub || !shown || !KEY_FAILURE_CODES.includes(shown.code) || typeof onOpenSettings !== 'function';
     fallback.hidden = hub || snapshot.status !== 'failed' || !onSequential;
     if (snapshot.status !== 'running') { meter.setAttribute('value', '0'); speaking = false; }
     renderSpeech();

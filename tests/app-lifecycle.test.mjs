@@ -7,8 +7,8 @@ import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import { checkSource } from '../scripts/check-i18n.mjs';
 import { TURN_PHASE, isAppBusy } from '../app/state.js';
 import {
-  AUDIO_CONTEXT_OPTIONS, INSTALL_HINT_STORAGE_KEY, UI_LANGUAGE_STORAGE_KEY, applyManifestLanguage,
-  autoStart, captureSharedFragment, readUiLanguage, startApp, usableStorage, writeUiLanguage,
+  AUDIO_CONTEXT_OPTIONS, INSTALL_HINT_STORAGE_KEY, UI_LANGUAGE_STORAGE_KEY, UI_TAB_STORAGE_KEY, applyManifestLanguage,
+  autoStart, captureSharedFragment, readUiLanguage, readUiTab, startApp, usableStorage, writeUiLanguage, writeUiTab,
 } from '../app/main.js';
 import { APP_ORIGIN, POLICY_URL, createBrowser as listeningBrowser, policyReply, scenarioPolicy } from './fixtures/scenarios.mjs';
 import { createSeqEngine } from '../app/engine/seq.js';
@@ -818,6 +818,108 @@ test('P2 direct credentials are checked before permission; a pending permission 
   assert.equal(b.root.childNodes.length, 0);
   assert.equal(b.doc.listenerCount, 0);
   assert.equal(b.win.listenerCount, 0);
+});
+
+// P3-02e: first screen, remembered tab, key badge, key retention note.
+test('P3-02e the first visit opens simultaneous interpretation; the last tab is remembered per device; the key badge opens the key entry', async t => {
+  const b = await start(); t.after(() => b.app.close());
+  assert.equal(b.app.shell.selectedTab, 'simultaneous');
+  assert.equal(b.app.shell.elements.panels.simultaneous.hidden, false);
+  assert.equal(b.app.shell.elements.panels.sequential.hidden, true);
+  assert.equal(b.storage.has(UI_TAB_STORAGE_KEY), false, 'the default is not written');
+  await b.app.shell.switchTab('sequential');
+  assert.equal(b.storage.get(UI_TAB_STORAGE_KEY), 'sequential');
+  const remembered = await start({ storage: { [UI_TAB_STORAGE_KEY]: 'sequential' } }); t.after(() => remembered.app.close());
+  assert.equal(remembered.app.shell.selectedTab, 'sequential');
+  const corrupt = await start({ storage: { [UI_TAB_STORAGE_KEY]: 'settings' } }); t.after(() => corrupt.app.close());
+  assert.equal(corrupt.app.shell.selectedTab, 'simultaneous');
+  const bare = await start({ withStorage: false }); t.after(() => bare.app.close());
+  assert.equal(bare.app.shell.selectedTab, 'simultaneous');
+  await bare.app.shell.switchTab('sequential');
+  assert.equal(bare.app.shell.selectedTab, 'sequential', 'no storage: the choice still applies for this run');
+  assert.equal(readUiTab(null), undefined);
+  assert.equal(writeUiTab(null, 'sequential'), false);
+  assert.equal(writeUiTab(b.win.localStorage, 'bogus'), false);
+  // The key badge is a button: "no key" opens settings with the key entry focused.
+  const badge = el(b, 'shell-mode');
+  assert.equal(badge.tagName, 'BUTTON');
+  assert.equal(badge.textContent, ko['settings.noKey']);
+  badge.dispatch('click');
+  assert.equal(b.app.shell.settingsOpen, true);
+  assert.equal(b.doc.activeElement, el(b, 'settings-key-input'));
+  assert.equal(badge.getAttribute('aria-expanded'), 'true');
+  b.app.shell.closeSettings();
+  assert.equal(badge.getAttribute('aria-expanded'), 'false');
+  // The key section says the key may have to be entered again on this device (iOS storage).
+  const note = el(b, 'settings-key-retention');
+  assert.ok(el(b, 'settings-key').contains(note));
+  assert.equal(note.textContent, ko['settings.keyRetentionHint']);
+  b.app.setLanguage('ja');
+  assert.equal(note.textContent, dictionaries.ja['settings.keyRetentionHint']);
+  assert.equal(b.app.shell.elements.settingsButton.getAttribute('aria-expanded'), 'false');
+});
+
+test('P3-02e starting without a key names the cause on the simultaneous screen and offers the key entry; a browser without streaming capture is named', async t => {
+  const b = await listeningApp(t, { personal: false });
+  el(b, 'sim-start').dispatch('click');
+  assert.equal(el(b, 'sim-notice').textContent, ko['sim.error.CREDENTIAL_REQUIRED']);
+  assert.notEqual(el(b, 'sim-notice').textContent, ko['error.unknown']);
+  assert.equal(el(b, 'sim-open-settings').hidden, false);
+  assert.equal(b.microphone.streams.length, 0); assert.equal(b.sockets.length, 0);
+  el(b, 'sim-open-settings').dispatch('click');
+  assert.equal(b.app.shell.settingsOpen, true);
+  assert.equal(b.doc.activeElement, el(b, 'settings-key-input'));
+  enterKey(b);
+  b.app.shell.closeSettings();
+  await until(() => !b.app.activity.occupied);
+  delete b.win.AudioWorkletNode;
+  assert.throws(() => b.app.listenEngines.direct.start({ targetLanguage: 'ja' }), { code: 'INPUT_UNSUPPORTED' });
+  await until(() => !b.app.activity.occupied);
+  el(b, 'sim-start').dispatch('click');
+  assert.equal(el(b, 'sim-notice').textContent, ko['sim.error.INPUT_UNSUPPORTED']);
+  assert.equal(el(b, 'sim-open-settings').hidden, true);
+  await until(() => !b.app.activity.occupied);
+  assert.equal(b.microphone.streams.length, 0); assert.equal(b.sockets.length, 0);
+  assert.equal(b.app.listenEngines.direct.snapshot().status, 'idle');
+});
+
+test('P3-02e manual reopen replaces the running direct session through the app: old socket closed, new session with a fresh budget', async t => {
+  const b = await listeningApp(t);
+  const { socket, handle } = await runDirect(b);
+  assert.equal(el(b, 'sim-reopen').hidden, false);
+  assert.equal(el(b, 'sim-fs-reopen').hidden, false);
+  el(b, 'sim-reopen').dispatch('click');
+  await handle.done;
+  await until(() => socket.readyState === 3);
+  await until(() => b.audio.nodes.at(-1)?.port.onmessage && b.app.listenEngines.direct.snapshot().busy);
+  b.microphone.feed(new Float32Array(4096).fill(0.1));
+  await until(() => b.sockets.length === 2);
+  const next = b.sockets[1]; next.open(); next.json({ setupComplete: {} });
+  await until(() => b.app.listenEngines.direct.snapshot().status === 'running');
+  assert.equal(b.app.listenEngines.direct.snapshot().retries, 0, 'a manual reopen is a new operation');
+  // runDirect started the engine directly, so this is the screen's first own start: the headphone hint, no error.
+  assert.equal(el(b, 'sim-notice').textContent, ko['sim.headphonesStart']);
+  assert.equal(b.app.activity.occupied, true);
+  assert.equal(b.gemini.calls.length, 0);
+});
+
+test('P3-02e a key that does not survive the storage write is reported as a storage failure and is not kept', async t => {
+  const b = await start(); t.after(() => b.app.close());
+  // Private browsing or evicted storage: setItem raises nothing and stores nothing.
+  b.win.localStorage.setItem = () => {};
+  enterKey(b, { remember: true });
+  assert.equal(el(b, 'settings-key-feedback').textContent, ko['error.STORAGE_FAILED']);
+  assert.equal(el(b, 'settings-key-status').getAttribute('data-key'), 'none');
+  assert.equal(b.app.config.keyStore.getMetadata('gemini', 'personal'), null);
+  assert.equal(b.storage.has('interp-app.personal-key.v1.gemini'), false);
+  assert.equal(notice(b.app), 'error.STORAGE_FAILED');
+  assert.equal(el(b, 'shell-mode').textContent, ko['settings.noKey']);
+  // Without "remember" the key serves this run.
+  el(b, 'settings-remember').childNodes[0].checked = false;
+  enterKey(b);
+  assert.equal(el(b, 'settings-key-status').getAttribute('data-key'), 'memory');
+  assert.equal(el(b, 'settings-key-feedback').textContent, ko['settings.keySavedSession']);
+  assert.equal(leaks(b.ops), false);
 });
 
 test('P2 reconnect waiting keeps update and auxiliary work blocked and visibility cancels the retry', async t => {

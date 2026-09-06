@@ -5,7 +5,7 @@ import { SEQ_STATUS, TURN_PHASE } from '../app/state.js';
 import { SEQ_POLICY } from '../app/engine/seq.js';
 import { DEFAULT_MODEL, FALLBACK_MODEL } from '../app/providers/gemini/config.js';
 import { validateWav } from '../app/audio/wav.js';
-import { startApp } from '../app/main.js';
+import { UI_TAB_STORAGE_KEY, startApp } from '../app/main.js';
 import {
   DEVICE_VOICES, boot, captureConsole, createBrowser, frames, leaks, live, rest, secrets, sharedFragment, sleep, tick, until, visible,
 } from './fixtures/scenarios.mjs';
@@ -27,7 +27,9 @@ const decode = (base64) => Uint8Array.from(atob(base64), (char) => char.charCode
 async function scenario(t, options, run) {
   const console_ = captureConsole();
   t.after(console_.restore);
-  const b = await boot(options);
+  // P3-02e: the first screen is simultaneous interpretation; these sequential
+  // scenarios run as a device that remembered the sequential tab.
+  const b = await boot({ ...options, storage: { [UI_TAB_STORAGE_KEY]: 'sequential', ...(options.storage ?? {}) } });
   try { await run(b); } finally { await b.close(); }
   assert.deepEqual(console_.calls, [], 'nothing was logged');
   assert.equal(leaks(b.store.snapshot()), false, 'no key in the final state');

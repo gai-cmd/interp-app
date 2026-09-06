@@ -9,6 +9,11 @@ import { createBinder, createSeqView } from './seq-view.js';
 import { createSimView } from './sim-view.js';
 
 export const TABS = Object.freeze(['sequential', 'simultaneous']);
+// P3-02e: simultaneous interpretation is the first screen (owner report
+// 2026-09-06); the app remembers the last selected tab through initialTab.
+export const DEFAULT_TAB = 'simultaneous';
+// Settings targets a caller may ask the dialog to focus (P3-02e: key entry).
+export const SETTINGS_TARGETS = Object.freeze(['key']);
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
 function element(doc, tag, { className, attributes = {} } = {}) {
@@ -19,15 +24,21 @@ function element(doc, tag, { className, attributes = {} } = {}) {
 }
 
 /**
- * mount({ root, i18n, engine, document?, window?, setTimeout?, clearTimeout? })
+ * mount({ root, i18n, engine, document?, window?, setTimeout?, clearTimeout?,
+ *   initialTab?, onTabChange? })
  * builds the shell into root and returns { root, elements, seqView, i18n,
- * setLanguage, selectTab, showMessage, openSettings, closeSettings, render,
- * destroy }. P1-19 creates i18n/config/capture/engine first, then mounts;
- * P1-16 renders settings into elements.panels.settingsBody. The caller owns
- * persistence of the UI language (separate from the interpretation pair).
+ * setLanguage, selectTab, showMessage, openSettings, closeSettings,
+ * onSettingsOpen, render, destroy }. P1-19 creates i18n/config/capture/engine
+ * first, then mounts; P1-16 renders settings into elements.panels.settingsBody.
+ * The caller owns persistence of the UI language (separate from the
+ * interpretation pair) and of the selected tab: initialTab is the remembered
+ * tab (default: simultaneous) and onTabChange(id) reports later selections.
+ * openSettings(target) opens the dialog and tells onSettingsOpen listeners
+ * which part to focus ('key' = the personal key entry); the key badge and the
+ * simultaneous view's "open settings" action use it.
  */
 export function mount({ root, i18n, engine, document: doc = root?.ownerDocument, window: win = null,
-  listenEngines, hubs = [], beforeTabChange,
+  listenEngines, hubs = [], beforeTabChange, initialTab = DEFAULT_TAB, onTabChange = null,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof engine?.state?.subscribe !== 'function') {
     throw new Error('INVALID_REQUEST');
@@ -52,7 +63,9 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   bind.text(title, 'app.name');
   const badges = element(doc, 'div', { className: 'shell-badges' });
   const providerBadge = element(doc, 'span', { className: 'badge shell-provider' });
-  const modeBadge = element(doc, 'span', { className: 'badge shell-mode' });
+  // The key-source badge is a button: "no key" leads straight to the key entry (P3-02e).
+  const modeBadge = element(doc, 'button', { className: 'badge shell-mode', attributes: { type: 'button',
+    'aria-haspopup': 'dialog', 'aria-controls': 'shell-settings' } });
   const connectionBadge = element(doc, 'span', { className: 'badge shell-connection', attributes: { role: 'status', 'aria-live': 'polite' } });
   badges.append(providerBadge, modeBadge, connectionBadge);
   const settingsButton = element(doc, 'button', { className: 'btn btn-secondary shell-settings-button',
@@ -73,7 +86,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const message = element(doc, 'p', { className: 'shell-message', attributes: { role: 'status', 'aria-live': 'polite' } });
   message.hidden = true;
 
-  // Tabs: sequential is live; simultaneous is displayed as planned and blocked.
+  // Tabs: both are live; simultaneous is the first screen unless a tab was remembered.
   const tabs = element(doc, 'nav', { className: 'shell-tabs', attributes: { role: 'tablist' } });
   const tabButtons = {};
   const panels = {};
@@ -103,6 +116,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     return applyTab(id);
   }
   function applyTab(id) {
+    const previous = selected;
     selected = id;
     for (const tabId of TABS) {
       const active = tabId === id;
@@ -110,6 +124,8 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       tabButtons[tabId].setAttribute('tabindex', active ? '0' : '-1');
       panels[tabId].hidden = !active;
     }
+    // Only selections after mount are reported; the initial tab is the caller's own value.
+    if (previous !== null && previous !== id && typeof onTabChange === 'function') attempt(() => onTabChange(id));
     return selected;
   }
   // selectTab retains its synchronous selected-id contract. Await switchTab
@@ -151,26 +167,35 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const settingsBody = element(doc, 'div', { className: 'shell-settings-body' });
   settings.append(settingsHeader, settingsBody);
   const inertTargets = [header, notice, message, tabs, main];
+  const settingsOpenListeners = new Set();
 
-  function openSettings() {
-    if (!settings.hidden) return;
-    closeShare();
-    restoreFocus = doc.activeElement ?? settingsButton;
-    settings.hidden = false;
-    settingsButton.setAttribute('aria-expanded', 'true');
-    for (const target of inertTargets) target.setAttribute('inert', '');
-    attempt(() => settingsClose.focus());
+  // target ('key') asks the mounted settings view (through onSettingsOpen) to
+  // focus that entry; an already open dialog still forwards the target.
+  function openSettings(target = null) {
+    const wanted = SETTINGS_TARGETS.includes(target) ? target : null;
+    if (settings.hidden) {
+      closeShare();
+      restoreFocus = doc.activeElement ?? settingsButton;
+      settings.hidden = false;
+      settingsButton.setAttribute('aria-expanded', 'true');
+      modeBadge.setAttribute('aria-expanded', 'true');
+      for (const target of inertTargets) target.setAttribute('inert', '');
+      attempt(() => settingsClose.focus());
+    }
+    if (wanted) for (const listener of [...settingsOpenListeners]) attempt(() => listener(wanted));
   }
   function closeSettings() {
     if (settings.hidden) return;
     settings.hidden = true;
     settingsButton.setAttribute('aria-expanded', 'false');
+    modeBadge.setAttribute('aria-expanded', 'false');
     for (const target of inertTargets) target.removeAttribute('inert');
     const target = restoreFocus;
     restoreFocus = null;
     attempt(() => (target ?? settingsButton).focus());
   }
-  listen(settingsButton, 'click', openSettings);
+  listen(settingsButton, 'click', () => openSettings());
+  listen(modeBadge, 'click', () => openSettings('key'));
   listen(settingsClose, 'click', closeSettings);
   listen(settings, 'keydown', (event) => { if (event.key === 'Escape') { event.preventDefault?.(); closeSettings(); } });
 
@@ -310,7 +335,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
 
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });
   const simView = listenEngines ? createSimView({ root: panels.simultaneous, i18n, engines: listenEngines, hubs,
-    document: doc, onSequential: () => switchTab('sequential') }) : null;
+    document: doc, onSequential: () => switchTab('sequential'), onOpenSettings: () => openSettings('key') }) : null;
   const unsubscribe = store.subscribe(render);
   removers.push(engine.subscribeVoice?.(renderConnection) ?? (() => {}));
   listen(win, 'online', renderConnection);
@@ -331,7 +356,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     for (const listener of [...languageListeners]) attempt(() => listener(i18n.language));
   }
   applyLanguage();
-  selectTab('sequential');
+  selectTab(TABS.includes(initialTab) ? initialTab : DEFAULT_TAB);
 
   return Object.freeze({
     root: app,
@@ -353,6 +378,11 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     showMessage,
     openSettings,
     closeSettings,
+    onSettingsOpen(listener) {
+      if (typeof listener !== 'function') throw new Error('INVALID_REQUEST');
+      settingsOpenListeners.add(listener);
+      return () => settingsOpenListeners.delete(listener);
+    },
     openShare, closeShare,
     render,
     destroy() {
@@ -363,6 +393,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       cancelTimer(messageTimer);
       for (const remove of removers) remove();
       languageListeners.clear();
+      settingsOpenListeners.clear();
       seqView.destroy();
       bind.clear();
       app.remove();

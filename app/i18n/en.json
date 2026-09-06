@@ -185,7 +185,7 @@
   "error.INVALID_SHARED_PAYLOAD": "Shared key information is invalid. Ask the administrator for a new QR code.",
   "error.SHARED_USE_ENDED": "Shared use has ended.",
   "error.URL_CLEANUP_FAILED": "Startup stopped because the shared link could not be handled safely.",
-  "error.STORAGE_FAILED": "Device storage could not be accessed. Check storage settings.",
+  "error.STORAGE_FAILED": "The key could not be saved to or read from device storage. Private browsing or low storage space may be the cause. Turn saving off to use the key for this run only.",
   "error.STORE_CLOSED": "The key store has closed. Reopen the app.",
   "error.SECURITY_ERROR": "The key could not be handled safely. Check settings.",
   "error.INVALID_PROVIDER": "The task could not be completed. Check settings and retry.",
@@ -767,5 +767,17 @@
   "settings.sectionHint.diagnostics": "Test the connection for the selected provider, key, and capability, and check the venue hub status.",
   "settings.sectionHint.records": "History saving is off. You can clear the current content here.",
   "settings.sectionHint.app": "Check installation, updates, the app version, the policy revision, and lock reasons.",
-  "settings.sectionHint.terms": "Guidance on data handling and conditions of use."
+  "settings.sectionHint.terms": "Guidance on data handling and conditions of use.",
+  "sim.reopen": "Reopen session",
+  "sim.openSettings": "Open settings",
+  "sim.status.replacing": "Replacing session · {count}",
+  "sim.error.CREDENTIAL_REQUIRED": "No personal API key, so simultaneous interpretation cannot start. Tap Open settings and enter the key. Even if you saved it on this phone before, the browser may have cleared it.",
+  "sim.error.INVALID_KEY": "The API key was rejected. Check the key in settings.",
+  "sim.error.PERMISSION_DENIED": "This key cannot use the Live API. Check the key restrictions and API access.",
+  "sim.error.MICROPHONE_DENIED": "Microphone permission is missing. Allow the microphone in the browser’s site settings, then start again.",
+  "sim.error.MICROPHONE_UNAVAILABLE": "The microphone could not be opened. Another app may be using it, or there is no input device.",
+  "sim.error.INPUT_UNSUPPORTED": "This browser does not support live microphone streaming (AudioWorklet), or the page is not on HTTPS. Open it in a current Safari or Chrome.",
+  "sim.error.RATE_LIMITED": "The request limit (429) was hit, so the session was closed. It is not reopened automatically, to save the remaining quota. Tap Reopen session in a moment.",
+  "sim.error.BUDGET_EXHAUSTED": "The session was reopened three times without a lasting connection. Check the network, then tap Reopen session.",
+  "settings.keyRetentionHint": "On iPhone and iPad, the home-screen app and Safari keep separate storage, and the browser may delete a stored key after seven days without use. If the header shows \"No key\", enter the key again on this phone."
 }

@@ -185,7 +185,7 @@
   "error.INVALID_SHARED_PAYLOAD": "共有キー情報を確認できません。管理者に新しいQRコードを依頼してください。",
   "error.SHARED_USE_ENDED": "共有利用が終了しました。",
   "error.URL_CLEANUP_FAILED": "共有リンクを安全に処理できなかったため、起動を停止しました。",
-  "error.STORAGE_FAILED": "端末の保存領域にアクセスできませんでした。保存設定を確認してください。",
+  "error.STORAGE_FAILED": "端末の保存領域にキーを保存または読み込みできませんでした。プライベートブラウズか空き容量不足の可能性があります。保存をオフにすると今回の実行中だけキーを使えます。",
   "error.STORE_CLOSED": "キーの保持が終了しました。アプリを開き直してください。",
   "error.SECURITY_ERROR": "キーを安全に処理できませんでした。設定を確認してください。",
   "error.INVALID_PROVIDER": "処理を完了できませんでした。設定を確認して再試行してください。",
@@ -767,5 +767,17 @@
   "settings.sectionHint.diagnostics": "選択したプロバイダー・キー・機能ごとに接続を検査し、会場ハブの状態を確認します。",
   "settings.sectionHint.records": "記録の保存はオフです。現在の内容はここで消去できます。",
   "settings.sectionHint.app": "インストール・更新、アプリのバージョンとポリシーの revision、ロックの理由を確認します。",
-  "settings.sectionHint.terms": "データの取り扱いと利用条件の案内です。"
+  "settings.sectionHint.terms": "データの取り扱いと利用条件の案内です。",
+  "sim.reopen": "セッションを開き直す",
+  "sim.openSettings": "設定を開く",
+  "sim.status.replacing": "セッション切り替え中 · {count}回目",
+  "sim.error.CREDENTIAL_REQUIRED": "個人の API キーがないため同時通訳を開始できません。「設定を開く」を押してキーを入力してください。以前この端末に保存していても、ブラウザが消去している場合があります。",
+  "sim.error.INVALID_KEY": "API キーが拒否されました。設定でキーを確認してください。",
+  "sim.error.PERMISSION_DENIED": "このキーでは Live API を使えません。キーの制限と API の有効化を確認してください。",
+  "sim.error.MICROPHONE_DENIED": "マイクの権限がありません。ブラウザのサイト設定でマイクを許可してから、もう一度開始してください。",
+  "sim.error.MICROPHONE_UNAVAILABLE": "マイクを開けませんでした。他のアプリがマイクを使用中か、入力デバイスがありません。",
+  "sim.error.INPUT_UNSUPPORTED": "このブラウザはリアルタイムのマイク送信(AudioWorklet)に対応していないか、HTTPS ではありません。最新の Safari または Chrome で開いてください。",
+  "sim.error.RATE_LIMITED": "リクエスト上限(429)に達したためセッションを閉じました。残りの上限を守るため自動では開き直しません。しばらくしてから「セッションを開き直す」を押してください。",
+  "sim.error.BUDGET_EXHAUSTED": "セッションを3回開き直しましたが接続が続きませんでした。ネットワークを確認してから「セッションを開き直す」を押してください。",
+  "settings.keyRetentionHint": "iPhone・iPad ではホーム画面のアプリと Safari の保存領域が別々で、7日間開かないとブラウザが保存したキーを消すことがあります。ヘッダーに「キー未設定」と表示されたら、この端末でキーを入力し直してください。"
 }
