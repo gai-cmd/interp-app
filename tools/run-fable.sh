@@ -10,7 +10,7 @@ run_tests() {
   [ ${#files[@]} -eq 0 ] && { echo "no tests"; return 0; }
   node --test "${files[@]}" > docs/build/last-test.log 2>&1
 }
-blocked() { grep -qiE "usage limit|rate limit|429|too many requests|overloaded|not logged in|Invalid API key|nested" "$1"; }
+blocked() { grep -qiE "usage limit|rate limit|429|too many requests|overloaded|not logged in|reached your .* limit|hit your session limit|Invalid API key|nested" "$1"; }
 PREFIX="${1:-P1}"
 HOMES=("fable")   # single lane · Claude subscription
 for f in docs/build/tasks/$PREFIX-*.md; do

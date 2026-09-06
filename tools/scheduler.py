@@ -63,7 +63,7 @@ def start_lane(t):
 def finish_lane(l):
     t = l['task']; wt = l['wt']; br = l['branch']; tid = t['id']
     logf = f'docs/build/{tid}.log'; txt = open(logf, errors='ignore').read() if os.path.exists(logf) else ''
-    if re.search(r'usage limit|rate limit|429|overloaded|not logged in', txt, re.I):
+    if re.search(r'usage limit|rate limit|429|too many requests|overloaded|not logged in|reached your .* limit|hit your session limit|Invalid API key', txt, re.I):
         log(f"{tid} FABLE-LIMITED"); sh(['git', 'worktree', 'remove', '--force', wt]); return 'limited'
     if not tests_pass(wt):
         log(f"{tid} tests failed in lane · retry once with output"); 
@@ -72,7 +72,10 @@ def finish_lane(l):
         env = dict(os.environ, APP_DIR=wt, LOG_DIR=f'{APP}/docs/build')
         subprocess.run(['bash', f'{APP}/tools/fable-task.sh', f'{tid}-retry', rp], cwd=APP, env=env, capture_output=True)
         if not tests_pass(wt): log(f"{tid} FAILED-twice → stopping for review"); return 'failed'
-    sh(['git', 'add', '-A'], cwd=wt); sh(GIT + ['commit', '-qm', f"{tid}: {title(t)}\n\nBuilt by Claude Fable 5.1 (parallel lane); verified with node --test.{TRAILER}"], cwd=wt)
+    sh(['git', 'add', '-A'], cwd=wt)
+    if not sh(['git', 'diff', '--cached', '--name-only'], cwd=wt).stdout.strip():
+        log(f"{tid} NO-CHANGES (agent produced nothing) → not done"); sh(['git', 'worktree', 'remove', '--force', wt]); return 'failed'
+    sh(GIT + ['commit', '-qm', f"{tid}: {title(t)}\n\nBuilt by Claude Fable 5.1 (parallel lane); verified with node --test.{TRAILER}"], cwd=wt)
     # merge into main
     r = sh(GIT + ['merge', '--no-ff', '-m', f"merge {br}{TRAILER}", br])
     if r.returncode:
