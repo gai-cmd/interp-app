@@ -361,10 +361,16 @@ test('two providers show a picker; a hub-only provider blocks key entry; persona
   assert.equal(elements.rememberInput.checked, true);
   elements.rememberInput.checked = false; // Exercise the explicit session-only choice.
   elements.keyInput.value = `  ${KEY}  `;
+  elements.keyInput.dispatch('input');
   const submit = h.el('settings-key-form').dispatch('submit');
   assert.equal(submit.defaultPrevented, true);
-  assert.equal(elements.keyInput.value, '', 'the field is emptied on save');
-  assert.deepEqual(h.keyStore.getMetadata('alpha', 'personal'), { providerId: 'alpha', keySource: 'personal', remembered: false });
+  // P3-22 (owner, 2026-09-06): the field shows a mask of the stored key after
+  // a save instead of looking empty; the value itself is gone from the DOM.
+  assert.equal(elements.keyInput.value, '\u2022'.repeat(KEY.length), 'the saved key is represented by a mask of its length');
+  assert.equal(elements.keyInput.value.includes(KEY), false, 'the value never stays in the field');
+  assert.equal(elements.keyInput.getAttribute('type'), 'password');
+  assert.deepEqual(h.keyStore.getMetadata('alpha', 'personal'),
+    { providerId: 'alpha', keySource: 'personal', remembered: false, length: KEY.length });
   assert.deepEqual(h.keyStore.getSelection(), { providerId: 'alpha', keySource: 'personal' });
   assert.equal(h.adapter.calls.length, 0, 'saving a key starts no check');
   assert.equal(h.diagnostics.snapshot().running, null);
@@ -396,7 +402,9 @@ test('two providers show a picker; a hub-only provider blocks key entry; persona
 
   // Remembering is a per-save choice and needs the offered storage.
   elements.rememberInput.checked = true;
+  // Typing is what clears the mask; assigning .value alone is not a keystroke.
   elements.keyInput.value = 'REMEMBERED-SECRET-KEY';
+  elements.keyInput.dispatch('input');
   h.el('settings-key-form').dispatch('submit');
   assert.equal(storage.map.get('interp-app.personal-key.v1.alpha'), 'REMEMBERED-SECRET-KEY');
   assert.equal(elements.keyStatus.getAttribute('data-key'), 'remembered');
@@ -406,9 +414,11 @@ test('two providers show a picker; a hub-only provider blocks key entry; persona
   assert.equal(/SECRET/.test(domText(h.root)), false);
 
   elements.keyInput.value = 'bad key with spaces';
+  elements.keyInput.dispatch('input');
   h.el('settings-key-form').dispatch('submit');
   assert.equal(h.notice(), 'error.INVALID_KEY');
-  assert.equal(elements.keyInput.value, '');
+  // A rejected key leaves the field showing the mask of the key still stored.
+  assert.equal(elements.keyInput.value, '\u2022'.repeat('REMEMBERED-SECRET-KEY'.length));
   assert.equal(storage.map.get('interp-app.personal-key.v1.alpha'), 'REMEMBERED-SECRET-KEY', 'a rejected key keeps the stored one');
   h.state.setNotice(null);
 
@@ -659,18 +669,19 @@ test('key save feedback is inline, localized and distinguishes persistence, memo
   const e = h.view.elements;
   assert.equal(e.rememberInput.checked, true);
   assert.equal(h.el('settings-remember').textContent.includes(ko['settings.rememberWarning']), true);
-  const save = value => { e.keyInput.value = value; h.el('settings-key-form').dispatch('submit'); };
+  // Typing replaces the mask (the input event is what a person produces).
+  const save = value => { e.keyInput.value = value; e.keyInput.dispatch('input'); h.el('settings-key-form').dispatch('submit'); };
   save(KEY);
-  assert.equal(e.keyFeedback.textContent, ko['settings.keySavedBrowser']);
+  assert.equal(e.keyFeedback.textContent, ko['keyGuide.saved.browser']);
   assert.equal(e.keyFeedback.hidden, false);
   assert.equal(e.keyStatus.getAttribute('data-key'), 'remembered');
   assert.equal(storage.map.size, 1);
   for (const lang of ['en', 'ja', 'ko']) {
     h.shell.setLanguage(lang);
-    assert.equal(e.keyFeedback.textContent, dictionaries[lang]['settings.keySavedBrowser']);
+    assert.equal(e.keyFeedback.textContent, dictionaries[lang]['keyGuide.saved.browser']);
   }
   e.rememberInput.checked = false; save(KEY);
-  assert.equal(e.keyFeedback.textContent, ko['settings.keySavedSession']);
+  assert.equal(e.keyFeedback.textContent, ko['keyGuide.saved.session']);
   assert.equal(e.keyStatus.getAttribute('data-key'), 'memory'); assert.equal(storage.map.size, 0);
   save(''); assert.equal(e.keyFeedback.textContent, ko['error.INVALID_KEY']);
   save('bad key'); assert.equal(e.keyFeedback.textContent, ko['error.INVALID_KEY']);
@@ -1116,4 +1127,132 @@ test('the policy view before the first reply, with a too-old app and without a r
   const fixed = policyDouble();
   const c = harness({ policy: { snapshot: fixed.snapshot, subscribe: fixed.subscribe } }); t.after(() => teardown(c));
   assert.equal(c.view.elements.policy.recheck.disabled, true, 'no refresh path, no recheck');
+});
+
+// --- P3-22: personal key show/hide and the save result (owner, 2026-09-06) ---
+
+const MASK = '•';
+const maskOf = (value) => MASK.repeat(value.length);
+
+test('P3-22 a stored key fills the field with a mask of its length, never with the value', () => {
+  const storage = fakeStorage();
+  const h = harness({ config: fixtureConfig({ storage }) });
+  const e = h.view.elements;
+  // Nothing stored: an empty field, no toggle to press.
+  assert.equal(e.keyInput.value, '');
+  assert.equal(e.keyInput.getAttribute('type'), 'password');
+  assert.equal(h.el('settings-key-toggle').hidden, true);
+
+  e.keyInput.value = KEY; e.keyInput.dispatch('input');
+  h.el('settings-key-form').dispatch('submit');
+  // The field is not empty (the owner's phone complaint) and is not the key.
+  assert.equal(e.keyInput.value, maskOf(KEY));
+  assert.equal(e.keyInput.value.includes(KEY), false);
+  assert.equal(e.keyInput.getAttribute('type'), 'password');
+  assert.equal(h.keyStore.getMetadata('alpha', 'personal').length, KEY.length,
+    'the mask length comes from the store, which exposes the length and not the value');
+  assert.equal(/SECRET/.test(domText(h.root)), false, 'no key value anywhere in the DOM');
+});
+
+test('P3-22 the show toggle reveals the stored key, and hiding, saving, deleting or closing puts it back', () => {
+  const h = harness({ config: fixtureConfig({ storage: fakeStorage() }) });
+  const e = h.view.elements;
+  const toggle = h.el('settings-key-toggle');
+  e.keyInput.value = KEY; e.keyInput.dispatch('input');
+  h.el('settings-key-form').dispatch('submit');
+
+  assert.equal(toggle.hidden, false);
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+  assert.equal(toggle.textContent, ko['keyGuide.show']);
+  assert.equal(toggle.getAttribute('aria-controls'), 'settings-key-input');
+
+  toggle.dispatch('click');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+  assert.equal(toggle.textContent, ko['keyGuide.hide']);
+  assert.equal(e.keyInput.getAttribute('type'), 'text');
+  assert.equal(e.keyInput.value, KEY, 'the value is on screen only because someone asked');
+
+  toggle.dispatch('click');
+  assert.equal(e.keyInput.value, maskOf(KEY), 'hiding restores the mask');
+  assert.equal(e.keyInput.getAttribute('type'), 'password');
+  assert.equal(/SECRET/.test(domText(h.root)), false);
+
+  // Leaving the settings screen hides a revealed key.
+  toggle.dispatch('click');
+  assert.equal(e.keyInput.value, KEY);
+  h.shell.closeSettings();
+  assert.equal(e.keyInput.value, maskOf(KEY), 'closing the screen hides the value');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+  assert.equal(/SECRET/.test(domText(h.root)), false);
+
+  // Deleting clears the field entirely and takes the toggle with it.
+  toggle.dispatch('click');
+  h.el('settings-key-delete').dispatch('click');
+  h.el('settings-key-delete-confirm').dispatch('click');
+  assert.equal(e.keyInput.value, '');
+  assert.equal(h.el('settings-key-toggle').hidden, true);
+  assert.equal(h.keyStore.getMetadata('alpha', 'personal'), null);
+});
+
+test('P3-22 typing replaces the mask, and the mask is never submitted as a key', () => {
+  const storage = fakeStorage();
+  const h = harness({ config: fixtureConfig({ storage }) });
+  const e = h.view.elements;
+  e.keyInput.value = KEY; e.keyInput.dispatch('input');
+  h.el('settings-key-form').dispatch('submit');
+  const stored = storage.map.get('interp-app.personal-key.v1.alpha');
+  assert.equal(stored, undefined, 'session-only by default in this harness');
+
+  // Pressing save on an untouched mask must not re-save anything and must not
+  // claim success — the mask is not a key.
+  h.el('settings-key-form').dispatch('submit');
+  assert.equal(e.keyFeedback.textContent, ko['error.INVALID_KEY']);
+  assert.equal(h.keyStore.getMetadata('alpha', 'personal').length, KEY.length, 'the stored key is untouched');
+
+  // The first keystroke clears the mask so only what is typed survives.
+  e.keyInput.value = `${maskOf(KEY)}NEW-PERSONAL-KEY-VALUE`;
+  e.keyInput.dispatch('input');
+  assert.equal(e.keyInput.value, 'NEW-PERSONAL-KEY-VALUE', 'the mask is stripped, not submitted');
+  h.el('settings-key-form').dispatch('submit');
+  assert.equal(h.keyStore.getMetadata('alpha', 'personal').length, 'NEW-PERSONAL-KEY-VALUE'.length);
+  assert.equal(e.keyInput.value, maskOf('NEW-PERSONAL-KEY-VALUE'));
+});
+
+test('P3-22 the save result names what happened, and a failure never shows a success line', () => {
+  const storage = fakeStorage();
+  const h = harness({ config: fixtureConfig({ storage }), persistence: true });
+  const e = h.view.elements;
+  const save = (value, remember) => {
+    e.rememberInput.checked = remember;
+    e.keyInput.value = value; e.keyInput.dispatch('input');
+    h.el('settings-key-form').dispatch('submit');
+  };
+  save(KEY, true);
+  assert.equal(e.keyFeedback.textContent, ko['keyGuide.saved.browser']);
+  assert.equal(e.keyFeedback.hidden, false);
+  save(KEY, false);
+  assert.equal(e.keyFeedback.textContent, ko['keyGuide.saved.session']);
+
+  // A storage failure: no success wording, and no key value in the message.
+  storage.setItem = () => { throw new Error('SECRET-IN-ERROR'); };
+  save(KEY, true);
+  assert.equal(e.keyFeedback.textContent, ko['error.STORAGE_FAILED']);
+  assert.notEqual(e.keyFeedback.textContent, ko['keyGuide.saved.browser']);
+  assert.notEqual(e.keyFeedback.textContent, ko['keyGuide.saved.session']);
+  assert.equal(/SECRET/.test(domText(h.root)), false);
+  // Nothing is stored, so the field has no mask to show.
+  assert.equal(h.keyStore.getMetadata('alpha', 'personal'), null);
+  assert.equal(e.keyInput.value, '');
+});
+
+test('P3-22 a shared event key is never masked, revealed or offered a toggle', () => {
+  const h = harness({ config: fixtureConfig({ storage: fakeStorage() }) });
+  const e = h.view.elements;
+  // The shared entry is its own field and stays a password field with no toggle.
+  assert.equal(e.sharedInput.getAttribute('type'), 'password');
+  assert.equal(all(h.root, (node) => node.classes.has('settings-key-toggle')).length, 1,
+    'only the personal key has a show toggle');
+  // The store refuses to reveal anything but a personal key.
+  assert.throws(() => h.keyStore.revealPersonal('nope'), { code: 'UNKNOWN_PROVIDER' });
+  assert.equal(h.keyStore.revealPersonal('alpha'), null, 'nothing stored, nothing revealed');
 });

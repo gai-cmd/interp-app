@@ -60,8 +60,11 @@ async function opened(b, index) {
 function enterKey(b) {
   const input = el(b, 'settings-key-input');
   input.value = KEY;
+  // P3-22: typing is what clears the mask of a stored key.
+  input.dispatch('input');
   el(b, 'settings-key-form').dispatch('submit');
-  assert.equal(input.value, '');
+  assert.equal(input.value.includes(KEY), false);
+  assert.match(input.value, /^\u2022*$/);
 }
 async function runDirect(b, socketIndex) {
   const handle = b.app.listenEngines.direct.start({ targetLanguage: 'ja' });

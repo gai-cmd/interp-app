@@ -455,9 +455,13 @@ export async function boot(options = {}) {
     enterPersonalKey({ key = secrets.personal, remember = false } = {}) {
       const input = el('settings-key-input');
       input.value = key;
+      // P3-22: a stored key is represented by a mask, and only typing clears it,
+      // so the fixture types the way a person does.
+      input.dispatch('input');
       el('settings-remember').childNodes[0].checked = remember;
       el('settings-key-form').dispatch('submit');
-      assert.equal(input.value, '', 'the key field is emptied on save');
+      assert.equal(input.value.includes(key), false, 'the key value never stays in the field');
+      assert.match(input.value, /^\u2022*$/, 'the saved key is shown as a mask, not as text');
     },
     selectMode(source) {
       const radio = byId(`settings-mode-${source}`);

@@ -225,8 +225,12 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   // others, the background is inert only while something is open, and focus
   // returns to whatever had it before (P3-16).
   const sheetGroup = createSheetGroup({ document: doc, background: inertTargets });
+  const settingsCloseListeners = new Set();
   const settingsSheet = sheetGroup.register({ id: 'shell-settings', element: settings,
     openers: [settingsButton, modeBadge], initialFocus: settingsClose,
+    // P3-22: leaving the settings screen must hide a revealed personal key,
+    // however it was left (the close button, Escape, or another sheet opening).
+    onClose() { for (const listener of [...settingsCloseListeners]) attempt(() => listener()); },
     // Notified after focus landed on the close button, so a listener that wants
     // a specific entry (P3-02e 'key') wins over the default focus.
     onOpened(target) {
@@ -492,6 +496,11 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       settingsOpenListeners.add(listener);
       return () => settingsOpenListeners.delete(listener);
     },
+    onSettingsClose(listener) {
+      if (typeof listener !== 'function') throw new Error('INVALID_REQUEST');
+      settingsCloseListeners.add(listener);
+      return () => settingsCloseListeners.delete(listener);
+    },
     openDisplay, closeDisplay,
     openShare, closeShare,
     render,
@@ -506,6 +515,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       for (const remove of removers) remove();
       languageListeners.clear();
       settingsOpenListeners.clear();
+      settingsCloseListeners.clear();
       seqView.destroy();
       bind.clear();
       app.remove();

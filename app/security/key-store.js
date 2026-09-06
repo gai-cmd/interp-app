@@ -138,9 +138,25 @@ export function createKeyStore({ registry, storage, now = Date.now,
       // Shared metadata is the policy-matching descriptor (never the key):
       // version and eventId (null for v1) come straight from the payload.
       return Object.freeze(keySource === 'personal'
-        ? { providerId, keySource, remembered: entry.remembered }
+        // P3-22 (owner, 2026-09-06): the settings screen shows a mask of the
+        // stored key so the field does not look empty on a phone. The mask
+        // needs the length and nothing else, so the length — not the value —
+        // is what the metadata carries.
+        ? { providerId, keySource, remembered: entry.remembered, length: entry.key.length }
         : { providerId, keySource, version: entry.version, eventId: entry.eventId, eventName: entry.eventName,
           usageEndsAt: entry.expiresAt, administratorVerified: false, networkRestrictionVerified: false });
+    },
+    // P3-22 (owner, 2026-09-06): the only path that hands a key value back to
+    // the UI, for the explicit "show" toggle of the personal key entry. It
+    // narrows design-p3 §1.12 "저장 키 자동 재노출 없음": nothing is revealed
+    // automatically — a person must press the toggle, and the settings view
+    // clears the field again on hide, on save and when the screen closes.
+    //
+    // Personal keys only. A shared event key is never revealed or persisted
+    // (§1.12), and no reference, storage read or provider call happens here.
+    revealPersonal(providerId) {
+      address(providerId, 'personal');
+      return personal.get(providerId)?.key ?? null;
     },
     getCredentialRef({ providerId, keySource, transport }, { signal } = {}) {
       address(providerId, keySource);

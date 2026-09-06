@@ -18,7 +18,7 @@ import { UI_LANGUAGE_STORAGE_KEY } from '../app/main.js';
 import { collectVersionedFiles, stageRelease } from '../scripts/stage-release.mjs';
 import { SECRET_PATTERNS, checkCsp, checkRelease, classifyPath, entryReferences, parseHeaders } from '../scripts/check-release.mjs';
 import {
-  SECRET_MARK, boot, captureConsole, leaks, live, rest, secrets, sharedFragment, until,
+  SECRET_MARK, boot, byClass, captureConsole, domText, leaks, live, rest, secrets, sharedFragment, until,
 } from './fixtures/scenarios.mjs';
 
 // P1-20 privacy regression (design-v0.6 §11, §17.4): where a key may exist
@@ -420,3 +420,46 @@ test('P2 hub strips fatal details and close reasons; room code is confined to it
 function allElements(node) {
   return [node, ...node.childNodes.flatMap(allElements)];
 }
+
+// P3-22 (owner, 2026-09-06): the settings screen may show a stored personal key
+// when someone presses the show toggle. That is the ONLY way a key value
+// reaches the DOM, and it must not widen any other boundary.
+test('P3-22 revealing a personal key is explicit, personal-only, and leaves nothing behind', async (t) => {
+  const b = await boot();
+  t.after(() => b.app.close());
+  const el = (name) => byClass(b.root, name);
+  b.enterPersonalKey({ key: secrets.personal, remember: true });
+
+  // Saved but not revealed: the key is nowhere in the DOM.
+  assert.equal(leaks(domText(b.root)), false, 'a saved key is not in the DOM');
+  assert.match(el('settings-key-input').value, /^•*$/);
+
+  el('settings-key-toggle').dispatch('click');
+  assert.equal(el('settings-key-input').value, secrets.personal, 'the toggle is what reveals it');
+  // Even revealed, the key stays out of the URL, storage keys, notices and logs.
+  assert.equal(leaks(b.win.location.href), false);
+  assert.equal(leaks(b.app.engine.state.snapshot().notice), false);
+  assert.equal(leaks(b.ops), false, 'no network call carries it');
+
+  el('settings-key-toggle').dispatch('click');
+  assert.equal(leaks(domText(b.root)), false, 'hiding removes it from the DOM again');
+  // The real flow: the screen is open while the key is revealed.
+  b.app.shell.openSettings();
+  el('settings-key-toggle').dispatch('click');
+  assert.equal(el('settings-key-input').value, secrets.personal);
+  b.app.shell.closeSettings();
+  assert.equal(leaks(domText(b.root)), false, 'closing the screen removes it too');
+});
+
+test('P3-22 the key store exposes a length and a personal-only reveal, and nothing more', async () => {
+  const source = await readFile(join(repoRoot, 'app/security/key-store.js'), 'utf8');
+  // The reveal is scoped to personal keys by the same address() check as the rest.
+  const reveal = source.slice(source.indexOf('revealPersonal('), source.indexOf('getCredentialRef('));
+  assert.match(reveal, /address\(providerId, 'personal'\)/);
+  assert.equal(/shared/.test(reveal), false, 'a shared event key is never revealable');
+  assert.equal(/storage|persist/.test(reveal), false, 'revealing reads memory, never storage');
+  // Shared metadata gains no length: only the personal entry carries one.
+  const metadata = source.slice(source.indexOf('getMetadata(providerId, keySource)'), source.indexOf('revealPersonal('));
+  const sharedShape = metadata.slice(metadata.indexOf('usageEndsAt'));
+  assert.equal(/length/.test(sharedShape), false, 'a shared key never reports its length');
+});

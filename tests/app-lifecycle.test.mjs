@@ -249,9 +249,12 @@ const byId = (browser, id) => all(browser.root, (node) => node.getAttribute('id'
 function enterKey(browser, { remember = false } = {}) {
   const input = el(browser, 'settings-key-input');
   input.value = KEY;
+  // P3-22: typing is what clears the mask of a stored key.
+  input.dispatch('input');
   if (remember) el(browser, 'settings-remember').childNodes[0].checked = true;
   el(browser, 'settings-key-form').dispatch('submit');
-  assert.equal(input.value, '', 'the field is emptied on save');
+  assert.equal(input.value.includes(KEY), false, 'the key value never stays in the field');
+  assert.match(input.value, /^\u2022*$/, 'the saved key is shown as a mask, not as text');
 }
 
 test('main.js: exports only, guarded browser entry, no logging, existing dictionary keys only', async () => {
@@ -918,7 +921,8 @@ test('P3-02e a key that does not survive the storage write is reported as a stor
   el(b, 'settings-remember').childNodes[0].checked = false;
   enterKey(b);
   assert.equal(el(b, 'settings-key-status').getAttribute('data-key'), 'memory');
-  assert.equal(el(b, 'settings-key-feedback').textContent, ko['settings.keySavedSession']);
+  // P3-22 (owner wording): the save result sits under the field.
+  assert.equal(el(b, 'settings-key-feedback').textContent, ko['keyGuide.saved.session']);
   assert.equal(leaks(b.ops), false);
 });
 

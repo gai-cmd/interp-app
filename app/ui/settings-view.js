@@ -103,6 +103,11 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   let providerId = attempt(() => keyStore.getSelection())?.providerId ?? config.defaults?.providerId ?? config.providers[0].id;
   if (!config.providers.some((item) => item.id === providerId)) providerId = config.providers[0].id;
   let confirmingDelete = false, confirmingClear = false, keyFeedbackKey = null;
+  // P3-22 personal key entry state (owner, 2026-09-06):
+  // - `keyRevealed`: the value is on screen because someone pressed 표시.
+  // - `keyEditing`: someone is typing a new key, so the mask is gone.
+  // Neither survives leaving the screen: closeKeyEntry() puts both back.
+  let keyRevealed = false, keyEditing = false;
 
   function notify(key) {
     attempt(() => store.setNotice(resolveKey(i18n, key)));
@@ -318,7 +323,16 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   const keyInput = element(doc, 'input', { className: 'settings-key-input', attributes: { type: 'password', autocomplete: 'off',
     autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false', inputmode: 'text', maxlength: '512' } });
   bind.attribute(keyInput, 'placeholder', 'settings.keyPlaceholder');
-  field(keyForm, 'settings-key-input', 'settings.key', keyInput);
+  const keyRow = field(keyForm, 'settings-key-input', 'settings.key', keyInput);
+  // Show / hide toggle (§1.12 "입력 중인 키에 표시/숨김 토글"). The owner's
+  // 2026-09-06 addendum extends it to a stored key: the field shows a mask so
+  // it does not look empty on a phone, and this button is the only way to see
+  // the value behind it.
+  const keyToggle = element(doc, 'button', { className: 'btn btn-secondary settings-key-toggle',
+    attributes: { type: 'button', 'aria-pressed': 'false', 'aria-controls': 'settings-key-input' } });
+  keyRow.append(keyToggle);
+  const keyToggleHint = note(keyForm, 'keyGuide.showHint', 'settings-note settings-key-toggle-hint');
+  keyToggle.addEventListener('click', () => setKeyRevealed(!keyRevealed));
   const rememberRow = element(doc, 'div', { className: 'settings-field settings-remember' });
   const rememberInput = element(doc, 'input', { className: 'settings-checkbox', attributes: { type: 'checkbox', id: 'settings-remember' } });
   const rememberLabel = element(doc, 'label', { className: 'settings-label', attributes: { for: 'settings-remember' } });
@@ -340,17 +354,91 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   const keyFeedback = element(doc, 'p', { className: 'badge settings-key-feedback',
     attributes: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' } });
   keyBlock.append(keyFeedback);
+  // The mask stands in for a stored key: same length, no information about the
+  // value. It is placeholder text in the field, never something the save path
+  // can read back as a key (saveKey() ignores the field while it is masked).
+  const MASK_CHARACTER = '\u2022';
+  const maskFor = (length) => MASK_CHARACTER.repeat(Math.max(0, Math.min(512, Number(length) || 0)));
+  const storedKeyLength = () => (keyEditing ? 0 : metadata('personal')?.length ?? 0);
+  /** True while the field shows the mask rather than something a person typed. */
+  const keyMasked = () => !keyEditing && !keyRevealed && storedKeyLength() > 0;
+
+  function setKeyRevealed(on) {
+    const length = metadata('personal')?.length ?? 0;
+    // Nothing to reveal, or the person is typing: the toggle only changes the
+    // field type so they can check what they are entering.
+    if (on && !keyEditing && length === 0) { keyRevealed = false; renderKeyEntry(); return; }
+    keyRevealed = on === true;
+    renderKeyEntry();
+    attempt(() => keyInput.focus());
+  }
+  /** Leaving the screen (or saving) always hides the value again. */
+  function closeKeyEntry() {
+    keyRevealed = false;
+    keyEditing = false;
+    keyInput.value = '';
+    renderKeyEntry();
+  }
+  // However the settings screen is left, a revealed key goes back behind the
+  // mask (owner, 2026-09-06). The shell owns the sheet, so it reports the close.
+  if (typeof shell?.onSettingsClose === 'function') removers.push(shell.onSettingsClose(() => closeKeyEntry()));
+  function renderKeyEntry() {
+    const stored = metadata('personal');
+    const length = stored?.length ?? 0;
+    const canReveal = keyEditing || length > 0;
+    keyToggle.hidden = !canReveal;
+    keyToggle.setAttribute('aria-pressed', String(keyRevealed));
+    keyToggle.textContent = i18n.t(keyRevealed ? 'keyGuide.hide' : 'keyGuide.show');
+    keyToggleHint.hidden = !canReveal;
+    if (keyEditing) {
+      // Typing: the field holds what the person typed; the toggle only decides
+      // whether they can read it back.
+      keyInput.setAttribute('type', keyRevealed ? 'text' : 'password');
+      return;
+    }
+    if (keyRevealed && length > 0) {
+      // The one place a stored key value reaches the DOM, and only because
+      // someone asked for it. Hiding, saving, deleting or closing clears it.
+      keyInput.setAttribute('type', 'text');
+      keyInput.value = attempt(() => keyStore.revealPersonal(providerId)) ?? '';
+      return;
+    }
+    keyInput.setAttribute('type', 'password');
+    keyInput.value = maskFor(length);
+  }
+  // The first keystroke turns the mask into an empty field: what follows is a
+  // new key, and the mask must never be submitted as one.
+  keyInput.addEventListener('input', () => {
+    if (keyEditing) return;
+    keyEditing = true;
+    keyRevealed = false;
+    // Whatever the person typed lands after the mask; only their text survives.
+    const typed = typeof keyInput.value === 'string' ? keyInput.value.replaceAll(MASK_CHARACTER, '') : '';
+    keyInput.value = typed;
+    renderKeyEntry();
+  });
+  keyInput.addEventListener('beforeinput', () => { if (!keyEditing) keyInput.value = ''; });
+
   function saveKey() {
+    // A masked field carries no key: pressing save without typing must not read
+    // the mask, and must not claim anything was saved.
+    if (keyMasked()) { keyFeedbackKey = 'error.INVALID_KEY'; render(); attempt(() => keyInput.focus()); return; }
     const value = typeof keyInput.value === 'string' ? keyInput.value.trim() : '';
     // The field is emptied before the store call so the value lives in one place.
     keyInput.value = '';
+    keyEditing = false;
+    keyRevealed = false;
     if (!value) { keyFeedbackKey = 'error.INVALID_KEY'; render(); attempt(() => keyInput.focus()); return; }
     const remember = persistence && rememberInput.checked === true;
     // No check runs here: the user starts diagnostics explicitly (§6.2).
     try {
       keyStore.setPersonal(providerId, value, { remember });
-      keyFeedbackKey = remember ? 'settings.keySavedBrowser' : 'settings.keySavedSession';
-    } catch (error) { keyFeedbackKey = keyStoreErrorKey(error); notify(keyFeedbackKey); }
+      // The owner's wording: what happened to the key, right under the field.
+      keyFeedbackKey = remember ? 'keyGuide.saved.browser' : 'keyGuide.saved.session';
+    } catch (error) {
+      // A failed save never shows a success line (§1.12).
+      keyFeedbackKey = keyStoreErrorKey(error); notify(keyFeedbackKey);
+    }
     render();
   }
   const keyManage = element(doc, 'div', { className: 'settings-actions settings-key-manage' });
@@ -365,6 +453,8 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   deleteConfirm.append(deleteText);
   const deleteYes = button(deleteConfirm, 'common.delete', 'btn-danger settings-key-delete-confirm', () => {
     showDeleteConfirm(false);
+    // A deleted key must not stay on screen, revealed or masked.
+    closeKeyEntry();
     if (call(() => { keyStore.deleteKey(providerId, 'personal'); return true; }, keyStoreErrorKey)) notify('settings.keyDeleted');
   });
   button(deleteConfirm, 'common.cancel', 'btn-secondary', () => showDeleteConfirm(false));
@@ -568,6 +658,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     keyStatus.textContent = i18n.t(!direct ? 'settings.hubKey' : !personal ? 'settings.noKey'
       : personal.remembered ? 'settings.keyStored' : 'settings.keyMemory');
     keyStatus.setAttribute('data-key', !direct ? 'hub' : !personal ? 'none' : personal.remembered ? 'remembered' : 'memory');
+    renderKeyEntry();
     deleteButton.disabled = personal === null;
     if (deleteButton.disabled && confirmingDelete) showDeleteConfirm(false);
     // The router only honours the selected source, so the check needs it selected.
@@ -737,6 +828,8 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     diagnosticsView,
     policyView,
     render,
+    /** P3-22: leaving the settings screen hides a revealed key (owner, 2026-09-06). */
+    closeKeyEntry,
     refresh,
     destroy() {
       for (const remove of removers) attempt(remove);
