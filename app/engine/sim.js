@@ -281,6 +281,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     setMuted(value) {
       if (!active || !alive(active)) return;
       active.muted = Boolean(value); active.player?.setMuted(active.muted);
+      // Hard mute (owner report: "소리 끄기" left a faint sound): besides dropping every
+      // queued source, suspend the playback context so nothing can reach the speaker;
+      // resume on unmute. The capture context is separate, so listening continues.
+      const ctx = active.audioContext;
+      if (ctx && typeof ctx.suspend === 'function') {
+        if (active.muted) attempt(() => ctx.suspend());
+        else attempt(() => ctx.resume());
+      }
       if (!active.player) state.setOutput(active.muted ? 'muted' : 'unavailable', active.generation);
     },
     resumeAudio() { return active && alive(active) ? active.player?.resume() ?? Promise.resolve(false) : Promise.resolve(false); },
