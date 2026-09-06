@@ -6,6 +6,9 @@ import { ProviderError } from '../app/providers/contract.js';
 import { createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { BAR_HIDE_MS, CAPTION_ONLY_STORAGE_KEYS, CAPTION_SIZE, CAPTION_SIZE_STORAGE_KEY, clampCaptionSize,
   createCaptionBoard, readPreferences } from '../app/ui/caption-board.js';
+import { CAPTION_SIZE as PREFERENCE_CAPTION_SIZE, clampCaptionSize as clampFromPreferences,
+  stepCaptionSize, storageKeyFor } from '../app/preferences.js';
+import { REGISTERED_SETTINGS } from '../app/policy/schema.js';
 import { createListenState } from '../app/engine/listen-state.js';
 import { createCaptionStore } from '../app/engine/caption-store.js';
 import { createI18n } from '../app/i18n/index.js';
@@ -445,8 +448,11 @@ test('captions-only preferences: size slider and display mode persist and are re
   const storage = fakeStorage();
   const f = setup({ storage });
   const slider = f.b('slider');
-  assert.equal(slider.getAttribute('min'), '1'); assert.equal(slider.getAttribute('max'), '2.5');
-  assert.equal(f.board.style.properties['--caption-size'], '1.25rem');
+  // P3-18: the slider is the §1.10 scale, 1~2rem in 0.125 steps, and the
+  // default is the registered `captions.size` default.
+  assert.equal(slider.getAttribute('min'), '1'); assert.equal(slider.getAttribute('max'), '2');
+  assert.equal(CAPTION_SIZE.max, 2); assert.equal(CAPTION_SIZE.initial, 1.5);
+  assert.equal(f.board.style.properties['--caption-size'], '1.5rem');
   assert.equal(f.b('display').textContent, `${dictionaries.en['captionOnly.display']}: ${dictionaries.en['captionOnly.display.dark']}`);
   f.get('caption-only').dispatch('click');
   slider.value = '2'; slider.dispatch('input');
@@ -467,7 +473,7 @@ test('captions-only preferences: size slider and display mode persist and are re
   const g = setup({ storage: fakeStorage(Object.fromEntries(storage.map)) });
   assert.equal(g.board.getAttribute('data-caption-only'), 'true');
   assert.equal(g.board.getAttribute('data-display'), 'light');
-  assert.equal(g.board.style.properties['--caption-size'], '2.5rem');
+  assert.equal(g.board.style.properties['--caption-size'], '2rem');
   assert.equal(g.doc.fullscreenRequests.length, 0);
   assert.deepEqual(g.wakeLock.requests, ['screen']);
   g.board.dispatch('click', { target: g.board });
@@ -536,4 +542,147 @@ test('wake lock: unsupported and failing requests are announced as text; a visib
   f.doc.dispatch('visibilitychange'); await tick();
   assert.equal(f.wakeLock.requests.length, 2, 'no wake lock outside captions-only mode');
   assert.throws(() => createCaptionBoard({ i18n: f.i18n }), { message: 'INVALID_REQUEST' });
+});
+
+// --- P3-18: the caption board's own size and contrast ---
+
+test('P3-18 caption size is one contract: the registered captions.size spec, the same storage key everywhere', () => {
+  assert.equal(CAPTION_SIZE, PREFERENCE_CAPTION_SIZE, 'the board re-exports the preference contract, it does not copy it');
+  assert.equal(clampCaptionSize, clampFromPreferences);
+  const spec = REGISTERED_SETTINGS['captions.size'];
+  assert.deepEqual({ ...CAPTION_SIZE }, { min: spec.min, max: spec.max, step: spec.step, initial: spec.default });
+  assert.deepEqual({ min: CAPTION_SIZE.min, max: CAPTION_SIZE.max, step: CAPTION_SIZE.step }, { min: 1, max: 2, step: 0.125 },
+    'design-p3 §1.10: a separate 1~2rem caption scale in 0.125 steps');
+  assert.equal(storageKeyFor('captions.size'), CAPTION_SIZE_STORAGE_KEY,
+    'the 가−/가+ buttons, the slider and the settings screen move one stored value');
+  // The scale is closed under stepping and never leaves the range.
+  assert.equal(stepCaptionSize(CAPTION_SIZE.min, -1), CAPTION_SIZE.min);
+  assert.equal(stepCaptionSize(CAPTION_SIZE.max, 1), CAPTION_SIZE.max);
+  assert.equal(stepCaptionSize(1.5, 1), 1.625);
+  assert.equal(stepCaptionSize(1.5, -1), 1.375);
+  assert.equal(clampCaptionSize(9), 2); assert.equal(clampCaptionSize(0), 1);
+  assert.equal(clampCaptionSize('nonsense'), CAPTION_SIZE.initial);
+  let value = CAPTION_SIZE.min;
+  for (let i = 0; i < 32; i++) { value = stepCaptionSize(value, 1); assert.equal(clampCaptionSize(value), value, 'every step is a valid size'); }
+  assert.equal(value, CAPTION_SIZE.max);
+});
+
+test('P3-18 가− / 가+ move the caption size, persist it and stop at both ends', () => {
+  const storage = fakeStorage();
+  const f = setup({ storage });
+  const smaller = f.get('caption-smaller'), larger = f.get('caption-larger'), output = f.get('caption-size');
+  assert.equal(smaller.textContent, dictionaries.en['display.captions.smaller']);
+  assert.equal(larger.textContent, dictionaries.en['display.captions.larger']);
+  assert.equal(f.board.style.properties['--caption-size'], '1.5rem');
+  assert.equal(output.textContent, '1.5rem');
+  assert.equal(smaller.disabled, false); assert.equal(larger.disabled, false);
+
+  larger.dispatch('click');
+  assert.equal(f.view.board.size, 1.625);
+  assert.equal(f.board.style.properties['--caption-size'], '1.625rem');
+  assert.equal(output.textContent, '1.625rem');
+  assert.equal(storage.map.get(CAPTION_SIZE_STORAGE_KEY), '1.625');
+  smaller.dispatch('click');
+  assert.equal(f.view.board.size, 1.5);
+  assert.equal(storage.map.get(CAPTION_SIZE_STORAGE_KEY), '1.5');
+
+  // Both ends: the button that cannot move is disabled, never silently inert.
+  for (let i = 0; i < 10; i++) larger.dispatch('click');
+  assert.equal(f.view.board.size, CAPTION_SIZE.max);
+  assert.equal(larger.disabled, true); assert.equal(smaller.disabled, false);
+  for (let i = 0; i < 10; i++) smaller.dispatch('click');
+  assert.equal(f.view.board.size, CAPTION_SIZE.min);
+  assert.equal(smaller.disabled, true); assert.equal(larger.disabled, false);
+  assert.equal(storage.map.get(CAPTION_SIZE_STORAGE_KEY), '1');
+
+  // The same value drives the caption-only slider, and moving the slider
+  // updates the buttons the next time the view renders.
+  assert.equal(f.b('slider').value, '1');
+  f.b('slider').value = '2'; f.b('slider').dispatch('input');
+  f.view.refresh();
+  assert.equal(f.get('caption-size').textContent, '2rem');
+  assert.equal(f.get('caption-larger').disabled, true);
+});
+
+test('P3-18 changing the caption size never resets the reading position', () => {
+  const f = setup({ storage: fakeStorage() });
+  const list = f.b('list');
+  list.scrollHeight = 4000; list.clientHeight = 400;
+  // A reader who scrolled up keeps their position while the text resizes:
+  // the scroll tells the board it is no longer following the newest row.
+  list.scrollTop = 1200; list.dispatch('scroll');
+  assert.equal(byClass(f.root, 'sim-latest').hidden, false, 'the "latest" button appears once the reader scrolls up');
+  f.get('caption-larger').dispatch('click');
+  assert.equal(list.scrollTop, 1200, 'a size change must not jump the list');
+  f.get('caption-smaller').dispatch('click');
+  assert.equal(list.scrollTop, 1200);
+  f.get('caption-contrast').dispatch('click');
+  assert.equal(list.scrollTop, 1200, 'the contrast toggle does not scroll either');
+});
+
+test('P3-18 the high-contrast toggle is a two-state option on the board and survives a reload', () => {
+  const storage = fakeStorage();
+  const f = setup({ storage });
+  const contrast = f.get('caption-contrast');
+  assert.equal(contrast.getAttribute('aria-pressed'), 'false');
+  assert.equal(f.board.getAttribute('data-display'), 'dark');
+  contrast.dispatch('click');
+  assert.equal(contrast.getAttribute('aria-pressed'), 'true');
+  assert.equal(f.board.getAttribute('data-display'), 'mono');
+  assert.equal(storage.map.get(CAPTION_ONLY_STORAGE_KEYS.display), 'mono');
+  contrast.dispatch('click');
+  assert.equal(contrast.getAttribute('aria-pressed'), 'false');
+  assert.equal(f.board.getAttribute('data-display'), 'dark', 'pressing again restores the default board, it does not cycle to light');
+  contrast.dispatch('click');
+
+  // A second launch restores both the size and the contrast, and a late
+  // storage handover (main.js) brings the controls with it.
+  const g = setup({ storage: fakeStorage(Object.fromEntries(storage.map)) });
+  assert.equal(g.get('caption-contrast').getAttribute('aria-pressed'), 'true');
+  const m = setup();
+  m.view.setStorage(fakeStorage({ [CAPTION_SIZE_STORAGE_KEY]: '1.875', [CAPTION_ONLY_STORAGE_KEYS.display]: 'mono' }));
+  assert.equal(m.get('caption-size').textContent, '1.875rem');
+  assert.equal(m.get('caption-contrast').getAttribute('aria-pressed'), 'true');
+  assert.equal(m.get('caption-larger').disabled, false);
+});
+
+test('P3-18 partial captions are still separated from final ones and are never announced', () => {
+  const f = setup();
+  f.get('start').dispatch('click');
+  const captions = [
+    { id: 'c1', role: 'translation', status: 'partial', translatedText: 'coming', segmentId: 's1' },
+    { id: 'c2', role: 'translation', status: 'final', translatedText: 'settled one', segmentId: 's2' },
+  ];
+  f.view.board.render({ captions, lang: 'ja', announceFirstFinal: true });
+  const rows = all(f.b('list'), (node) => node.classes.has('sim-caption'));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].getAttribute('data-status'), 'partial');
+  assert.equal(rows[1].getAttribute('data-status'), 'final');
+  // A gap is its own marker, distinct from the partial/final split.
+  assert.equal(rows[0].getAttribute('data-gap-before'), 'false');
+  f.view.board.render({ captions: [{ ...captions[1], gapBefore: true }], lang: 'ja' });
+  assert.equal(all(f.b('list'), (node) => node.classes.has('sim-caption'))[0].getAttribute('data-gap-before'), 'true');
+  const announcement = byClass(f.root, 'sim-announcement');
+  assert.equal(announcement.textContent.includes('coming'), false, 'a partial token is never read out');
+  assert.equal(announcement.textContent.includes('settled one'), true);
+  // The size controls do not change what is announced.
+  f.get('caption-larger').dispatch('click');
+  assert.equal(announcement.textContent.includes('coming'), false);
+});
+
+test('P3-18 styles: the caption controls meet the touch target and the board size stacks on the app text size', async () => {
+  const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  const rule = (selector) => {
+    const at = css.indexOf(`${selector} {`);
+    return at === -1 ? null : css.slice(at, css.indexOf('}', at));
+  };
+  const controls = rule('.sim-caption-controls');
+  assert.ok(controls, 'the caption controls have a rule');
+  assert.match(controls, /flex-wrap:\s*wrap/, 'the row wraps at XL text instead of clipping');
+  const buttons = rule('.sim-caption-smaller, .sim-caption-larger, .sim-caption-contrast');
+  assert.match(buttons, /min-width:\s*var\(--touch\)/);
+  assert.match(buttons, /min-height:\s*var\(--touch\)/);
+  // The board keeps its own rem on top of the app-wide zoom (§1.10).
+  assert.match(css, /\.sim-caption \.turn-text \{[^}]*font-size:\s*var\(--caption-size/);
+  assert.match(css, /\.caption-board \{[^}]*--caption-size:/);
 });

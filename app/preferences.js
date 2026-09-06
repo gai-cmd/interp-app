@@ -49,6 +49,30 @@ export function isSystemDefaultDeviceId(value) {
   return value === null || value === undefined || (typeof value === 'string' && SYSTEM_DEFAULT_DEVICE_IDS.includes(value));
 }
 
+// P3-18: the caption size contract of design-p3 §1.10 — one 1~2rem scale in
+// 0.125rem steps that the 가−/가+ buttons, the caption-only slider and the
+// settings screen all move. The numbers are not repeated here: they are the
+// registered `captions.size` spec, so the policy schema stays the only source.
+export const CAPTION_SIZE = Object.freeze({
+  min: REGISTERED_SETTINGS['captions.size'].min,
+  max: REGISTERED_SETTINGS['captions.size'].max,
+  step: REGISTERED_SETTINGS['captions.size'].step,
+  initial: REGISTERED_SETTINGS['captions.size'].default,
+});
+/** Nearest valid caption size; anything unreadable falls back to the default. */
+export function clampCaptionSize(value) {
+  const number = typeof value === 'string' ? Number.parseFloat(value) : value;
+  if (!Number.isFinite(number)) return CAPTION_SIZE.initial;
+  const steps = Math.round((number - CAPTION_SIZE.min) / CAPTION_SIZE.step);
+  const size = CAPTION_SIZE.min + steps * CAPTION_SIZE.step;
+  // Steps of 0.125 are exact in binary, but rounding keeps the text short.
+  return Number(Math.min(CAPTION_SIZE.max, Math.max(CAPTION_SIZE.min, size)).toFixed(3));
+}
+/** One 가− / 가+ press: the next size in that direction, clamped to the range. */
+export function stepCaptionSize(value, direction) {
+  return clampCaptionSize(clampCaptionSize(value) + Math.sign(direction) * CAPTION_SIZE.step);
+}
+
 // Registered policy settings first (resolve.js iterates the same order), then local ones.
 export const PREFERENCE_NAMES = Object.freeze([...Object.keys(REGISTERED_SETTINGS), ...Object.keys(LOCAL_SETTINGS)]);
 // Stored per provider (§1.13): the key carries the provider ID of the instance.

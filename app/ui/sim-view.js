@@ -19,7 +19,8 @@ import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { normalizeError } from '../providers/contract.js';
 import { LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder } from './seq-view.js';
-import { createCaptionBoard } from './caption-board.js';
+import { createCaptionBoard, DEFAULT_DISPLAY } from './caption-board.js';
+import { CAPTION_SIZE, stepCaptionSize } from '../preferences.js';
 import { UNKNOWN_KEY, errorCodeKey, levelPercent, resolveKey } from './errors.js';
 
 export const VOICE_GENDER_STORAGE_KEY = 'interp-app.ui.v1.voiceGender';
@@ -159,6 +160,18 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const speech = node('p', 'badge sim-speech', section, null, { role: 'status', 'data-speech': 'none' });
   speech.hidden = true;
   const recent = node('p', 'sim-recent', section, 'sim.captions.recent');
+  // P3-18: the caption board carries its own size on top of the app text size
+  // (§1.10), so the 가−/가+ buttons and the high-contrast toggle sit next to
+  // the board itself and not in the app-wide display settings. They move the
+  // same stored value as the caption-only slider and the settings screen.
+  const captionControls = node('div', 'sim-caption-controls', section, null, { role: 'group' });
+  bind.attribute(captionControls, 'aria-label', 'display.captions.size');
+  const smaller = button('sim-caption-smaller', 'display.captions.smaller', captionControls);
+  const sizeValue = node('output', 'sim-caption-size', captionControls);
+  const larger = button('sim-caption-larger', 'display.captions.larger', captionControls);
+  const contrast = button('sim-caption-contrast', 'captionOnly.display.mono', captionControls);
+  contrast.setAttribute('aria-pressed', 'false');
+  node('p', 'sim-caption-range', captionControls, 'display.captions.range');
   // Full-screen bar controls and the large start button share this view's handlers.
   const fsStop = button('sim-fs-stop', 'common.stop', null);
   const fsSound = button('sim-fs-sound', 'sim.enableSound', null);
@@ -265,6 +278,25 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const el of [reopen, fsReopen]) listen(el, 'click', reopenSession);
   listen(openSettings, 'click', () => { if (typeof onOpenSettings === 'function') call(onOpenSettings); });
   listen(captionOnly, 'click', () => board.setCaptionOnly(!board.captionOnly));
+  // The buttons report the value they produced, so a press at either end is
+  // visibly a no-op instead of silently doing nothing.
+  function renderCaptionControls() {
+    const size = board.size;
+    setText(sizeValue, i18n.t('display.captions.value', { size: String(size) }));
+    sizeValue.setAttribute('aria-live', 'polite');
+    smaller.disabled = size <= CAPTION_SIZE.min;
+    larger.disabled = size >= CAPTION_SIZE.max;
+    const high = board.display === 'mono';
+    contrast.setAttribute('aria-pressed', String(high));
+  }
+  const stepSize = (direction) => { board.setSize(stepCaptionSize(board.size, direction)); renderCaptionControls(); };
+  listen(smaller, 'click', () => stepSize(-1));
+  listen(larger, 'click', () => stepSize(1));
+  // High contrast is a toggle here, not the three-way cycle of the full-screen
+  // bar: pressing it turns the monochrome mode on, pressing it again restores
+  // the saved-by-default dark board.
+  listen(contrast, 'click', () => { board.setDisplay(board.display === 'mono' ? DEFAULT_DISPLAY : 'mono'); renderCaptionControls(); });
+  renderCaptionControls();
   listen(fallback, 'click', () => call(async () => { await end(); if (!disposed) onSequential?.(); }));
   // Event participation is a gesture; a refused join is named by its code here.
   listen(eventSelect, 'change', () => render());
@@ -402,8 +434,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   function subscribe() { unsubscribe?.(); snapshot = current().snapshot(); unsubscribe = current().subscribe(render); render(snapshot); }
   subscribe();
   return Object.freeze({ element: section, board, render,
-    refresh() { if (!disposed) { bind.refresh(); board.refresh(); render(); } },
-    setStorage(next) { if (!disposed) { store = next; board.setStorage(next); restoreVoice(); } },
+    refresh() { if (!disposed) { bind.refresh(); board.refresh(); renderCaptionControls(); render(); } },
+    setStorage(next) { if (!disposed) { store = next; board.setStorage(next); renderCaptionControls(); restoreVoice(); } },
     // P3-11: the app's event link (null detaches); the section re-renders on its changes.
     setHubControl(next) {
       if (disposed) return;

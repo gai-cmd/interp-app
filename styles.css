@@ -755,7 +755,25 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 /* P3-02c caption board: inline in the tab, or a captions-only full screen.
    The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
-.caption-board { display: grid; gap: var(--gap); min-width: 0; --caption-size: 1.25rem; }
+/* P3-18: the caption board's own size and contrast controls sit next to the
+   board, because the caption scale (§1.10) is separate from the app-wide text
+   size and is read at a distance. The row wraps so XL text and Japanese never
+   clip it, and every control keeps the full touch target. */
+.sim-caption-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.sim-caption-smaller, .sim-caption-larger, .sim-caption-contrast {
+  min-width: var(--touch);
+  min-height: var(--touch);
+}
+.sim-caption-size { min-width: 5ch; font-variant-numeric: tabular-nums; }
+.sim-caption-range { flex: 1 0 100%; margin: 0; color: var(--text-muted); }
+
+.caption-board { display: grid; gap: var(--gap); min-width: 0; --caption-size: 1.5rem; }
 .caption-board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .caption-board-size { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--touch); flex: 1 1 14rem; min-width: 0; }
 .caption-board-slider { flex: 1 1 6rem; min-width: 5rem; min-height: var(--touch); margin: 0; accent-color: var(--accent); }

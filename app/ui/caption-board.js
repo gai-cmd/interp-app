@@ -10,26 +10,24 @@
 // Nothing is ported from interp-web or jp-patch; no logging anywhere.
 import { MAX_CAPTIONS } from '../engine/caption-store.js';
 import { createBinder } from './seq-view.js';
+import { CAPTION_SIZE, clampCaptionSize } from '../preferences.js';
 
-// Caption size is the P3 §1.10 value the 가−/가+ controls share (rem).
+// Caption size is the P3 §1.10 value the 가−/가+ controls share (rem). P3-18
+// made app/preferences.js the single source of that scale (1~2rem, 0.125
+// steps, the registered `captions.size` spec), so this board no longer keeps
+// its own range; the constants are re-exported for existing importers.
 export const CAPTION_SIZE_STORAGE_KEY = 'interp-app.ui.v1.captionSize';
 export const CAPTION_ONLY_STORAGE_KEYS = Object.freeze({
   enabled: 'interp-app.ui.v1.captionOnly.enabled',
   display: 'interp-app.ui.v1.captionOnly.display',
 });
-export const CAPTION_SIZE = Object.freeze({ min: 1, max: 2.5, step: 0.125, initial: 1.25 });
+export { CAPTION_SIZE, clampCaptionSize };
 export const DISPLAY_MODES = Object.freeze(['light', 'dark', 'mono']);
 export const DEFAULT_DISPLAY = 'dark';
 export const BAR_HIDE_MS = 3000;
 const FOLLOW_SLACK_PX = 24;
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
-export function clampCaptionSize(value) {
-  const number = typeof value === 'string' ? Number.parseFloat(value) : value;
-  if (!Number.isFinite(number)) return CAPTION_SIZE.initial;
-  const steps = Math.round((number - CAPTION_SIZE.min) / CAPTION_SIZE.step);
-  return Math.min(CAPTION_SIZE.max, Math.max(CAPTION_SIZE.min, CAPTION_SIZE.min + steps * CAPTION_SIZE.step));
-}
 export function readPreferences(storage) {
   const read = (key) => attempt(() => storage?.getItem(key));
   const display = read(CAPTION_ONLY_STORAGE_KEYS.display);
@@ -201,19 +199,28 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
     return captionOnly;
   }
 
-  listen(exit, 'click', () => setCaptionOnly(false));
-  listen(slider, 'input', () => {
-    const next = clampCaptionSize(slider.value);
-    if (next === size) return;
+  // P3-18: one path for every caption-size control (this slider, the 가−/가+
+  // buttons of the sim screen and a restored preference). Only a caption list
+  // that was already following jumps back to the newest row; a reader who had
+  // scrolled up keeps the position they chose while the text resizes.
+  function setSize(value) {
+    const next = clampCaptionSize(value);
+    if (disposed || next === size) return size;
     size = next; applySize(); write(CAPTION_SIZE_STORAGE_KEY, String(size));
     if (following) list.scrollTop = list.scrollHeight;
-    showBar();
-  });
+    return size;
+  }
+  function setDisplay(mode) {
+    const next = DISPLAY_MODES.includes(mode) ? mode
+      : DISPLAY_MODES[(DISPLAY_MODES.indexOf(display) + 1) % DISPLAY_MODES.length];
+    if (disposed) return display;
+    display = next; applyDisplay(); write(CAPTION_ONLY_STORAGE_KEYS.display, display);
+    return display;
+  }
+  listen(exit, 'click', () => setCaptionOnly(false));
+  listen(slider, 'input', () => { if (setSize(slider.value) !== size) return; showBar(); });
   listen(slider, 'change', () => showBar());
-  listen(displayButton, 'click', () => {
-    display = DISPLAY_MODES[(DISPLAY_MODES.indexOf(display) + 1) % DISPLAY_MODES.length];
-    applyDisplay(); write(CAPTION_ONLY_STORAGE_KEYS.display, display); showBar();
-  });
+  listen(displayButton, 'click', () => { setDisplay(); showBar(); });
   listen(board, 'click', (event) => {
     if (!captionOnly) return;
     const target = event?.target;
@@ -295,7 +302,7 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
     get size() { return size; },
     get display() { return display; },
     get wakeState() { return wakeState; },
-    render, clear, setCaptionOnly, setStorage,
+    render, clear, setCaptionOnly, setStorage, setSize, setDisplay,
     refresh() { if (disposed) return; bind.refresh(); applySize(); applyDisplay(); renderWake(); },
     destroy() {
       if (disposed) return;
