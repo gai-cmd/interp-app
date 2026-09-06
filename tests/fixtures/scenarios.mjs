@@ -351,7 +351,7 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
   deviceVoices = [...DEVICE_VOICES], policy = scenarioPolicy() } = {}) {
   const ops = [];
   const { doc, root, manifest } = createDocument();
-  const gemini = { calls: [], script: [] };
+  const gemini = { calls: [], script: [], discoveryCalls: [], discoveryScript: [] };
   const policyCalls = [];
   const socketURLs = [];
   const fixture = createSocketFixture({ autoClose: false, inspectURL: (url) => { socketURLs.push(String(url)); } });
@@ -412,6 +412,18 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
       const produced = typeof policy === 'function' ? await policy(call, call.index) : policy;
       if (produced instanceof Error) throw produced;
       return produced instanceof Response ? produced : policyReply(produced);
+    }
+    // Owner, 2026-09-06: the app asks which Live models this account can reach.
+    // It is a GET on the models endpoint itself (no path after it), kept out of
+    // `gemini.calls` so interpretation call counts still mean what they say.
+    if (url === REST_ENDPOINT) {
+      ops.push('fetch:models');
+      const call = { url, method: init.method, headers: { ...init.headers } };
+      gemini.discoveryCalls.push(call);
+      const next = gemini.discoveryScript.shift();
+      if (typeof next === 'function') return next(call);
+      if (next !== undefined) return next;
+      return new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (url.startsWith(`${REST_ENDPOINT}/`)) {
       ops.push('fetch:gemini');

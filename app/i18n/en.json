@@ -731,6 +731,7 @@
   "sim.model0": "Gemini 3.5 Live Translate (default)",
   "sim.model1": "Gemini 3.1 Flash Live",
   "sim.model2": "Gemini 2.5 Flash Live",
+  "sim.modelDiscovered": "Using “{model}”, a newer interpretation model found on this account. You can pick another from the list.",
   "sim.modelHelp": "Changing the model stops interpretation. Press Start to compare. The selection lasts for this run.",
   "sim.mute": "Turn sound off",
   "sim.openSettings": "Open settings",

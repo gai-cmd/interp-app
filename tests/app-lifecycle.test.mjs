@@ -178,7 +178,7 @@ function createBrowser({ hash = '', storage: storageInit = {}, languages = ['ko-
   const ops = [];
   const { doc, root, manifest } = createDocument();
   const timers = fakeTimers();
-  const gemini = { calls: [], script: [] };
+  const gemini = { calls: [], script: [], discoveryCalls: [], discoveryScript: [] };
   const policyCalls = [];
   const sockets = createSocketFixture({ inspectURL: (url) => { if (/SECRET/i.test(url)) throw new Error('KEY_IN_URL'); } });
   const win = new FakeElement(doc, 'window');
@@ -214,6 +214,16 @@ function createBrowser({ hash = '', storage: storageInit = {}, languages = ['ko-
       ops.push('fetch:i18n');
       assert.match(url, /\/app\/i18n\/(?:ko|en|ja)\.json$/);
       return new Response(await readFile(fileURLToPath(url)), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    // Owner, 2026-09-06: the Live model listing is a GET on the models endpoint
+    // itself. Kept out of gemini.calls so interpretation counts stay honest.
+    if (url === 'https://generativelanguage.googleapis.com/v1beta/models') {
+      ops.push('fetch:models');
+      gemini.discoveryCalls.push({ url, method: init.method, headers: { ...init.headers } });
+      const next = gemini.discoveryScript.shift();
+      if (typeof next === 'function') return next();
+      if (next !== undefined) return next;
+      return new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (url.startsWith('https://generativelanguage.googleapis.com/')) {
       ops.push('fetch:gemini');

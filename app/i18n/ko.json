@@ -731,6 +731,7 @@
   "sim.model0": "Gemini 3.5 Live Translate (기본)",
   "sim.model1": "Gemini 3.1 Flash Live",
   "sim.model2": "Gemini 2.5 Flash Live",
+  "sim.modelDiscovered": "새로 나온 통역 모델 “{model}”을(를) 찾아서 쓰고 있어요. 목록에서 다른 모델로 바꿀 수 있어요.",
   "sim.modelHelp": "변경하면 통역이 중지됩니다. 시작을 눌러 비교하세요. 모델 선택은 이번 실행 동안 유지됩니다.",
   "sim.mute": "소리 끄기",
   "sim.openSettings": "설정 열기",

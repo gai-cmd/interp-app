@@ -286,14 +286,34 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   note(voiceBlock, 'voice.devicePrivacy');
 
   const modelSelect = element(doc, 'select', { className: 'settings-select' });
-  for (const [index, value] of LIVE_MODELS.entries()) {
-    const option = element(doc, 'option', { attributes: { value } });
-    bind.text(option, `sim.model${index}`); modelSelect.append(option);
+  // The reviewed models carry a dictionary label; a model found by discovery
+  // (owner, 2026-09-06) has none, so it shows its identifier — provider data,
+  // like the voice names. Rebuilt on render so a discovery arriving later
+  // appears without remounting the screen.
+  let modelOptions = '';
+  function renderModelOptions() {
+    const list = simEngine?.models ?? LIVE_MODELS;
+    const wanted = [...list].join('\n');
+    if (wanted === modelOptions) return;
+    modelOptions = wanted;
+    for (const option of Array.from(modelSelect.childNodes)) option.remove();
+    for (const value of list) {
+      const option = element(doc, 'option', { attributes: { value } });
+      const index = LIVE_MODELS.indexOf(value);
+      if (index === -1) { option.textContent = value; option.setAttribute('data-discovered', 'true'); }
+      else bind.text(option, `sim.model${index}`);
+      modelSelect.append(option);
+    }
   }
+  renderModelOptions();
   modelSelect.value = simEngine?.model ?? DEFAULT_LIVE_MODEL;
   const modelField = field(voiceBlock, 'settings-live-model', 'sim.model', modelSelect);
   modelField.hidden = !simEngine;
   note(modelField, 'sim.modelHelp');
+  const modelDiscoveredNote = element(doc, 'p', { className: 'settings-note settings-model-discovered',
+    attributes: { role: 'status' } });
+  modelDiscoveredNote.hidden = true;
+  modelField.append(modelDiscoveredNote);
   modelSelect.addEventListener('change', async () => {
     modelSelect.disabled = true;
     try { await simEngine?.setModel(modelSelect.value); }
@@ -715,6 +735,16 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
       ? i18n.t('voice.option', { name: value, gender: i18n.t(`voice.gender.${gender}`), tone })
       : i18n.t('voice.optionNoGender', { name: value, tone });
   }
+  function renderModel() {
+    renderModelOptions();
+    const current = simEngine?.model ?? DEFAULT_LIVE_MODEL;
+    if (modelSelect.value !== current) modelSelect.value = current;
+    // Say when the model in use was not one of the reviewed ones, so a change
+    // the app made on its own is visible rather than silent.
+    const found = (simEngine?.discoveredModels ?? []).includes(current);
+    modelDiscoveredNote.hidden = !found;
+    if (found) modelDiscoveredNote.textContent = i18n.t('sim.modelDiscovered', { model: current });
+  }
   function renderVoice(desc) {
     const settings = snapshot.voice;
     outputLock?.update(policyEntry(SETTING_NAMES.voiceOutput));
@@ -786,6 +816,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     const current = selection();
     keyFeedback.hidden = !keyFeedbackKey;
     keyFeedback.textContent = keyFeedbackKey ? i18n.t(resolveKey(i18n, keyFeedbackKey)) : '';
+    renderModel();
     renderProvider(desc);
     renderKey(desc, current);
     renderShared(desc);

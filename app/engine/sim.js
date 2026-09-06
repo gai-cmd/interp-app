@@ -9,6 +9,7 @@ import { ProviderError, assertActive, normalizeError } from '../providers/contra
 import { createListenMetrics } from './listen-metrics.js';
 import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply,
   normalizeLanguagePair } from '../providers/gemini/live-config.js';
+import { liveSetupFor, mergeLiveModels, newestLiveModel } from '../providers/gemini/model-discovery.js';
 import { createSessionManager } from './session-manager.js';
 import { createLiveRecovery } from './live-recovery.js';
 import { createListenState } from './listen-state.js';
@@ -62,6 +63,13 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   const timing = { now, setTimeout, clearTimeout, random };
   const clock = { now, setTimeout, clearTimeout };
   let selectedModel = DEFAULT_LIVE_MODEL, metrics;
+  // Models the provider reported for this account beyond the repository list
+  // (owner, 2026-09-06). They widen what setModel accepts and what the picker
+  // offers; the reviewed default keeps its place at the head of the list.
+  let discovered = Object.freeze([]);
+  const models = () => mergeLiveModels(LIVE_MODELS, discovered);
+  const knownModel = (model) => models().includes(model);
+  const routeOf = (model) => (LIVE_MODELS.includes(model) ? liveRoute(model) : liveSetupFor(model));
   let active, store, errorCode = null, disposed = false, lastResult, skipped = [];
   const snapshot = () => {
     const model = active?.model ?? lastResult?.model ?? selectedModel;
@@ -249,11 +257,12 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     metrics = createListenMetrics({ now });
     // A corrupted stored selection never reaches the router: fall back to the
     // translation-only default rather than failing or steering to flash.
-    op.model = request.model === undefined ? selectedModel : sanitizeLiveModel(request.model);
+    op.model = request.model === undefined ? selectedModel
+      : knownModel(request.model) ? request.model : sanitizeLiveModel(request.model);
     // The translation setup carries one target language and cannot change
     // direction, so a two-way session uses the instruction-driven model.
-    if (pair !== null && liveRoute(op.model) === 'translation') {
-      op.model = LIVE_MODELS.find((model) => liveRoute(model) !== 'translation') ?? op.model;
+    if (pair !== null && routeOf(op.model) === 'translation') {
+      op.model = models().find((model) => routeOf(model) !== 'translation') ?? op.model;
     }
     op.requestedModel = op.model; skipped = [];
     store?.close(); store = createCaptionStore({ sessionId: op.sessionId, now }); store.subscribe(notify);
@@ -292,14 +301,38 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   return Object.freeze({ start, stop, cancel: stop, snapshot,
     get model() { return selectedModel; },
     get defaultModel() { return DEFAULT_LIVE_MODEL; },
+    /** The repository list plus whatever discovery added, in that order. */
+    get models() { return models(); },
+    get discoveredModels() { return discovered; },
     async setModel(model) {
-      if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
+      if (!knownModel(model)) throw new ProviderError('MODEL_UNSUPPORTED');
       if (model === selectedModel) return;
       await stop(); selectedModel = model; notify();
     },
+    /**
+     * Report what the provider says this account can reach (owner, 2026-09-06).
+     * `adopt` switches to the newest model that was not in the repository list;
+     * a session in progress is never interrupted for it — the caller decides
+     * when to offer this, and a refused or empty discovery changes nothing.
+     * Returns the adopted model id, or null.
+     */
+    async setDiscoveredModels(list, { adopt = false } = {}) {
+      const merged = mergeLiveModels(LIVE_MODELS, list);
+      const added = merged.filter((model) => !LIVE_MODELS.includes(model));
+      const changed = added.length !== discovered.length || added.some((model, index) => model !== discovered[index]);
+      discovered = Object.freeze(added);
+      const newest = adopt ? newestLiveModel(LIVE_MODELS, added) : null;
+      if (newest !== null && newest !== selectedModel && !active && !sessionManager.occupied) {
+        selectedModel = newest;
+        notify();
+        return newest;
+      }
+      if (changed) notify();
+      return null;
+    },
     // Restores a persisted selection; anything unrecognised becomes the default.
     async restoreModel(model) {
-      const next = sanitizeLiveModel(model);
+      const next = knownModel(model) ? model : sanitizeLiveModel(model);
       if (next !== selectedModel) { await stop(); selectedModel = next; notify(); }
       return next;
     },

@@ -52,6 +52,7 @@ import { createSettingsView } from './ui/settings-view.js';
 import { createAppearance } from './ui/appearance.js';
 import { createDisplayControls } from './ui/display-view.js';
 import { createKeyGuide } from './ui/key-guide.js';
+import { discoverLiveModels } from './providers/gemini/model-discovery.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
 import { ACTIONS, PolicyError, createPolicyRuntime, isPolicyError } from './policy/runtime.js';
@@ -301,7 +302,20 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
         throw new ProviderError(redact(error).code);
       }
     }
-    return Object.freeze({ ...raw, start, join: start, stop, leave: stop });
+    // Spreading `raw` would freeze its getters at the value they had here, so
+    // `model`, `models` and `discoveredModels` would never change again. The
+    // wrapper delegates instead, and only replaces start/stop.
+    const overrides = { start, join: start, stop, leave: stop };
+    const descriptors = Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptors(raw))
+      .filter(([name]) => !Object.hasOwn(overrides, name))
+      .map(([name, descriptor]) => [name, descriptor.get
+        ? { enumerable: true, configurable: false, get: descriptor.get }
+        : { enumerable: true, configurable: false, writable: false, value: raw[name] }]));
+    return Object.freeze(Object.defineProperties({}, {
+      ...descriptors,
+      ...Object.fromEntries(Object.entries(overrides)
+        .map(([name, value]) => [name, { enumerable: true, configurable: false, writable: false, value }])),
+    }));
   }
   const removers = [];
   const listen = (target, type, handler, options) => {
@@ -626,6 +640,29 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     onTabChanged = () => renderKeyGuides();
     removers.push(() => { onTabChanged = null; });
     removers.push(config.keyStore.subscribe(() => renderKeyGuides()));
+
+    // Owner, 2026-09-06: ask the provider which Live models this account can
+    // reach and take the newest one, so a model published after this build was
+    // reviewed does not need a code change to be used. It runs only with a
+    // personal key (there is nothing to ask with), only while nothing is
+    // running, and at most once per key: a failure is a code that changes
+    // nothing, so discovery can never block interpretation.
+    let discoveryKey = null;
+    async function discoverModels() {
+      if (closed || !simEngine || busy()) return;
+      const selection = attempt(() => config.keyStore.getSelection());
+      if (!selection || selection.keySource !== 'personal') return;
+      const key = attempt(() => config.keyStore.revealPersonal(selection.providerId));
+      if (typeof key !== 'string' || !key || key === discoveryKey) return;
+      discoveryKey = key;
+      const found = await discoverLiveModels({ fetch: win.fetch?.bind(win), key });
+      if (closed || found.code !== null || found.models.length === 0) return;
+      const adopted = await attempt(() => simEngine.setDiscoveredModels(found.models, { adopt: true }));
+      if (adopted) notify('sim.modelDiscovered');
+      attempt(() => settingsView?.render());
+    }
+    void discoverModels();
+    removers.push(config.keyStore.subscribe(() => { void discoverModels(); }));
     removers.push(shell.onLanguageChange(() => { for (const guide of keyGuides) guide.refresh(); }));
 
     const retentionNote = doc.createElement('p');
