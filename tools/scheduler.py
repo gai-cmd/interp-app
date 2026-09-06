@@ -14,7 +14,7 @@ PREFIX = sys.argv[1] if len(sys.argv) > 1 else 'P3'
 LANES = int(sys.argv[2]) if len(sys.argv) > 2 else 2
 LANE_ROOT = '/tmp/interp-lanes'; os.makedirs(LANE_ROOT, exist_ok=True)
 GIT = ['git', '-c', 'user.name=gai', '-c', 'user.email=gai@kaflixcloud.co.jp']
-TRAILER = "\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01LuvfLUrfz3d8VPU49Ce22F"
+TRAILER = "\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Ppr3e7daf3KvAXywVopd5b"
 def sh(cmd, cwd=APP, check=False):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if check and r.returncode: raise RuntimeError(f"{cmd}: {r.stderr[-400:]}")
