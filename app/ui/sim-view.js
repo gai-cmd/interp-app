@@ -148,11 +148,15 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const value of LIVE_VOICE_GENDERS) node('option', '', voice, `sim.voice.${value}`, { value });
   const voiceLabel = voice.parentNode;
   const button = (name, key, parent = controls) => node('button', `btn btn-secondary ${name}`, parent, key, { type: 'button' });
+  // Owner, 2026-09-07: the two actions a person reaches for — start, and the
+  // captions-only frame — carry the accent so they are found at a glance.
   const start = button('sim-start', 'common.start'), stop = button('sim-stop', 'common.stop');
+  start.setAttribute('class', 'btn btn-primary sim-start');
   const sound = button('sim-sound', 'sim.enableSound');
   const source = button('sim-source', 'sim.captions.showSource');
   source.setAttribute('aria-pressed', 'false');
   const captionOnly = button('sim-caption-only', 'captionOnly.enter');
+  captionOnly.setAttribute('class', 'btn btn-primary sim-caption-only');
   captionOnly.setAttribute('aria-pressed', 'false');
   // Manual session replacement while a direct session runs or reconnects.
   const reopen = button('sim-reopen', 'sim.reopen');
