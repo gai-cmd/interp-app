@@ -6,13 +6,17 @@ import { createRouter } from '../app/providers/router.js';
 import { provider, adapter, context, textRequest } from './fixtures/providers.mjs';
 import { bootstrapSharedKey } from '../app/security/bootstrap.js';
 import { createKeyStore } from '../app/security/key-store.js';
-import { parseSharedFragment, MAX_FRAGMENT_LENGTH } from '../app/security/shared-key.js';
+import { parseSharedFragment, EVENT_ID_PATTERN, MAX_FRAGMENT_LENGTH, SHARED_PAYLOAD_VERSIONS } from '../app/security/shared-key.js';
 import { redact, SecurityError } from '../app/security/redact.js';
 
 const personalKey = 'synthetic-personal-secret';
 const sharedKey = 'synthetic-shared-secret';
 const payload = (changes = {}) => ({ version: 1, providerId: 'alpha', eventName: '행사 / Event / 集会', key: sharedKey, ...changes });
 const fragment = (changes) => `#shared=${encodeURIComponent(JSON.stringify(payload(changes)))}`;
+// P3-08 payload v2: the event ID of the policy list plus a mandatory usage deadline.
+const EVENT_ID = 'service-20260906';
+const payloadV2 = (changes = {}) => payload({ version: 2, eventId: EVENT_ID, expiresAt: 4102444800000, ...changes });
+const fragmentV2 = (changes) => `#shared=${encodeURIComponent(JSON.stringify(payloadV2(changes)))}`;
 const address = (providerId = 'alpha', keySource = 'personal') => ({ providerId, keySource, transport: 'direct' });
 function setup(options = {}) {
   const registry = createRegistry();
@@ -85,6 +89,69 @@ test('payload validation rejects unsupported versions, fields, providers and mal
     assert.throws(() => parseSharedFragment('#shared=' + encodeURIComponent(raw), { registry }), { code: 'INVALID_SHARED_PAYLOAD' });
   }
   assert.throws(() => parseSharedFragment(fragment({ expiresAt: 100 }), { registry, now: () => 100 }), { code: 'SHARED_USE_ENDED' });
+});
+
+test('payload v2 carries the event ID and a deadline; v1 stays accepted without either; the ID is validated, not trusted', () => {
+  const { registry } = setup();
+  assert.deepEqual([...SHARED_PAYLOAD_VERSIONS], [1, 2]);
+  const v2 = parseSharedFragment(fragmentV2(), { registry, now: () => 0 });
+  assert.deepEqual(v2, { version: 2, providerId: 'alpha', eventId: EVENT_ID, key: sharedKey, eventName: '행사 / Event / 集会', expiresAt: 4102444800000 });
+  assert.ok(Object.isFrozen(v2));
+  const v1 = parseSharedFragment(fragment(), { registry, now: () => 0 });
+  assert.deepEqual(v1, { version: 1, providerId: 'alpha', eventId: null, key: sharedKey, eventName: '행사 / Event / 集会', expiresAt: null });
+  assert.equal(parseSharedFragment(fragment({ expiresAt: 5 }), { registry, now: () => 0 }).expiresAt, 5);
+  // Well-formed IDs only: the same shape as policy sharedEvents[].id.
+  for (const eventId of ['a', 'service-20260906', '0'.repeat(64)]) {
+    assert.ok(EVENT_ID_PATTERN.test(eventId));
+    assert.equal(parseSharedFragment(fragmentV2({ eventId }), { registry, now: () => 0 }).eventId, eventId);
+  }
+  const invalid = [
+    { eventId: undefined }, { eventId: null }, { eventId: '' }, { eventId: 'Service-1' }, { eventId: 'service_1' }, { eventId: 'service 1' },
+    { eventId: 'x'.repeat(65) }, { eventId: 42 }, { eventId: ['service-1'] }, { eventId: '__proto__' }, { eventId: 'a\n' },
+    { expiresAt: undefined }, { expiresAt: null }, { expiresAt: '4102444800000' }, { expiresAt: -1 }, { expiresAt: 1.5 },
+    { providerId: 'hub' }, { providerId: 'private' }, { key: 'with space' }, { eventName: 'a\tb' },
+    ...['endpoint', 'model', 'label', 'allowedCapabilities', 'enabled', 'signature', 'administratorVerified'].map((key) => ({ [key]: 'forbidden' })),
+  ];
+  for (const change of invalid) {
+    assert.throws(() => parseSharedFragment(fragmentV2(change), { registry, now: () => 0 }),
+      (error) => { noSecret(error); return error.code === 'INVALID_SHARED_PAYLOAD'; }, inspect(change));
+  }
+  // eventId is a v2 field: a v1 payload carrying it is rejected, as are other versions.
+  assert.throws(() => parseSharedFragment(fragment({ eventId: EVENT_ID }), { registry }), { code: 'INVALID_SHARED_PAYLOAD' });
+  for (const version of [0, 3, '2', 2.5, null, undefined]) {
+    assert.throws(() => parseSharedFragment(fragmentV2({ version }), { registry }), { code: 'INVALID_SHARED_PAYLOAD' }, String(version));
+  }
+  // The deadline still ends use at parse time; the event ID does not extend it.
+  assert.throws(() => parseSharedFragment(fragmentV2({ expiresAt: 100 }), { registry, now: () => 100 }), { code: 'SHARED_USE_ENDED' });
+  assert.equal(parseSharedFragment(fragmentV2({ expiresAt: 101 }), { registry, now: () => 100 }).expiresAt, 101);
+});
+
+test('shared metadata exposes version and event ID for policy matching, never the key; a new payload replaces the old one', () => {
+  const { store } = setup();
+  store.setPersonal('alpha', personalKey);
+  store.receiveSharedFragment(fragmentV2());
+  assert.deepEqual(store.getSelection(), { providerId: 'alpha', keySource: 'personal' }, 'personal key first: a v2 QR does not switch modes');
+  const v2 = store.getMetadata('alpha', 'shared');
+  noSecret(v2);
+  assert.deepEqual(v2, { providerId: 'alpha', keySource: 'shared', version: 2, eventId: EVENT_ID, eventName: '행사 / Event / 集会',
+    usageEndsAt: 4102444800000, administratorVerified: false, networkRestrictionVerified: false });
+  assert.ok(Object.isFrozen(v2));
+  store.select('alpha', 'shared');
+  const ref = store.getCredentialRef(address('alpha', 'shared')).reference;
+  // A later v1 payload for the same provider replaces the entry and invalidates old references.
+  store.receiveSharedFragment(fragment());
+  const v1 = store.getMetadata('alpha', 'shared');
+  assert.equal(v1.version, 1);
+  assert.equal(v1.eventId, null);
+  assert.equal(v1.usageEndsAt, null);
+  assert.throws(() => store.resolveCredential(ref, address('alpha', 'shared')), { code: 'CREDENTIAL_MISMATCH' });
+  assert.equal(store.resolveCredential(store.getCredentialRef(address('alpha', 'shared')).reference, address('alpha', 'shared')), sharedKey);
+  // Providers are isolated: beta's shared metadata is independent of alpha's.
+  store.receiveSharedFragment(fragmentV2({ providerId: 'beta', eventId: 'beta-event' }));
+  assert.equal(store.getMetadata('beta', 'shared').eventId, 'beta-event');
+  assert.equal(store.getMetadata('alpha', 'shared').eventId, null);
+  assert.deepEqual(store.getSelection(), { providerId: 'alpha', keySource: 'shared' });
+  store.dispose();
 });
 
 test('personal selection survives QR; switching source and provider is explicit', () => {

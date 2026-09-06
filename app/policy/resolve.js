@@ -22,8 +22,14 @@ export const SETTING_SOURCES = Object.freeze(['personal', 'policyDefault', 'forc
 // EVENT_ENDED from its own state.
 export const BLOCK_CODES = Object.freeze(['POLICY_UNAVAILABLE', 'POLICY_STOPPED', 'APP_VERSION_TOO_OLD',
   'POLICY_EXPIRED', 'HUB_CONTROL_STOPPED', 'HUB_CONTROL_LOST']);
-// event.status.* dictionary keys (P3-02 enumeration).
-export const EVENT_STATUSES = Object.freeze(['upcoming', 'active', 'expired', 'disabled', 'removed']);
+// Joined-event statuses. The first five are the P3-02 event.status.* keys;
+// `mismatch` (P3-08) is a payload whose provider, name or expiry differs from
+// the listed event, or a v1 payload without a unique listed match (§1.7).
+export const EVENT_STATUSES = Object.freeze(['upcoming', 'active', 'expired', 'disabled', 'removed', 'mismatch']);
+export const EVENT_REASON_KEYS = Object.freeze({
+  upcoming: 'event.status.upcoming', active: 'event.status.active', expired: 'event.status.expired',
+  disabled: 'event.status.disabled', removed: 'event.status.removed', mismatch: 'event.payloadMismatch',
+});
 // Code support a feature needs; a policy toggle cannot grant more (§1.4).
 export const FEATURE_CAPABILITIES = Object.freeze({
   sequential: Object.freeze(['translate']), simultaneousDirect: Object.freeze(['live']),
@@ -147,22 +153,68 @@ function resolveFeatures(policy, hubControl, capabilities) {
   return features;
 }
 
+// The joined event input (§1.7 "공용 키 payload", P3-08). Accepted shapes:
+//   'service-1' | { id }                      an event ID alone (runtime.setEvent)
+//   { eventId, providerId, eventName, usageEndsAt | expiresAt }
+//     the key store's shared metadata or the parser's entry: v2 carries the
+//     eventId, v1 has eventId null and is matched by the other three fields.
+// Returns { id, fields } with fields null when the payload carries nothing to
+// compare, or null when nothing is joined / the ID is malformed. Field values
+// are compared, never echoed: the result only names listed event IDs.
+const DESCRIPTOR_FIELDS = Object.freeze(['providerId', 'eventName', 'usageEndsAt', 'expiresAt']);
+function joinedEvent(event) {
+  if (typeof event === 'string') return EVENT_ID.test(event) ? { id: event, fields: null } : null;
+  if (!isObject(event)) return null;
+  const id = Object.hasOwn(event, 'eventId') ? event.eventId : Object.hasOwn(event, 'id') ? event.id : null;
+  if (id !== null && id !== undefined && (typeof id !== 'string' || !EVENT_ID.test(id))) return null;
+  const described = DESCRIPTOR_FIELDS.some((name) => Object.hasOwn(event, name) && event[name] !== undefined);
+  if (!described) return typeof id === 'string' ? { id, fields: null } : null;
+  const deadline = Object.hasOwn(event, 'usageEndsAt') ? event.usageEndsAt : event.expiresAt;
+  return { id: typeof id === 'string' ? id : null,
+    fields: { providerId: event.providerId, eventName: event.eventName, expiresAt: deadline ?? null } };
+}
+
+// Provider, event name and expiry must all equal the listed event (§1.7 "행사
+// ID·제공자·행사명·만료 시각과 대조"). The payload deadline is epoch
+// milliseconds; a payload without one never matches. Nothing is normalised.
+function payloadMatches(entry, fields) {
+  return fields.providerId === entry.providerId && fields.eventName === entry.eventName
+    && Number.isSafeInteger(fields.expiresAt) && fields.expiresAt === Date.parse(entry.expiresAt);
+}
+
+function eventStatus(policy, entry, now) {
+  if (policy.features.sharedKeys !== true || entry.enabled !== true) return 'disabled';
+  if (now < Date.parse(entry.startsAt)) return 'upcoming';
+  if (now >= Date.parse(entry.expiresAt)) return 'expired';
+  return 'active';
+}
+
 // Joined shared-key event against the policy list (§1.4 shared events, §1.5
-// "행사 목록 변경·만료·중지"). Live is never among the capabilities.
+// "행사 목록 변경·만료·중지", §1.7 payload comparison). An event ID is a
+// lookup key, not a signature. Live is never among the capabilities.
 function resolveEvent(policy, event, capabilities, now) {
-  if (event === null || event === undefined) return null;
-  const id = typeof event === 'string' ? event : isObject(event) ? event.id : undefined;
-  if (typeof id !== 'string' || !EVENT_ID.test(id)) return null;
-  const entry = policy ? policy.sharedEvents.find((item) => item.id === id) : undefined;
-  const ended = (status) => ({ id, status, providerId: entry?.providerId ?? null, expiresAt: entry?.expiresAt ?? null,
-    allowedCapabilities: [], reasonKey: `event.status.${status}` });
-  if (!entry) return ended('removed');
-  if (policy.features.sharedKeys !== true || entry.enabled !== true) return ended('disabled');
-  if (now < Date.parse(entry.startsAt)) return ended('upcoming');
-  if (now >= Date.parse(entry.expiresAt)) return ended('expired');
-  return { id, status: 'active', providerId: entry.providerId, expiresAt: entry.expiresAt,
-    allowedCapabilities: entry.allowedCapabilities.filter((capability) => capability !== 'live' && capabilities.has(capability)),
-    reasonKey: null };
+  const joined = joinedEvent(event);
+  if (!joined) return null;
+  const events = policy ? policy.sharedEvents : [];
+  const describe = (id, status, entry) => ({ id, status, providerId: entry?.providerId ?? null, expiresAt: entry?.expiresAt ?? null,
+    allowedCapabilities: status === 'active'
+      ? entry.allowedCapabilities.filter((capability) => capability !== 'live' && capabilities.has(capability)) : [],
+    reasonKey: status === 'active' ? null : EVENT_REASON_KEYS[status] });
+  if (joined.id !== null) {
+    const entry = events.find((item) => item.id === joined.id);
+    if (!entry) return describe(joined.id, 'removed', null);
+    // v2 (or a described ID): the listed event must also match the payload.
+    if (joined.fields && !payloadMatches(entry, joined.fields)) return describe(joined.id, 'mismatch', null);
+    return describe(joined.id, eventStatus(policy, entry, now), entry);
+  }
+  // v1: no ID in the payload. It is usable only when exactly one active listed
+  // event matches provider, name and expiry (§1.7 "유일하게 일치"). A single
+  // inactive match reports that event's status; none or several is a mismatch.
+  const matches = events.filter((entry) => payloadMatches(entry, joined.fields));
+  const active = matches.filter((entry) => eventStatus(policy, entry, now) === 'active');
+  if (active.length === 1) return describe(active[0].id, 'active', active[0]);
+  if (active.length === 0 && matches.length === 1) return describe(matches[0].id, eventStatus(policy, matches[0], now), matches[0]);
+  return describe(null, 'mismatch', null);
 }
 
 function resolveBlocked(policy, hubControl, appVersion, now) {
@@ -188,8 +240,11 @@ function resolveBlocked(policy, hubControl, appVersion, now) {
  * }
  * `policy` is a validatePolicy() result (null while unavailable), `preferences`
  * a createPreferences() store or a plain { [name]: value } map of personal
- * choices, `event` the joined event ID (or { id }), `hubControl` the hub
- * control snapshot ({ stopped, heartbeatLost, disabledFeatures }),
+ * choices, `event` the joined event: an ID (or { id }) or the key store's
+ * shared metadata { eventId, providerId, eventName, usageEndsAt } (v2 is
+ * compared field by field with the listed event, v1 with eventId null must
+ * match exactly one active event; otherwise status `mismatch`), `hubControl`
+ * the hub control snapshot ({ stopped, heartbeatLost, disabledFeatures }),
  * `capabilities` the capabilities the code supports (default: all),
  * `appVersion` the running version and `now` epoch milliseconds or a clock.
  * `source` is personal | policyDefault | forced | appDefault; `allowed` is the
