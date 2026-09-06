@@ -12,7 +12,13 @@ import { createKeyStore } from '../app/security/key-store.js';
 import { createSessionManager } from '../app/engine/session-manager.js';
 import { createDiagnostics, DIAGNOSTIC_KINDS } from '../app/engine/diagnostics.js';
 import { mount } from '../app/ui/shell.js';
-import { acceptsDirectKey, createSettingsView, KEY_SOURCES, keyStoreErrorKey, sharedFragmentFrom } from '../app/ui/settings-view.js';
+import { acceptsDirectKey, createSettingsView, KEY_SOURCES, SETTINGS_SECTIONS, keyStoreErrorKey, sharedFragmentFrom } from '../app/ui/settings-view.js';
+import { SETTING_NAMES, SETTING_LABEL_KEYS, createLockNote, createPolicyView, describeSetting, hubControlKey } from '../app/ui/policy-view.js';
+import { REGISTERED_SETTINGS, validatePolicy } from '../app/policy/schema.js';
+import { resolveEffective } from '../app/policy/resolve.js';
+import { createPreferences } from '../app/preferences.js';
+import { APP_VERSION } from '../app/version.js';
+import { REGISTERED_HUB_IDS, examplePolicy, fullPolicy, policyWith, trilingual } from './fixtures/policy.mjs';
 import { checkState, createDiagnosticsView, STATE_KEYS } from '../app/ui/diagnostics-view.js';
 import { SecurityError } from '../app/security/redact.js';
 import { createAudioPreferences } from '../app/audio/capture.js';
@@ -210,7 +216,7 @@ function fixtureConfig({ storage } = {}) {
 }
 
 function harness({ config = fixtureConfig(), language = 'ko', persistence = false, capture = fakeCapture(), app = null,
-  getDeviceVoices = null, simEngine = null, audioPreferences = undefined, voicePreference = undefined } = {}) {
+  getDeviceVoices = null, simEngine = null, audioPreferences = undefined, voicePreference = undefined, policy = null, preferences = null } = {}) {
   const doc = createDocument();
   const root = doc.createElement('div');
   const timers = fakeTimers();
@@ -223,7 +229,7 @@ function harness({ config = fixtureConfig(), language = 'ko', persistence = fals
   const diagnostics = createDiagnostics({ config, capture, getAudioContext: () => audio, ...clock, random: () => 0, now: () => 1000 });
   const uiLanguages = [];
   const view = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence, app, getDeviceVoices, simEngine,
-    ...(audioPreferences ? { audio: audioPreferences } : {}), ...(voicePreference ? { voicePreference } : {}),
+    ...(audioPreferences ? { audio: audioPreferences } : {}), ...(voicePreference ? { voicePreference } : {}), policy, preferences,
     onUiLanguageChange: (value) => uiLanguages.push(value) });
   const el = (name) => byClass(root, name);
   const diagRow = (kind) => all(root, (node) => node.classes.has('diag-check') && node.getAttribute('data-kind') === kind)[0];
@@ -241,7 +247,7 @@ async function teardown(h) {
 
 test('settings and diagnostics sources use only existing dictionary keys and never render markup', async () => {
   const keyPattern = /^[a-z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/;
-  for (const file of ['app/ui/settings-view.js', 'app/ui/diagnostics-view.js', 'app/engine/diagnostics.js']) {
+  for (const file of ['app/ui/settings-view.js', 'app/ui/policy-view.js', 'app/ui/diagnostics-view.js', 'app/engine/diagnostics.js']) {
     const source = await read(file);
     assert.deepEqual(checkSource(source, dictionaries.en), [], file);
     assert.equal(/innerHTML|outerHTML|insertAdjacentHTML|innerText|createContextualFragment/.test(source), false, file);
@@ -303,7 +309,8 @@ test('one registered provider shows its title without a picker, mounts into the 
     const dictionary = dictionaries[language];
     assert.equal(h.view.elements.uiSelect.value, language);
     assert.equal(h.view.elements.keyStatus.textContent, dictionary['settings.noKey']);
-    assert.equal(byClass(h.root, 'settings-section-title').textContent, dictionary['language.ui']);
+    // P3-19: the first section is display·language (settings.section.display), not the P1 language title.
+    assert.equal(byClass(h.root, 'settings-section-title').textContent, dictionary['settings.section.display']);
     assert.equal(byClass(h.diagRow('text'), 'diag-check-label').textContent, dictionary['diagnostics.text']);
     assert.equal(byClass(h.capRow('live'), 'diag-capability-state').textContent, dictionary['capability.untested']);
     assert.equal(h.view.elements.voiceSelect.childNodes[0].textContent, dictionary['voice.provider']);
@@ -691,7 +698,9 @@ test('audio section: speech-only defaults on, toggles write the shared preferenc
   const h = harness({ audioPreferences: audio }); t.after(() => teardown(h));
   const { elements } = h.view;
   const section = elements.sections.audio;
-  assert.equal(section.childNodes[0].textContent, ko['settings.audio']);
+  // P3-19: the audio section carries the §1.12 title (microphone and audio devices) and a hint.
+  assert.equal(section.childNodes[0].textContent, ko['settings.section.audio']);
+  assert.equal(section.childNodes[1].textContent, ko['settings.sectionHint.audio']);
   assert.ok(section.parentNode.childNodes.indexOf(section) < section.parentNode.childNodes.indexOf(elements.sections.diagnostics));
   assert.equal(elements.noiseInput.checked, true); assert.equal(elements.filterInput.checked, true);
   assert.equal(elements.sensitivitySelect.value, 'normal');
@@ -756,4 +765,355 @@ test('the provider voice picker and the simultaneous female/male choice share on
   const after = h.engine.calls.length;
   voicePreference.set({ gender: 'female' });
   assert.equal(h.engine.calls.length, after);
+});
+
+// P3-19 (design-p3 §1.6, §1.12): section order, policy locks and the policy view.
+const NOW = Date.parse('2026-09-06T01:00:00Z');
+const NAMES = SETTING_NAMES;
+// Stand-in for createPolicyRuntime(): the same snapshot shape, computed with
+// the real validator and resolver; publish()/setStatus()/setHubControl() emit
+// like the runtime, refresh() is settled by the test.
+function policyDouble({ policy = examplePolicy(), status = 'ready', preferences = null, appVersion = APP_VERSION, fetchedAt = NOW, hubControl = null } = {}) {
+  const listeners = new Set();
+  const state = { policy: null, status, hubControl, fetchedAt, refreshes: [], pending: [] };
+  const validated = (doc) => {
+    if (doc === null) return null;
+    const result = validatePolicy(doc, { registeredHubIds: REGISTERED_HUB_IDS, now: NOW });
+    assert.ok(result.ok, JSON.stringify(result.issues));
+    return result.policy;
+  };
+  state.policy = validated(policy);
+  const snapshot = () => {
+    const effective = resolveEffective({ policy: state.policy, preferences, event: null, hubControl: state.hubControl, appVersion, now: NOW });
+    const blocked = state.policy === null ? { code: state.status === 'loading' ? 'POLICY_LOADING' : 'POLICY_UNAVAILABLE', revision: null } : effective.blocked;
+    return Object.freeze({ status: state.status, revision: state.policy?.revision ?? null, fetchedAt: state.fetchedAt, error: null, policy: state.policy,
+      blocked, settings: effective.settings, features: effective.features, event: null, eventId: null, hubControl: state.hubControl, cleanup: 'idle', appVersion });
+  };
+  const emit = (change) => {
+    const current = snapshot();
+    const frozen = Object.freeze({ type: 'status', stop: false, reopened: false, display: false, pricing: false, revisionChanged: false, ...change });
+    for (const listener of [...listeners]) listener(current, frozen);
+  };
+  preferences?.subscribe?.(() => emit({ type: 'preference' }));
+  return { snapshot, state, listeners,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    refresh({ reason }) { state.refreshes.push(reason); return new Promise((resolve, reject) => state.pending.push({ resolve, reject })); },
+    publish(doc, change = { type: 'updated', revisionChanged: true }) { state.policy = validated(doc); state.status = 'ready'; emit(change); },
+    setStatus(status) { state.status = status; emit({ type: 'status' }); },
+    setHubControl(control) { state.hubControl = control; emit({ type: 'hubControl' }); },
+    settle(ok = true) { const next = state.pending.shift(); if (ok) next.resolve(snapshot()); else next.reject(new Error('SECRET')); } };
+}
+const control = (overrides = {}) => ({ supported: true, eventId: 'service-20260906', epoch: 1, revision: 3, stopped: false, heartbeatLost: false,
+  disabledFeatures: [], expiresAt: null, ...overrides });
+// Visible text parts of a lock note or list item (the padlock is CSS-drawn and aria-hidden).
+const lockText = (node) => node.childNodes.filter((child) => !child.hidden && !child.classes.has('settings-lock-icon')).map((child) => child.textContent);
+
+test('sections follow the §1.12 order with titles and hints; P1 element names, the PWA insertion point and the diagnostics view survive the move', async t => {
+  const h = harness({ app: { version: 'r-2026-09-06', standalone: false } }); t.after(() => teardown(h));
+  const { elements, element } = h.view;
+  const { sections } = elements;
+  assert.deepEqual([...SETTINGS_SECTIONS], ['display', 'interpretation', 'provider', 'sharedKey', 'billing', 'audio', 'diagnostics', 'records', 'app', 'terms']);
+  assert.deepEqual(element.childNodes.map((node) => node.getAttribute('data-section')), [...SETTINGS_SECTIONS]);
+  for (const name of SETTINGS_SECTIONS) {
+    const section = sections[name];
+    assert.equal(element.childNodes.indexOf(section) >= 0, true, name);
+    assert.equal(section.tagName, 'SECTION');
+    const [title, hint] = section.childNodes;
+    assert.equal(title.tagName, 'H3');
+    assert.equal(title.textContent, ko[`settings.section.${name}`], name);
+    assert.equal(hint.textContent, ko[`settings.sectionHint.${name}`], name);
+    assert.equal(section.getAttribute('aria-labelledby'), title.getAttribute('id'));
+  }
+  // P1-16 names stay usable: they point at the section or block that now holds the same controls.
+  assert.equal(sections.language, sections.display);
+  assert.equal(sections.notices, sections.terms);
+  assert.equal(sections.display.contains(elements.uiSelect), true);
+  assert.equal(sections.display.contains(elements.displayControls), true);
+  assert.equal(elements.displayControls.childNodes.length, 0, 'display controls belong to P3-20');
+  assert.equal(visible(byClass(sections.display, 'settings-note')), false, 'the UI-language lock note needs a policy');
+  assert.equal(sections.interpretation.contains(elements.sourceSelect), true);
+  assert.equal(sections.interpretation.contains(elements.targetSelect), true);
+  assert.equal(sections.interpretation.contains(sections.voice), true);
+  for (const name of ['outputSelect', 'voiceSelect', 'previewButton', 'deviceSelect', 'modelSelect']) assert.equal(sections.voice.contains(elements[name]), true, name);
+  assert.equal(sections.provider.contains(elements.providerTitle), true);
+  assert.equal(sections.provider.contains(elements.providerSelect), true);
+  assert.equal(sections.provider.contains(sections.key), true);
+  for (const name of ['keyInput', 'rememberInput', 'saveButton', 'checkButton', 'deleteButton', 'keyStatus', 'keyFeedback']) assert.equal(sections.key.contains(elements[name]), true, name);
+  assert.equal(sections.sharedKey.contains(sections.shared), true);
+  assert.equal(sections.sharedKey.contains(sections.mode), true);
+  for (const name of ['sharedInput', 'sharedImport', 'sharedEnd', 'sharedEvent']) assert.equal(sections.shared.contains(elements[name]), true, name);
+  assert.equal(sections.mode.contains(elements.modeInputs.personal), true);
+  assert.equal(sections.mode.contains(elements.modeInputs.shared), true);
+  assert.equal(sections.billing.childNodes.length, 2, 'plan and usage controls belong to P3-31');
+  for (const name of ['noiseInput', 'filterInput', 'sensitivitySelect', 'appliedLine']) assert.equal(sections.audio.contains(elements[name]), true, name);
+  assert.equal(sections.records.contains(elements.clearButton), true);
+  assert.equal(sections.app.contains(elements.appActions), true);
+  assert.equal(sections.terms.contains(h.el('settings-quota-scope')), true);
+  // The PWA controls (P1-19) and the composition root's retention note (P3-02e) still land in their sections.
+  const pwaMarker = h.doc.createElement('div');
+  elements.appActions.append(pwaMarker);
+  assert.equal(sections.app.contains(pwaMarker), true);
+  assert.equal(h.el('settings-app-version').textContent, ko['pwa.version'].replace('{version}', 'r-2026-09-06'));
+  const retention = h.doc.createElement('p');
+  sections.key.append(retention);
+  assert.equal(sections.provider.contains(retention), true);
+  // The diagnostics view is the same object and its per-check buttons still run.
+  assert.equal(h.view.diagnosticsView.element.parentNode, sections.diagnostics);
+  assert.equal(clickable(byClass(h.diagRow('playback'), 'diag-check-run')), true);
+  byClass(h.diagRow('playback'), 'diag-check-run').dispatch('click');
+  await until(() => h.diagnostics.snapshot().running === null);
+  assert.equal(h.capRow('translate').getAttribute('data-state'), 'untested');
+  assert.equal(byClass(h.diagRow('playback'), 'diag-check-state').textContent, ko['capability.available']);
+  // Without a policy runtime nothing is locked and no policy block exists.
+  assert.equal(h.view.policyView, null);
+  assert.equal(elements.policy, null);
+  assert.deepEqual(elements.locks, { sourceSelect: null, targetSelect: null, outputSelect: null });
+  assert.equal(byClass(h.root, 'policy'), undefined);
+  assert.equal(elements.targetSelect.disabled, false);
+  assert.equal(elements.targetSelect.getAttribute('aria-describedby'), null);
+  for (const language of ['en', 'ja']) {
+    h.shell.setLanguage(language);
+    for (const name of SETTINGS_SECTIONS) {
+      assert.equal(sections[name].childNodes[0].textContent, dictionaries[language][`settings.section.${name}`], `${language} ${name}`);
+      assert.equal(sections[name].childNodes[1].textContent, dictionaries[language][`settings.sectionHint.${name}`], `${language} ${name}`);
+    }
+  }
+  // Helpers of the policy view.
+  assert.deepEqual(describeSetting(null), { locked: false, sourceKey: null, reasonKey: null, allowed: null });
+  assert.deepEqual(describeSetting({ value: 'ko', source: 'personal', allowed: ['ko', 'en'], locked: false, reasonKey: 'policy.lock.restricted' }),
+    { locked: false, sourceKey: null, reasonKey: 'policy.lock.restricted', allowed: ['ko', 'en'] });
+  assert.deepEqual(describeSetting({ value: 'ko', source: 'policyDefault', allowed: { min: 1, max: 2, step: 0.125 }, locked: false, reasonKey: null }),
+    { locked: false, sourceKey: 'policy.source.policyDefault', reasonKey: null, allowed: null });
+  assert.equal(describeSetting({ value: 'ko', source: 'forced', allowed: ['ko'], locked: true, reasonKey: 'policy.lock.forced' }).sourceKey, 'policy.source.forced');
+  assert.equal(hubControlKey(null), null);
+  assert.equal(hubControlKey(control()), 'hubControl.supported');
+  assert.equal(hubControlKey(control({ supported: false })), 'hubControl.unsupported');
+  assert.equal(hubControlKey(control({ stopped: true, heartbeatLost: true })), 'hubControl.stopped');
+  assert.equal(hubControlKey(control({ heartbeatLost: true })), 'hubControl.lost');
+  for (const [name, label] of Object.entries(SETTING_LABEL_KEYS)) {
+    assert.ok(Object.hasOwn(REGISTERED_SETTINGS, name), name);
+    for (const language of SUPPORTED_LANGUAGES) assert.ok(Object.hasOwn(dictionaries[language], label), `${language} ${label}`);
+  }
+  assert.deepEqual(Object.keys(SETTING_LABEL_KEYS).sort(), Object.keys(REGISTERED_SETTINGS).sort());
+  assert.throws(() => createLockNote({ document: h.doc, i18n: h.i18n, control: elements.targetSelect }), { message: 'INVALID_REQUEST' });
+  assert.throws(() => createPolicyView({ root: h.root, i18n: h.i18n, document: h.doc, policy: {} }), { message: 'INVALID_REQUEST' });
+  assert.throws(() => createSettingsView({ shell: h.shell, i18n: h.i18n, config: h.config, engine: h.engine, diagnostics: h.diagnostics, document: h.doc, policy: { snapshot() {} } }),
+    { message: 'INVALID_REQUEST' });
+});
+
+test('policy locks: a forced value disables the control with a padlock and a linked reason, a narrowed range hides options, defaults are labelled and personal choices are recorded', async t => {
+  const preferences = createPreferences({ storage: fakeStorage(), now: () => NOW });
+  const policy = policyDouble({ preferences, policy: policyWith((doc) => {
+    doc.settings[NAMES.targetLanguage] = { default: 'en', allowed: ['en'], locked: true };
+    doc.settings[NAMES.sourceLanguage] = { default: 'ko', allowed: ['ko', 'en'], locked: false };
+    doc.settings[NAMES.voiceOutput] = { default: 'device', allowed: ['provider', 'device', 'off'], locked: false };
+  }) });
+  const h = harness({ policy, preferences }); t.after(() => teardown(h));
+  const { elements } = h.view;
+  const { locks } = elements;
+  // Effective values reached the engine at mount: the forced target and the administrator defaults.
+  assert.deepEqual(h.engine.calls, [['setInterpretation', { sourceLanguage: 'ko', targetLanguage: 'en' }], ['setVoice', { output: 'device' }]]);
+  assert.deepEqual(h.state.snapshot().interpretation, { sourceLanguage: 'ko', targetLanguage: 'en' });
+  assert.equal(h.state.snapshot().voice.output, 'device');
+  assert.equal(preferences.get(NAMES.targetLanguage), null, 'effective values are never written as personal choices');
+  assert.equal(visible(byClass(elements.sections.display, 'settings-note')), true, 'the UI language cannot be locked');
+  assert.equal(byClass(elements.sections.display, 'settings-note').textContent, ko['policy.lock.uiLanguage']);
+  // Forced target: disabled, padlock, "value set by the administrator", reason, aria-describedby.
+  assert.equal(elements.targetSelect.disabled, true);
+  assert.equal(elements.targetSelect.value, 'en');
+  assert.equal(elements.targetSelect.getAttribute('aria-describedby'), locks.targetSelect.getAttribute('id'));
+  assert.equal(locks.targetSelect.parentNode, elements.targetSelect.parentNode, 'the note sits in the control row');
+  assert.equal(locks.targetSelect.hidden, false);
+  assert.equal(locks.targetSelect.getAttribute('data-locked'), 'true');
+  assert.equal(locks.targetSelect.getAttribute('data-source'), 'forced');
+  assert.equal(byClass(locks.targetSelect, 'settings-lock-icon').hidden, false);
+  assert.equal(byClass(locks.targetSelect, 'settings-lock-icon').getAttribute('aria-hidden'), 'true');
+  assert.deepEqual(lockText(locks.targetSelect), [ko['policy.lock.label'], ko['policy.source.forced'], ko['policy.lock.forced']]);
+  assert.deepEqual(options(elements.targetSelect), ['ko', 'en', 'ja']);
+  assert.deepEqual(elements.targetSelect.childNodes.map((option) => option.hidden), [true, false, true]);
+  // Narrowed source: enabled, disallowed options hidden and disabled, restriction reason, default labelled.
+  assert.equal(elements.sourceSelect.disabled, false);
+  assert.deepEqual(elements.sourceSelect.childNodes.map((option) => [option.getAttribute('value'), option.hidden, option.disabled]),
+    [['auto', true, true], ['ko', false, false], ['en', false, false], ['ja', true, true]]);
+  assert.equal(elements.sourceSelect.getAttribute('aria-describedby'), locks.sourceSelect.getAttribute('id'));
+  assert.equal(locks.sourceSelect.getAttribute('data-locked'), 'false');
+  assert.equal(byClass(locks.sourceSelect, 'settings-lock-icon').hidden, true);
+  assert.deepEqual(lockText(locks.sourceSelect), [ko['policy.source.policyDefault'], ko['policy.lock.restricted']]);
+  // Administrator default without restriction: label only.
+  assert.equal(elements.outputSelect.disabled, false);
+  assert.deepEqual(lockText(locks.outputSelect), [ko['policy.source.policyDefault']]);
+  assert.equal(elements.outputSelect.getAttribute('aria-describedby'), locks.outputSelect.getAttribute('id'));
+  // The policy view lists the locked and restricted settings with their reasons.
+  const items = elements.policy.lockList.childNodes;
+  assert.deepEqual(items.map((item) => [item.getAttribute('data-setting'), item.getAttribute('data-locked')]),
+    [[NAMES.sourceLanguage, 'false'], [NAMES.targetLanguage, 'true']]);
+  assert.deepEqual(lockText(items[1]), [ko['language.target'], ko['policy.source.forced'], ko['policy.lock.forced']]);
+  assert.deepEqual(lockText(items[0]), [ko['language.source'], ko['policy.source.policyDefault'], ko['policy.lock.restricted']]);
+  assert.equal(elements.policy.locks.hidden, false);
+  assert.deepEqual(elements.policy.featureList.childNodes.map((item) => item.getAttribute('data-feature')), ['sharedKeys'], 'the §1.4 example keeps shared keys off');
+  // A personal choice is recorded; the resolver then reports it and the default label disappears.
+  choose(elements.outputSelect, 'off');
+  assert.equal(h.state.snapshot().voice.output, 'off');
+  assert.equal(preferences.get(NAMES.voiceOutput), 'off');
+  assert.equal(policy.snapshot().settings[NAMES.voiceOutput].source, 'personal');
+  assert.equal(locks.outputSelect.hidden, true);
+  assert.equal(elements.outputSelect.getAttribute('aria-describedby'), null);
+  // A source equal to the forced target has no allowed replacement: the engine rejects it and nothing is recorded.
+  choose(elements.sourceSelect, 'en');
+  assert.equal(preferences.get(NAMES.sourceLanguage), null);
+  assert.equal(h.notice(), 'error.INVALID_REQUEST');
+  assert.equal(elements.sourceSelect.value, 'ko', 'a rejected change reverts to the store');
+  h.state.setNotice(null);
+  choose(elements.sourceSelect, 'ko');
+  assert.equal(preferences.get(NAMES.sourceLanguage), 'ko');
+  assert.deepEqual(lockText(locks.sourceSelect), [ko['policy.lock.restricted']], 'a personal choice inside the range keeps only the restriction');
+  assert.equal(policy.snapshot().settings[NAMES.sourceLanguage].source, 'personal');
+  // A wider policy unlocks the control, restores the options and keeps the personal choices; nothing restarts.
+  const before = h.engine.calls.length;
+  policy.publish(examplePolicy());
+  assert.equal(elements.targetSelect.disabled, false);
+  assert.equal(elements.targetSelect.getAttribute('aria-describedby'), null);
+  assert.equal(locks.targetSelect.hidden, true);
+  assert.equal(locks.targetSelect.getAttribute('data-locked'), 'false');
+  assert.deepEqual(elements.sourceSelect.childNodes.map((option) => option.hidden), [false, false, false, false]);
+  assert.equal(elements.policy.lockList.childNodes.length, 0);
+  assert.equal(elements.policy.locks.hidden, false, 'the shared-key feature is still listed as off');
+  assert.equal(h.engine.calls.length, before, 'personal choices are not rewritten on a wider policy');
+  assert.deepEqual(h.state.snapshot().interpretation, { sourceLanguage: 'ko', targetLanguage: 'en' });
+  // A forced value arriving later is written to the engine even though a personal choice exists.
+  policy.publish(policyWith((doc) => { doc.settings[NAMES.voiceOutput] = { default: 'provider', allowed: ['provider'], locked: true }; }));
+  assert.deepEqual(h.engine.calls.at(-1), ['setVoice', { output: 'provider' }]);
+  assert.equal(elements.outputSelect.disabled, true);
+  assert.deepEqual(lockText(locks.outputSelect), [ko['policy.lock.label'], ko['policy.source.forced'], ko['policy.lock.forced']]);
+  assert.equal(preferences.get(NAMES.voiceOutput), 'off', 'the personal choice survives the lock');
+  h.shell.setLanguage('en');
+  assert.deepEqual(lockText(locks.outputSelect), [dictionaries.en['policy.lock.label'], dictionaries.en['policy.source.forced'], dictionaries.en['policy.lock.forced']]);
+  assert.deepEqual(lockText(elements.policy.lockList.childNodes[0]), [dictionaries.en['voice.output'], dictionaries.en['policy.source.forced'], dictionaries.en['policy.lock.forced']]);
+  assert.doesNotMatch(domText(h.root), /SECRET/);
+  // Destroy unsubscribes from the policy: a later lock no longer reaches the engine.
+  h.view.destroy();
+  assert.equal(policy.listeners.size, 0);
+  const after = h.engine.calls.length;
+  policy.publish(policyWith((doc) => { doc.settings[NAMES.voiceOutput] = { default: 'off', allowed: ['off'], locked: true }; }));
+  assert.equal(h.engine.calls.length, after);
+});
+
+test('the policy view shows the app version apart from the release ID, revision and dates, the block reason with revision and recheck, features off and hub control', async t => {
+  const policy = policyDouble({ policy: fullPolicy() });
+  const h = harness({ policy, app: { version: 'r-2026-09-06' } }); t.after(() => teardown(h));
+  const p = h.view.elements.policy;
+  const date = (value) => h.i18n.formatDate(new Date(value), { dateStyle: 'medium', timeStyle: 'short' });
+  assert.equal(h.view.policyView.element.parentNode, h.view.elements.sections.app);
+  assert.equal(h.el('settings-app-version').textContent, ko['pwa.version'].replace('{version}', 'r-2026-09-06'), 'the release ID line');
+  assert.equal(p.appVersion.textContent, APP_VERSION, 'the numeric app version');
+  assert.notEqual(p.appVersion.textContent, 'r-2026-09-06');
+  assert.equal(p.status.textContent, ko['policy.status.ready']);
+  assert.equal(p.status.getAttribute('data-status'), 'ready');
+  assert.equal(p.revision.textContent, '7');
+  assert.equal(p.publishedAt.textContent, date('2026-09-06T00:00:00Z'));
+  assert.equal(p.validUntil.textContent, date('2026-12-31T23:59:59Z'));
+  assert.equal(p.minAppVersion.textContent, '0.7.0');
+  assert.equal(p.fetchedAt.textContent, date(NOW));
+  // Emergency stop: reason, revision, three-language administrator text, persistent note.
+  assert.equal(p.blocked.hidden, false);
+  assert.equal(p.blocked.getAttribute('data-code'), 'POLICY_STOPPED');
+  assert.equal(p.blockedReason.textContent, ko['error.POLICY_STOPPED']);
+  assert.equal(p.blockedRevision.textContent, ko['policy.blocked.revision'].replace('{revision}', '7'));
+  assert.equal(p.emergency.textContent, 'reason 한국어');
+  assert.equal(p.emergency.parentNode.hidden, false);
+  assert.equal(p.updateHint.hidden, true);
+  assert.equal(visible(byClass(p.blocked, 'policy-blocked-persistent')), true);
+  // Lock list: the forced tone and the narrowed caption range of the full policy.
+  assert.deepEqual(p.lockList.childNodes.map((item) => item.getAttribute('data-setting')), [NAMES.tone, NAMES.captionsSize]);
+  assert.deepEqual(lockText(p.lockList.childNodes[0]), [ko['display.tone'], ko['policy.source.forced'], ko['policy.lock.forced']]);
+  assert.deepEqual(lockText(p.lockList.childNodes[1]), [ko['display.captions.size'], ko['policy.source.policyDefault'], ko['policy.lock.restricted']]);
+  assert.equal(p.featureList.childNodes.length, 0);
+  assert.equal(p.hub.hidden, true);
+  h.shell.setLanguage('en');
+  assert.equal(p.emergency.textContent, 'reason English');
+  assert.equal(p.status.textContent, dictionaries.en['policy.status.ready']);
+  assert.equal(p.blockedReason.textContent, dictionaries.en['error.POLICY_STOPPED']);
+  assert.equal(p.publishedAt.textContent, h.i18n.formatDate(new Date('2026-09-06T00:00:00Z'), { dateStyle: 'medium', timeStyle: 'short' }));
+  h.shell.setLanguage('ko');
+  // Recheck: one manual refresh, disabled until it settles; a failure becomes a notice.
+  p.recheck.dispatch('click');
+  assert.deepEqual(policy.state.refreshes, ['manual']);
+  assert.equal(p.recheck.disabled, true);
+  assert.equal(p.recheck.getAttribute('aria-busy'), 'true');
+  p.recheck.dispatch('click');
+  assert.deepEqual(policy.state.refreshes, ['manual'], 'no second request while one is pending');
+  policy.settle(true);
+  await until(() => p.recheck.disabled === false);
+  assert.equal(h.notice(), null);
+  p.recheck.dispatch('click');
+  policy.settle(false);
+  await until(() => p.recheck.disabled === false);
+  assert.equal(h.notice(), 'policy.status.failed');
+  assert.doesNotMatch(domText(h.root), /SECRET/);
+  h.state.setNotice(null);
+  // Hub live control while an event is joined.
+  policy.setHubControl(control());
+  assert.equal(p.hub.hidden, false);
+  assert.equal(p.hubState.textContent, ko['hubControl.supported']);
+  assert.equal(p.hubState.getAttribute('data-state'), 'supported');
+  assert.equal(p.hubRevision.textContent, ko['hubControl.revision'].replace('{revision}', '3'));
+  policy.setHubControl(control({ stopped: true, revision: 4 }));
+  assert.equal(p.hubState.textContent, ko['hubControl.stopped']);
+  assert.equal(p.hubRevision.textContent, ko['hubControl.revision'].replace('{revision}', '4'));
+  policy.setHubControl(null);
+  assert.equal(p.hub.hidden, true);
+  // Features turned off are listed with their reason (the §1.4 example keeps shared keys off); the lifted stop hides the block.
+  policy.publish(policyWith((doc) => { doc.features.diagnostics = false; doc.features.simultaneousDirect = false; }));
+  assert.equal(p.blocked.hidden, true);
+  assert.deepEqual(p.featureList.childNodes.map((item) => item.getAttribute('data-feature')), ['simultaneousDirect', 'diagnostics', 'sharedKeys']);
+  assert.deepEqual(lockText(p.featureList.childNodes[1]), [ko['admin.feature.diagnostics'], ko['policy.featureOff']]);
+  assert.deepEqual(lockText(p.featureList.childNodes[2]), [ko['admin.feature.sharedKeys'], ko['policy.featureOff']]);
+  assert.equal(p.lockList.childNodes.length, 0);
+  assert.equal(p.locks.hidden, false);
+  assert.equal(p.validUntil.textContent, ko['policy.noExpiry']);
+  assert.equal(p.revision.textContent, '1');
+  // Status changes re-render the badge; stale keeps the facts.
+  policy.setStatus('stale');
+  assert.equal(p.status.textContent, ko['policy.status.stale']);
+  assert.equal(p.revision.textContent, '1');
+});
+
+test('the policy view before the first reply, with a too-old app and without a refresh function', async t => {
+  const loading = policyDouble({ policy: null, status: 'loading' });
+  const a = harness({ policy: loading }); t.after(() => teardown(a));
+  const pa = a.view.elements.policy;
+  assert.equal(pa.status.textContent, ko['policy.status.loading']);
+  assert.equal(pa.revision.textContent, ko['policy.none']);
+  assert.equal(pa.publishedAt.textContent, ko['policy.none']);
+  assert.equal(pa.validUntil.textContent, ko['policy.none']);
+  assert.equal(pa.minAppVersion.textContent, ko['policy.none']);
+  assert.equal(pa.appVersion.textContent, APP_VERSION);
+  assert.equal(pa.blocked.getAttribute('data-code'), 'POLICY_LOADING');
+  assert.equal(pa.blockedReason.textContent, ko['error.POLICY_LOADING']);
+  assert.equal(pa.blockedRevision.hidden, true);
+  assert.equal(pa.emergency.parentNode.hidden, true);
+  assert.equal(pa.featureList.childNodes.length, 0, 'no policy: the block reason speaks, features are not itemised');
+  assert.equal(pa.locks.hidden, true, 'app defaults are not locks');
+  assert.deepEqual(a.engine.calls, [], 'no policy, nothing written to the engine');
+  assert.equal(a.view.elements.targetSelect.disabled, false);
+  assert.equal(a.view.elements.locks.targetSelect.hidden, true);
+  // The first reply arrives as an initial change: defaults apply only with a preference store, so the engine keeps its pair here.
+  loading.publish(examplePolicy(), { type: 'initial' });
+  assert.equal(pa.status.textContent, ko['policy.status.ready']);
+  assert.equal(pa.blocked.hidden, true);
+  assert.deepEqual(a.engine.calls, []);
+  assert.deepEqual(lockText(a.view.elements.locks.targetSelect), [ko['policy.source.policyDefault']]);
+
+  const old = policyDouble({ policy: policyWith((doc) => { doc.minAppVersion = '9.0.0'; }), appVersion: '0.7.0' });
+  const b = harness({ policy: old }); t.after(() => teardown(b));
+  const pb = b.view.elements.policy;
+  assert.equal(pb.blocked.getAttribute('data-code'), 'APP_VERSION_TOO_OLD');
+  assert.equal(pb.blockedReason.textContent, ko['error.APP_VERSION_TOO_OLD']);
+  assert.equal(pb.updateHint.hidden, false);
+  assert.equal(pb.updateHint.textContent, ko['policy.blocked.updateHint']);
+  assert.equal(pb.minAppVersion.textContent, '9.0.0');
+
+  const fixed = policyDouble();
+  const c = harness({ policy: { snapshot: fixed.snapshot, subscribe: fixed.subscribe } }); t.after(() => teardown(c));
+  assert.equal(c.view.elements.policy.recheck.disabled, true, 'no refresh path, no recheck');
 });
