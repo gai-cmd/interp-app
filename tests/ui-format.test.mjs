@@ -197,7 +197,9 @@ test('index.html and styles.css are static, i18n-clean and sized for touch and z
   assert.match(html, /<link rel="stylesheet" href="\.\/styles\.css">/);
   assert.match(html, /<script type="module" src="\.\/app\/main\.js"><\/script>/);
   assert.match(html, /<div id="app"/);
-  assert.equal(/<script(?![^>]*type="module")/.test(html), false);
+  // P3-13 (design-p3 §1.10, §4.2): the only classic script is the synchronous appearance boot, placed before the stylesheet.
+  assert.deepEqual([...html.matchAll(/<script(?![^>]*type="module")[^>]*>/g)].map((match) => match[0]), ['<script src="./app/ui/appearance-boot.js">']);
+  assert.ok(html.indexOf('<script src="./app/ui/appearance-boot.js">') < html.indexOf('<link rel="stylesheet"'));
   assert.equal(/https?:\/\//.test(html), false);
   const css = await read('styles.css');
   assert.match(css, /--touch: 44px/);

@@ -8,7 +8,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  ENTRY_FILE, HEADERS_FILE, RELEASES_DIRECTORY, RELEASE_ID_PATTERN,
+  ENTRY_BOOT_FILE, ENTRY_FILE, ENTRY_MODULE_FILE, HEADERS_FILE, RELEASES_DIRECTORY, RELEASE_ID_PATTERN,
   RELEASE_MANIFEST, ROOT_FILES, WORKER_FILE, isVersionedPath, readRelease, shellFor,
 } from './stage-release.mjs';
 
@@ -131,17 +131,34 @@ function checkHeadersFile(text, endpointOrigins) {
   return [...new Set(issues)];
 }
 
-/** Attribute references of the entry HTML; null when the markup is unsafe. */
+const SCRIPT_SRC = /\bsrc\s*=\s*(["'])([^"']*)\1/i;
+// Attributes that would make the boot script asynchronous or a module.
+const NON_SYNC_ATTRIBUTE = /\s(?:type|async|defer|nomodule)(?:\s*=|\s|$)/i;
+
+/**
+ * Attribute references of the entry HTML; null when the markup is unsafe.
+ * The entry may load exactly two scripts (design-p3 §1.10, §4.2): first a
+ * classic synchronous script with a src (the appearance boot), placed before
+ * any stylesheet link so it runs before the first paint, then one module
+ * script. Anything else (inline code, handlers, styles, <base>, extra or
+ * deferred scripts) is rejected. Returns { references, modules, boot }.
+ */
 export function entryReferences(html) {
   const markup = html.replace(/<!--[\s\S]*?-->/g, '');
   if (/<base\b/i.test(markup) || /\son[a-z]+\s*=/i.test(markup)) return null;
   if (/<script\b[^>]*>\s*[^<\s][\s\S]*?<\/script>/i.test(markup)) return null;
   if (/<style\b/i.test(markup) || /\sstyle\s*=/i.test(markup)) return null;
   const scripts = [...markup.matchAll(/<script\b([^>]*)>/gi)];
-  if (scripts.length !== 1 || !/\btype=(["'])module\1/.test(scripts[0][1])) return null;
+  if (scripts.length !== 2) return null;
+  const [bootTag, moduleTag] = scripts;
+  if (NON_SYNC_ATTRIBUTE.test(bootTag[1]) || !/\btype=(["'])module\1/.test(moduleTag[1])) return null;
+  const boot = bootTag[1].match(SCRIPT_SRC)?.[2];
+  const module = moduleTag[1].match(SCRIPT_SRC)?.[2];
+  if (boot === undefined || module === undefined) return null;
+  const stylesheet = markup.search(/<link\b[^>]*\brel\s*=\s*(["'])stylesheet\1/i);
+  if (stylesheet >= 0 && stylesheet < bootTag.index) return null;
   const references = [...markup.matchAll(/\b(?:href|src)\s*=\s*(["'])([^"']*)\1/gi)].map((match) => match[2]);
-  const modules = [...markup.matchAll(/<script\b[^>]*\bsrc\s*=\s*(["'])([^"']*)\1/gi)].map((match) => match[2]);
-  return { references, modules };
+  return { references, modules: [module], boot };
 }
 
 function checkEntry(html, files) {
@@ -159,7 +176,9 @@ function checkEntry(html, files) {
     if (kind.kind === 'versioned') ids.add(kind.id);
   }
   const current = ids.size === 1 ? [...ids][0] : null;
-  if (!current || parsed.modules.length !== 1 || parsed.modules[0] !== `./${RELEASES_DIRECTORY}/${current}/app/main.js`) {
+  // Both scripts have fixed paths inside the current release (architecture.md "릴리스·서비스 워커").
+  if (!current || parsed.modules.length !== 1 || parsed.modules[0] !== `./${RELEASES_DIRECTORY}/${current}/${ENTRY_MODULE_FILE}`
+      || parsed.boot !== `./${RELEASES_DIRECTORY}/${current}/${ENTRY_BOOT_FILE}`) {
     issues.push({ code: 'RELEASE_ENTRY_INVALID', path: ENTRY_FILE });
   }
   return { issues, current };

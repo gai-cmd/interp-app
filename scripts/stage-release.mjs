@@ -31,6 +31,11 @@ export const ROOT_FILES = Object.freeze([ENTRY_FILE, WORKER_FILE, ...ROOT_COPIED
 export const STYLES_FILE = 'styles.css';
 export const APP_DIRECTORY = 'app';
 export const I18N_DIRECTORY = 'app/i18n';
+// The two scripts the entry HTML may load (design-p3 §1.10, §4.2): the
+// synchronous appearance boot before the stylesheet and the app module.
+// Both are versioned files, so the entry rewrite points them at the release.
+export const ENTRY_BOOT_FILE = 'app/ui/appearance-boot.js';
+export const ENTRY_MODULE_FILE = 'app/main.js';
 export function isVersionedPath(path) {
   if (path === STYLES_FILE) return true;
   if (!path.startsWith(`${APP_DIRECTORY}/`)) return false;
@@ -138,6 +143,15 @@ async function writeRootFiles({ root, out, id, versionedFiles }) {
   const written = [];
   const entry = rewriteEntry(await readFile(join(root, ENTRY_FILE), 'utf8'), id);
   if (/\b(?:href|src)=(["'])\.\/(?:app\/|styles\.css)/.test(entry)) throw fail('RELEASE_ENTRY_INVALID');
+  // Every versioned reference of the entry must exist in the selected release.
+  // This matters for --point: an older release staged before a file the
+  // current entry template loads (e.g. the appearance boot) cannot be pointed
+  // at, because the root would otherwise reference a missing file.
+  const prefix = `./${RELEASES_DIRECTORY}/${id}/`;
+  for (const match of entry.matchAll(/\b(?:href|src)=(["'])([^"']*)\1/g)) {
+    const reference = match[2].replace(/[?#].*$/, '');
+    if (reference.startsWith(prefix) && !versionedFiles.includes(reference.slice(prefix.length))) throw fail('RELEASE_ENTRY_INVALID');
+  }
   await writeFile(join(out, ENTRY_FILE), entry);
   written.push(ENTRY_FILE);
   const worker = applyRelease(await readFile(join(root, WORKER_FILE), 'utf8'), { id, shell: shellFor(id, versionedFiles) });

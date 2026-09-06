@@ -56,6 +56,8 @@ const FIXTURE_APP = {
   'app/main.js': "import './ui/shell.js';\nimport './config.js';\n",
   'app/config.js': `export const ENDPOINT_ORIGINS = Object.freeze(${JSON.stringify(ORIGINS)});\n`,
   'app/ui/shell.js': 'export function mount() {}\n',
+  // P3-13: the synchronous appearance boot the entry loads before the stylesheet.
+  'app/ui/appearance-boot.js': '(function () { "use strict"; })();\n',
   'app/i18n/index.js': 'export const SUPPORTED_LANGUAGES = ["ko", "en", "ja"];\n',
   'app/i18n/ko.json': '{"app.name":"통역"}\n',
   'app/i18n/en.json': '{"app.name":"Interpreter"}\n',
@@ -123,6 +125,10 @@ test('stages only the allowlist into a versioned directory and rewrites the entr
   const entry = await readFile(join(out, 'index.html'), 'utf8');
   assert.match(entry, /<link rel="stylesheet" href="\.\/releases\/r1\/styles\.css">/);
   assert.match(entry, /<script type="module" src="\.\/releases\/r1\/app\/main\.js"><\/script>/);
+  // P3-13: the boot keeps its place before the stylesheet and moves to the versioned path.
+  assert.match(entry, /<script src="\.\/releases\/r1\/app\/ui\/appearance-boot\.js"><\/script>\s*<link rel="stylesheet"/);
+  assert.deepEqual(entryReferences(entry).boot, './releases/r1/app/ui/appearance-boot.js');
+  assert.deepEqual(entryReferences(entry).modules, ['./releases/r1/app/main.js']);
   assert.match(entry, /href="\.\/manifest\.ko\.webmanifest"/);
   assert.match(entry, /href="\.\/icons\/icon-192\.png"/);
   assert.doesNotMatch(entry, /(?:href|src)="\.\/(?:app\/|styles\.css)/);
@@ -190,14 +196,42 @@ test('helpers rewrite entries, guard the worker marker and parse headers', async
   const rules = parseHeaders(await readFile(join(repoRoot, '_headers'), 'utf8'));
   assert.deepEqual(rules.map((rule) => rule.path), ['/*', '/', '/index.html', '/sw.js', '/releases/*']);
   assert.equal(parseHeaders('  Orphan: value'), null);
-  assert.deepEqual(entryReferences('<script>alert(1)</script><script type="module" src="./a.js"></script>'), null);
-  assert.deepEqual(entryReferences('<div onclick="x()"></div><script type="module" src="./a.js"></script>'), null);
-  assert.deepEqual(entryReferences('<script src="./a.js"></script>'), null);
-  assert.deepEqual(entryReferences('<script type="module" src="./a.js"></script><script type="module" src="./b.js"></script>'), null);
-  assert.deepEqual(entryReferences('<base href="/"><script type="module" src="./a.js"></script>'), null);
-  assert.deepEqual(entryReferences('<div style="color:red"></div><script type="module" src="./a.js"></script>'), null);
-  assert.deepEqual(entryReferences('<!-- <script>x</script> --><link href="./s.css"><script type="module" src="./a.js"></script>'),
-    { references: ['./s.css', './a.js'], modules: ['./a.js'] });
+  // P3-13 contract: exactly one synchronous classic boot script before the
+  // stylesheet, then exactly one module script. Everything else is rejected.
+  const BOOT = '<script src="./b.js"></script>';
+  const MODULE = '<script type="module" src="./a.js"></script>';
+  const STYLE = '<link rel="stylesheet" href="./s.css">';
+  assert.deepEqual(entryReferences(`<!-- <script>x</script> -->${BOOT}${STYLE}${MODULE}`),
+    { references: ['./b.js', './s.css', './a.js'], modules: ['./a.js'], boot: './b.js' });
+  assert.deepEqual(entryReferences(`${BOOT}<link href="./s.css">${MODULE}`), { references: ['./b.js', './s.css', './a.js'], modules: ['./a.js'], boot: './b.js' });
+  assert.deepEqual(entryReferences(`<script  src='./b.js'></script>${STYLE}<script type='module'  src='./a.js'></script>`),
+    { references: ['./b.js', './s.css', './a.js'], modules: ['./a.js'], boot: './b.js' });
+  const rejected = [
+    `<script>alert(1)</script>${BOOT}${STYLE}${MODULE}`,
+    `<div onclick="x()"></div>${BOOT}${STYLE}${MODULE}`,
+    `<base href="/">${BOOT}${STYLE}${MODULE}`,
+    `<div style="color:red"></div>${BOOT}${STYLE}${MODULE}`,
+    `<style>body{}</style>${BOOT}${STYLE}${MODULE}`,
+    MODULE,                                                       // module only (pre-P3-13 shape)
+    BOOT,                                                         // boot only
+    `${BOOT}${STYLE}`,                                            // no module
+    `${STYLE}${BOOT}${MODULE}`,                                   // boot after the stylesheet
+    `${MODULE}${STYLE}${BOOT}`,                                   // module before the boot
+    `${BOOT}${STYLE}${MODULE}${MODULE}`,                          // extra module
+    `${BOOT}${BOOT}${STYLE}${MODULE}`,                            // extra classic script
+    `${BOOT}${STYLE}${MODULE}<script src="./c.js"></script>`,     // trailing classic script
+    `<script async src="./b.js"></script>${STYLE}${MODULE}`,      // async boot
+    `<script defer src="./b.js"></script>${STYLE}${MODULE}`,      // deferred boot
+    `<script src="./b.js" defer></script>${STYLE}${MODULE}`,      // deferred boot, attribute last
+    `<script type="text/javascript" src="./b.js"></script>${STYLE}${MODULE}`, // typed boot
+    `<script type="module" src="./b.js"></script>${STYLE}${MODULE}`, // two modules
+    `<script nomodule src="./b.js"></script>${STYLE}${MODULE}`,   // nomodule boot
+    `<script></script>${STYLE}${MODULE}`,                         // boot without src
+    `<script src="./b.js">x = 1</script>${STYLE}${MODULE}`,       // boot with inline body
+    `${BOOT}${STYLE}<script type="module"></script>`,             // module without src
+    `${BOOT}${STYLE}<script src="./a.js"></script>`,              // second script not a module
+  ];
+  for (const html of rejected) assert.equal(entryReferences(html), null, html);
 });
 
 test('checkCsp requires the exact directive set and only registered endpoint origins', () => {
@@ -232,6 +266,8 @@ test('checkRelease rejects unexpected files, secrets, header drift, incomplete r
   const worker = await readFile(join(good, 'sw.js'), 'utf8');
   const entry = await readFile(join(good, 'index.html'), 'utf8');
   const release = readRelease(worker);
+  const BOOT_TAG = '<script src="./releases/r1/app/ui/appearance-boot.js"></script>';
+  assert.ok(entry.includes(BOOT_TAG));
   const cases = [
     ['docs copied', async (out) => write(out, 'docs/design.md', '# x'), [['RELEASE_UNEXPECTED_FILE', 'docs/design.md']]],
     ['tests copied', async (out) => write(out, 'tests/x.test.mjs', ''), [['RELEASE_UNEXPECTED_FILE', 'tests/x.test.mjs']]],
@@ -267,12 +303,23 @@ test('checkRelease rejects unexpected files, secrets, header drift, incomplete r
     ['worker without marker', async (out) => write(out, 'sw.js', worker.replace('// @release', '')), [['RELEASE_SW_INVALID', 'sw.js']]],
     ['dev worker shipped', async (out) => write(out, 'sw.js', await readFile(join(repoRoot, 'sw.js'))), [['RELEASE_SW_INVALID', 'sw.js']]],
     ['entry inline script', async (out) => write(out, 'index.html', entry.replace('</body>', '<script>window.x = 1</script></body>')), [['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    // P3-13: the boot script is the only classic script, at a fixed path, before the stylesheet.
+    ['entry without boot script', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, '')), [['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    ['entry boot after stylesheet', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, '').replace('</head>', `${BOOT_TAG}</head>`)), [['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    ['entry boot deferred', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, BOOT_TAG.replace('<script ', '<script defer '))), [['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    ['entry boot as module', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, BOOT_TAG.replace('<script ', '<script type="module" '))), [['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    ['entry extra classic script', async (out) => write(out, 'index.html', entry.replace('</body>', '<script src="./releases/r1/app/ui/shell.js"></script></body>')), [['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    ['entry boot at another versioned path', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, '<script src="./releases/r1/app/ui/shell.js"></script>')), [['RELEASE_ENTRY_INVALID', 'index.html']]],
+    ['entry boot from the root', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, '<script src="./app/ui/appearance-boot.js"></script>')), [['RELEASE_ENTRY_INVALID', 'index.html']]],
+    ['entry boot from another release', async (out) => write(out, 'index.html', entry.replace(BOOT_TAG, BOOT_TAG.replace('releases/r1/', 'releases/r0/'))), [['RELEASE_MISSING_FILE', 'releases/r0/app/ui/appearance-boot.js'], ['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+    ['boot file removed from release', async (out) => rm(join(out, 'releases/r1/app/ui/appearance-boot.js')), [['RELEASE_MISSING_FILE', 'releases/r1/app/ui/appearance-boot.js'], ['RELEASE_MANIFEST_INVALID', 'releases/r1/release.json'], ['RELEASE_SW_INVALID', 'sw.js']]],
+    ['boot file altered', async (out) => write(out, 'releases/r1/app/ui/appearance-boot.js', 'window.x = 1;'), [['RELEASE_HASH_MISMATCH', 'releases/r1/app/ui/appearance-boot.js']]],
     ['entry external stylesheet', async (out) => write(out, 'index.html', entry.replace('./releases/r1/styles.css', 'https://cdn.example.com/styles.css')), [['RELEASE_ENTRY_INVALID', 'index.html']]],
     ['entry absolute path', async (out) => write(out, 'index.html', entry.replace('./releases/r1/styles.css', '/releases/r1/styles.css')), [['RELEASE_ENTRY_INVALID', 'index.html']]],
     ['entry references missing module', async (out) => write(out, 'index.html', entry.replace('</body>', '<link rel="modulepreload" href="./releases/r1/app/missing.js"></body>')), [['RELEASE_MISSING_FILE', 'releases/r1/app/missing.js']]],
     ['entry references release.json', async (out) => write(out, 'index.html', entry.replace('</body>', '<link rel="prefetch" href="./releases/r1/release.json"></body>')), [['RELEASE_ENTRY_INVALID', 'index.html']]],
     ['entry points at unknown release', async (out) => write(out, 'index.html', entry.replaceAll('releases/r1/', 'releases/r7/')),
-      [['RELEASE_MISSING_FILE', 'releases/r7/styles.css'], ['RELEASE_MISSING_FILE', 'releases/r7/app/main.js'], ['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
+      [['RELEASE_MISSING_FILE', 'releases/r7/styles.css'], ['RELEASE_MISSING_FILE', 'releases/r7/app/ui/appearance-boot.js'], ['RELEASE_MISSING_FILE', 'releases/r7/app/main.js'], ['RELEASE_ENTRY_INVALID', 'index.html'], ['RELEASE_SW_INVALID', 'sw.js'], ['RELEASE_CSP_MISMATCH', '_headers']]],
     ['release manifest missing', async (out) => rm(join(out, 'releases/r1/release.json')), [['RELEASE_MANIFEST_INVALID', 'releases/r1/release.json']]],
     ['release manifest for another id', async (out) => write(out, 'releases/r1/release.json', JSON.stringify({ id: 'r2', files: {} })), [['RELEASE_MANIFEST_INVALID', 'releases/r1/release.json']]],
     ['versioned file removed', async (out) => rm(join(out, 'releases/r1/app/ui/shell.js')), [['RELEASE_MANIFEST_INVALID', 'releases/r1/release.json'], ['RELEASE_SW_INVALID', 'sw.js']]],
@@ -323,6 +370,38 @@ test('multiple releases coexist; --point moves the entry files back without dele
   await assert.rejects(pointRelease({ id: 'bad id', out, root }), { message: 'RELEASE_ID_INVALID' });
   await write(out, 'releases/r1/release.json', JSON.stringify({ id: 'r1', files: { '../escape.js': 'x' } }));
   await assert.rejects(pointRelease({ id: 'r1', out, root }), { message: 'RELEASE_MANIFEST_INVALID' });
+});
+
+// P3-13: the root entry is rewritten from the current template, so a release
+// staged before the appearance boot existed cannot be pointed at again; the
+// root would reference a file that release does not carry. Staging likewise
+// refuses a template that loads a file missing from the source tree.
+test('staging and --point refuse an entry that references files the release does not carry', async (t) => {
+  const directory = await temp(t);
+  const root = await fixtureSource(directory);
+  const out = join(directory, 'out');
+  await stageRelease({ id: 'old', out, root });
+  await stageRelease({ id: 'new', out, root });
+  // Turn "old" into a pre-P3-13 release: no boot file, manifest without it.
+  await rm(join(out, 'releases/old/app/ui/appearance-boot.js'));
+  const manifest = JSON.parse(await readFile(join(out, 'releases/old/release.json'), 'utf8'));
+  delete manifest.files['app/ui/appearance-boot.js'];
+  await write(out, 'releases/old/release.json', JSON.stringify(manifest));
+  const before = await listTree(out);
+  const rootEntry = await readFile(join(out, 'index.html'), 'utf8');
+  await assert.rejects(pointRelease({ id: 'old', out, root }), { message: 'RELEASE_ENTRY_INVALID' });
+  assert.deepEqual(await listTree(out), before, 'nothing was written');
+  assert.equal(await readFile(join(out, 'index.html'), 'utf8'), rootEntry, 'the root entry still points at "new"');
+  assert.equal((await checkRelease({ dir: out })).ok, true);
+  await pointRelease({ id: 'new', out, root });
+  assert.equal((await checkRelease({ dir: out })).ok, true);
+
+  await rm(join(root, 'app/ui/appearance-boot.js'));
+  await assert.rejects(stageRelease({ id: 'no-boot', out, root }), { message: 'RELEASE_ENTRY_INVALID' });
+  const source = await readFile(join(repoRoot, 'index.html'), 'utf8');
+  await write(root, 'app/ui/appearance-boot.js', FIXTURE_APP['app/ui/appearance-boot.js']);
+  await write(root, 'index.html', source.replace('./app/main.js', './app/missing.js'));
+  await assert.rejects(stageRelease({ id: 'no-main', out, root }), { message: 'RELEASE_ENTRY_INVALID' });
 });
 
 test('the repository stages without docs, tests, scripts, tools, git metadata or secrets', async (t) => {
@@ -498,7 +577,7 @@ test('P2 JS graph and stream worklet resolve inside the versioned SW shell', asy
   }
   const capture = await readFile(join(out, `releases/${id}/app/audio/stream-capture.js`), 'utf8');
   assert.match(capture, /addModule\(new URL\('\.\/capture-worklet\.js', import\.meta\.url\)\)/);
-  for (const file of ['app/hub/config.js', 'app/audio/stream-capture.js', 'app/audio/stream-player.js', 'app/i18n/boot-fallback.js']) {
+  for (const file of ['app/hub/config.js', 'app/audio/stream-capture.js', 'app/audio/stream-player.js', 'app/i18n/boot-fallback.js', 'app/ui/appearance-boot.js']) {
     assert.ok(cached.has(new URL(file, base).href), file);
   }
   await rm(join(out, `releases/${id}/app/audio/capture-worklet.js`));
