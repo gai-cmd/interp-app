@@ -56,6 +56,7 @@ import { discoverLiveModels } from './providers/gemini/model-discovery.js';
 import { createMicrophonePermission } from './audio/permissions.js';
 import { createAudioDevices } from './audio/devices.js';
 import { createOutputDevice } from './audio/output-device.js';
+import { createUsage } from './engine/usage.js';
 import { createAudioSettings } from './ui/audio-settings.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
@@ -210,7 +211,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   const displayViews = [];
   const keyGuides = [];
-  let audioSettings = null, audioDevices = null, outputDevice = null;
+  let audioSettings = null, audioDevices = null, outputDevice = null, usage = null;
   // Set once the key guide cards exist; the simultaneous card follows the tab.
   let onTabChanged = null;
   let audioContext = null, closing = null;
@@ -345,8 +346,12 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let getAudioContext, notify;
   try {
     // 3. Configuration; storage is offered only when it is actually usable.
+    // P3-30: real call spans reach the estimate through the router. The
+    // observer receives a span id, a capability, a model and a key source —
+    // never a credential, request text or audio.
+    usage = createUsage({ now });
     config = createAppConfig({ fetch: fetcher, WebSocket: win.WebSocket, Blob: win.Blob, storage: storage ?? undefined, ...timing,
-      policy: policyGuard });
+      policy: policyGuard, usage });
     // 3b. Site policy: one fixed policy.json at the deployed root (§1.3), the
     // personal-choice store (P3-05) and the runtime that gates execution.
     policyClient = createPolicyClient({ fetch: fetcher, location: win.location, now, ...timing,
@@ -789,6 +794,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     audioSettings?.destroy(); audioSettings = null;
     audioDevices?.destroy(); audioDevices = null;
     outputDevice?.destroy(); outputDevice = null;
+    usage?.close(); usage = null;
     micPermission?.destroy(); micPermission = null;
     for (const guide of keyGuides.splice(0)) attempt(() => guide.destroy());
     for (const view of displayViews.splice(0)) attempt(() => view.destroy());
@@ -821,7 +827,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
 
   return Object.freeze({
     i18n, config, engine: gatedEngine, capture, voiceEngine, shell, diagnostics: gatedDiagnostics, settingsView, controls, pwa, getAudioContext,
-    listenEngines, activity, stopWork, policy: policyRuntime, policyClient, preferences,
+    listenEngines, activity, stopWork, policy: policyRuntime, policyClient, preferences, usage,
     // P3-11: live-control state and the event link the simultaneous screen uses.
     hubControl, eventLink,
     // P3-14: the display-settings runtime (the display sheet and settings section drive it).

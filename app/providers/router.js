@@ -36,9 +36,37 @@ function abortable(operation, signal, onLate = () => {}) {
  * any credential is resolved. PolicyErrors are rethrown as they are, never
  * normalized into provider codes; without a policy guard nothing changes.
  */
-export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
+/**
+ * P3-30: usage observation. `usage` is createUsage()'s result, or any object
+ * with begin/end. Exactly four facts leave the router — a span id, the
+ * capability, the model actually used and the key source — and nothing else:
+ * no credential, no reference, no request text, no audio, no provider reply.
+ * The span covers the real call, so a streaming session is measured until it
+ * closes rather than for as long as the page was open, and a hub transport is
+ * marked unbillable because the audience is receiving someone else's broadcast.
+ */
+let spanSerial = 0;
+const nextSpanId = () => `span-${++spanSerial}`;
+
+export function createRouter({ registry, getCredentialRef, hub, policy, usage = null } = {}) {
   if (!registry || typeof getCredentialRef !== 'function') throw new ProviderError('INVALID_REQUEST');
   if (policy !== undefined && policy !== null && typeof policy.assertRoute !== 'function') throw new ProviderError('INVALID_REQUEST');
+  if (usage !== null && usage !== undefined && (typeof usage.begin !== 'function' || typeof usage.end !== 'function')) {
+    throw new ProviderError('INVALID_REQUEST');
+  }
+  const observe = { begin: () => null, end: () => {} };
+  if (usage) {
+    observe.begin = (capability, model, keySource, transport) => {
+      const id = nextSpanId();
+      // A model the caller did not name is the adapter's default; recording the
+      // capability alone would make the estimate unattributable, so the
+      // registered default is used and is provider data either way.
+      return usage.begin({ id, capability, model, scope: keySource === 'shared' ? 'shared' : 'personal',
+        billable: transport !== 'hub' }) ? id : null;
+    };
+    observe.end = (id, failed) => { if (id) attemptEnd(() => usage.end(id, { failed })); };
+  }
+  const attemptEnd = (fn) => { try { return fn(); } catch { return undefined; } };
   const isPolicyError = (error) => error !== null && typeof error === 'object' && error.name === 'PolicyError' && typeof error.code === 'string';
 
   async function call(capability, request, context = {}) {
@@ -47,6 +75,9 @@ export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
     let keepSession = false;
     let stopSession = () => {};
     let cancelWork = () => {};
+    let span = null, spanEnded = false;
+    // One end per span: a close, a cancel and an abort can all arrive.
+    const endSpan = (failed) => { if (span && !spanEnded) { spanEnded = true; observe.end(span, failed); } };
     try {
       if (!CAPABILITIES.includes(capability)) throw new ProviderError('CAPABILITY_UNSUPPORTED');
       const { descriptor, methods } = registry.get(context.providerId);
@@ -116,6 +147,7 @@ export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
       const close = () => {
         if (closing) return closing;
         ended = true;
+        endSpan(false);
         controller.abort();
         detach();
         closing = Promise.resolve().then(() => {
@@ -126,6 +158,9 @@ export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
       stopSession = () => { if (session) close().catch(() => {}); };
       const adapterContext = Object.freeze({ ...ids, ...address, signal,
         credentialRef: credential.reference, budget: context.budget, onEvent: emit });
+      // The span starts at the actual call, not at the request being built.
+      const model = adapterRequest.model ?? (cap.models.length ? cap.models[0] : capability);
+      span = observe.begin(capability, model, keySource, transport);
       const result = await abortable(() => {
         context.budget.consume({ ...address, capability, signal });
         assertActive(signal);
@@ -135,7 +170,8 @@ export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
       }, signal, streaming ? (late) => late?.close() : undefined);
       if (streaming) session = result;
       assertActive(signal);
-      if (!streaming) return result;
+      // A one-shot call is over the moment it returns.
+      if (!streaming) { endSpan(false); return result; }
       const names = capability === 'live' ? ['sendAudio', 'finishInput'] : ['speak', 'cancel'];
       if (!session || [...names, 'close'].some((name) => typeof session[name] !== 'function')) {
         await close();
@@ -162,6 +198,7 @@ export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
     } catch (error) {
       cancelWork();
       stopSession();
+      endSpan(true);
       throw isPolicyError(error) ? error : normalizeError(error, normalize);
     } finally {
       if (!keepSession) detach();
