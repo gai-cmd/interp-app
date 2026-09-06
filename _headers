@@ -21,6 +21,20 @@
 /sw.js
   Cache-Control: no-cache
 
+# P3-35: the site policy is read fresh on every start (§1.5). It is deployed at
+# the root but is not a shell file, and the service worker never caches it, so
+# no-store here matches what the app already asks for on the request side.
+/policy.json
+  Cache-Control: no-store
+
+# The administrator console entry points at the current release like index.html
+# and must be revalidated too; a cached console would show a policy that is no
+# longer deployed.
+/admin/
+  Cache-Control: no-cache
+/admin/index.html
+  Cache-Control: no-cache
+
 # Release directories are never overwritten, so their files are immutable.
 /releases/*
   Cache-Control: public, max-age=31536000, immutable

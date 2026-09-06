@@ -94,7 +94,13 @@ export async function checkI18n({ root = rootDirectory } = {}) {
     )));
     const issues = validateDictionaries(dictionaries);
     if (issues.length) return { ok: false, issues };
+    // P3-32: the administrator console uses the same dictionaries, so its
+    // sources are scanned too — app/admin/ comes with app/, and admin/*.html
+    // is added here so no console string can be hard-coded.
     const files = await sourceFiles(resolve(root, 'app'));
+    for (const entry of await readdir(resolve(root, 'admin'), { withFileTypes: true }).catch(() => [])) {
+      if (entry.isFile() && entry.name.endsWith('.html')) files.push(resolve(root, 'admin', entry.name));
+    }
     for (const entry of await readdir(root, { withFileTypes: true })) {
       if (entry.isFile() && entry.name.endsWith('.html')) files.push(resolve(root, entry.name));
     }

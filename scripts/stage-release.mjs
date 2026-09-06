@@ -23,8 +23,20 @@ export const WORKER_FILE = 'sw.js';
 export const HEADERS_FILE = '_headers';
 export const MANIFEST_FILES = Object.freeze(SUPPORTED_LANGUAGES.map((language) => `manifest.${language}.webmanifest`));
 export const ICON_FILES = Object.freeze(['icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon-180.png', 'icons/favicon-32.png', 'icons/favicon-16.png', 'icons/favicon.ico', 'icons/qr-site.png']);
+// P3-35: the site policy is deployed at the root, but it is NOT part of the
+// application shell. It is read fresh on every start (§1.5 no-store), so it
+// must never be precached — shellFor() below excludes it deliberately, and a
+// rollback must not overwrite it, because the policy in force is the one the
+// administrator published, not the one that shipped with an older build.
+export const POLICY_FILE = 'policy.json';
+// The administrator console entry. Copied like the app entry and rewritten to
+// its release, but kept out of the shell as well: a console that is served from
+// a cache after a policy change is a console showing the wrong thing.
+export const ADMIN_ENTRY_FILE = 'admin/index.html';
 export const ROOT_COPIED_FILES = Object.freeze([HEADERS_FILE, ...MANIFEST_FILES, ...ICON_FILES]);
-export const ROOT_FILES = Object.freeze([ENTRY_FILE, WORKER_FILE, ...ROOT_COPIED_FILES]);
+/** Root files that are deployed but never precached and never rolled back. */
+export const UNCACHED_ROOT_FILES = Object.freeze([POLICY_FILE, ADMIN_ENTRY_FILE]);
+export const ROOT_FILES = Object.freeze([ENTRY_FILE, WORKER_FILE, ...ROOT_COPIED_FILES, ...UNCACHED_ROOT_FILES]);
 
 // Versioned files live under releases/<id>/: the stylesheet and the app
 // modules plus the i18n dictionaries loaded by app/i18n/index.js.
@@ -105,8 +117,17 @@ export function rewriteEntry(html, id) {
 
 /** Shell URLs (relative to the worker) precached for a release. */
 export function shellFor(id, versionedFiles) {
+  // policy.json and admin/index.html are deployed but never listed here: the
+  // policy is network-only by contract, and a cached console would show a
+  // policy that is no longer the deployed one.
   return ['./', ...MANIFEST_FILES.map((file) => `./${file}`), ...ICON_FILES.map((file) => `./${file}`),
     ...versionedFiles.map((file) => `./${RELEASES_DIRECTORY}/${id}/${file}`)];
+}
+
+/** The console entry sits one directory down, so its references start with ../ */
+export function rewriteAdminEntry(html, id) {
+  return html.replace(/(?:\.\.\/)(app\/[\w./-]+|styles\.css)/g,
+    (match, path) => `../${RELEASES_DIRECTORY}/${id}/${path}`);
 }
 
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
@@ -137,7 +158,7 @@ async function releaseHeaders(template, releaseDir) {
     () => `connect-src 'self' ${[...new Set(origins)].join(' ')}`));
 }
 
-async function writeRootFiles({ root, out, id, versionedFiles }) {
+async function writeRootFiles({ root, out, id, versionedFiles, keepPolicy = false }) {
   const headers = await releaseHeaders(await readFile(join(root, HEADERS_FILE), 'utf8'),
     join(out, RELEASES_DIRECTORY, id));
   const written = [];
@@ -162,6 +183,24 @@ async function writeRootFiles({ root, out, id, versionedFiles }) {
     await assertRegularFile(source);
     await mkdir(dirname(join(out, file)), { recursive: true });
     await writeFile(join(out, file), file === HEADERS_FILE ? headers : await readFile(source));
+    written.push(file);
+  }
+  // P3-35: the policy and the administrator entry ship with the release but are
+  // not shell files. The console entry is rewritten to this release the same way
+  // index.html is, so its module and stylesheet come from the versioned copy.
+  for (const file of UNCACHED_ROOT_FILES) {
+    // A rollback moves the entry files back but must NOT restore the policy
+    // that shipped with the older build: the policy in force is the one the
+    // administrator published, and re-deploying an old one would silently undo
+    // an emergency stop or a feature change.
+    if (keepPolicy && file === POLICY_FILE) continue;
+    const source = join(root, file);
+    await assertRegularFile(source);
+    await mkdir(dirname(join(out, file)), { recursive: true });
+    const body = file === ADMIN_ENTRY_FILE
+      ? rewriteAdminEntry(await readFile(source, 'utf8'), id)
+      : await readFile(source);
+    await writeFile(join(out, file), body);
     written.push(file);
   }
   return written;
@@ -233,7 +272,7 @@ export async function pointRelease({ id, out, root = projectRoot } = {}) {
     if (!SAFE_PATH.test(file) || !isVersionedPath(file)) throw fail('RELEASE_MANIFEST_INVALID');
     await assertRegularFile(join(outPath, RELEASES_DIRECTORY, id, file));
   }
-  const rootFiles = await writeRootFiles({ root: rootPath, out: outPath, id, versionedFiles });
+  const rootFiles = await writeRootFiles({ root: rootPath, out: outPath, id, versionedFiles, keepPolicy: true });
   return Object.freeze({ id, out: outPath, files: rootFiles });
 }
 

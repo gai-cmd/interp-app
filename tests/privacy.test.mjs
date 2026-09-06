@@ -463,3 +463,32 @@ test('P3-22 the key store exposes a length and a personal-only reveal, and nothi
   const sharedShape = metadata.slice(metadata.indexOf('usageEndsAt'));
   assert.equal(/length/.test(sharedShape), false, 'a shared key never reports its length');
 });
+
+// P3-34: the administrator console handles a shared key. It is the one place in
+// the repository that builds a credential-bearing link, so the boundaries around
+// it are asserted here with the rest of the secret handling.
+test('P3-34 the policy export carries no key, and the generator is the only place one travels', async () => {
+  const editorSource = await readFile(join(repoRoot, 'app/admin/policy-editor.js'), 'utf8');
+  const exportSource = await readFile(join(repoRoot, 'app/admin/export.js'), 'utf8');
+  const generator = await readFile(join(repoRoot, 'app/admin/shared-payload.js'), 'utf8');
+
+  // The editor refuses a file with a credential-shaped field rather than
+  // carrying it into a draft that could then be exported.
+  assert.match(editorSource, /FORBIDDEN_KEYS/);
+  assert.match(editorSource, /loadError = 'POLICY_CREDENTIAL'/);
+  // Neither the editor nor the export knows about the generator.
+  for (const [name, source] of [['policy-editor.js', editorSource], ['export.js', exportSource]]) {
+    assert.equal(source.includes('shared-payload'), false, `${name} does not reach the key generator`);
+  }
+  // The generator writes to nothing that survives the page.
+  const code = generator.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  for (const forbidden of ['localStorage', 'sessionStorage', 'indexedDB', 'fetch(', 'console.']) {
+    assert.equal(code.includes(forbidden), false, `the generator must not use ${forbidden}`);
+  }
+  // The administrator console is not shipped a key by the app either: it never
+  // reads the app's key store.
+  for (const file of ['app/admin/main.js', 'app/admin/boot.js']) {
+    const source = await readFile(join(repoRoot, file), 'utf8');
+    assert.equal(source.includes('key-store'), false, `${file} does not read the app's keys`);
+  }
+});

@@ -12,7 +12,8 @@ import { REGISTERED_HUBS as PROTOCOL_HUBS, createHubProtocol } from '../app/hub/
 import { boot, visible } from './fixtures/scenarios.mjs';
 import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import {
-  ICON_FILES, MANIFEST_FILES, ROOT_FILES, applyRelease, collectVersionedFiles, pointRelease, readRelease,
+  ICON_FILES, MANIFEST_FILES, ROOT_FILES, UNCACHED_ROOT_FILES, applyRelease, collectVersionedFiles,
+  pointRelease, readRelease,
   rewriteEntry, shellFor, stageRelease,
 } from '../scripts/stage-release.mjs';
 import { checkCsp, checkRelease, classifyPath, entryReferences, parseHeaders } from '../scripts/check-release.mjs';
@@ -68,7 +69,8 @@ const FIXTURE_APP = {
 // plus files that must never reach a release.
 async function fixtureSource(directory) {
   const root = join(directory, 'src');
-  for (const file of ['index.html', 'sw.js', '_headers', 'styles.css', ...ICON_FILES]) {
+  for (const file of ['index.html', 'sw.js', '_headers', 'styles.css', 'policy.json', 'admin/index.html',
+    ...ICON_FILES]) {
     await write(root, file, await readFile(join(repoRoot, file)));
   }
   for (const language of SUPPORTED_LANGUAGES) {
@@ -194,7 +196,14 @@ test('helpers rewrite entries, guard the worker marker and parse headers', async
     assert.equal(classifyPath(path), null, path);
   }
   const rules = parseHeaders(await readFile(join(repoRoot, '_headers'), 'utf8'));
-  assert.deepEqual(rules.map((rule) => rule.path), ['/*', '/', '/index.html', '/sw.js', '/releases/*']);
+  // P3-35 added the policy (never cached) and the administrator entry.
+  assert.deepEqual(rules.map((rule) => rule.path),
+    ['/*', '/', '/index.html', '/sw.js', '/policy.json', '/admin/', '/admin/index.html', '/releases/*']);
+  const policyRule = rules.find((rule) => rule.path === '/policy.json');
+  assert.match(policyRule.headers.get('cache-control'), /no-store/, 'the policy is read fresh on every start');
+  for (const path of ['/admin/', '/admin/index.html']) {
+    assert.match(rules.find((rule) => rule.path === path).headers.get('cache-control'), /no-cache/, path);
+  }
   assert.equal(parseHeaders('  Orphan: value'), null);
   // P3-13 contract: exactly one synchronous classic boot script before the
   // stylesheet, then exactly one module script. Everything else is rejected.
@@ -356,7 +365,10 @@ test('multiple releases coexist; --point moves the entry files back without dele
   const before = await listTree(out);
 
   const pointed = await pointRelease({ id: 'r1', out, root });
-  assert.deepEqual([...pointed.files].sort(), [...ROOT_FILES].sort());
+  // P3-35: a rollback writes every root file except the policy, which belongs
+  // to the deployment and is not restored from an older build.
+  assert.deepEqual([...pointed.files].sort(),
+    ROOT_FILES.filter((file) => file !== 'policy.json').sort());
   assert.deepEqual(await listTree(out), before, 'no release file was added or removed');
   result = await checkRelease({ dir: out });
   assert.deepEqual([result.ok, result.releases, result.current], [true, ['r1', 'r2'], 'r1']);
@@ -473,7 +485,8 @@ test('CLI stages and checks with fixed codes and never echoes argument contents'
   assert.equal(run('stage-release.mjs', ['--id', 'cli-1', '--out', join(directory, 'out')]).stderr, 'RELEASE_EXISTS\n');
   const pointed = run('stage-release.mjs', ['--point', 'cli-1', '--out', join(directory, 'out')]);
   assert.equal(pointed.status, 0, pointed.stderr);
-  assert.equal(pointed.stdout, `RELEASE_POINTED id=cli-1 files=${ROOT_FILES.length}\n`);
+  // One fewer than ROOT_FILES: a rollback never rewrites the deployed policy.
+  assert.equal(pointed.stdout, `RELEASE_POINTED id=cli-1 files=${ROOT_FILES.length - 1}\n`);
 
   for (const args of [[], ['--help'], ['a', 'b']]) {
     const child = run('check-release.mjs', args);
@@ -588,4 +601,54 @@ test('staging rejects endpoint and origin declaration drift', async (t) => {
   const directory = await temp(t), root = await fixtureSource(directory);
   await write(root, 'app/config.js', `${FIXTURE_APP['app/config.js']}\nexport const ENDPOINT_ALLOWLIST = ['wss://venue.example.test/ws'];\n`);
   await assert.rejects(stageRelease({ id: 'drift', out: join(directory, 'out'), root }), { message: 'RELEASE_CONFIG_INVALID' });
+});
+
+test('P3-35 the policy and the console ship with a release but are never precached', async (t) => {
+  const directory = await temp(t);
+  const root = await fixtureSource(directory);
+  const out = join(directory, 'out');
+  const staged = await stageRelease({ id: 'p35', out, root, now: () => new Date('2026-09-06T00:00:00Z') });
+
+  // Both are deployed at the root.
+  assert.ok(staged.files.includes('policy.json'));
+  assert.ok(staged.files.includes('admin/index.html'));
+  assert.deepEqual([...UNCACHED_ROOT_FILES], ['policy.json', 'admin/index.html']);
+
+  // Neither is in the service worker's shell: the policy is read fresh on every
+  // start, and a cached console would show a policy that is no longer deployed.
+  const worker = await readFile(join(out, 'sw.js'), 'utf8');
+  const release = JSON.parse(worker.match(/const RELEASE = (\{[\s\S]*?\}); \/\/ @release/)[1]);
+  assert.equal(release.shell.some((path) => path.includes('policy.json')), false, 'the policy is never precached');
+  assert.equal(release.shell.some((path) => path.includes('admin/')), false, 'the console entry is never precached');
+  assert.deepEqual(shellFor('p35', []).filter((path) => /policy|admin/.test(path)), []);
+
+  // The console entry points at its own release, not at the repository paths.
+  const adminEntry = await readFile(join(out, 'admin/index.html'), 'utf8');
+  assert.match(adminEntry, /\.\.\/releases\/p35\/app\/admin\/boot\.js/);
+  assert.match(adminEntry, /\.\.\/releases\/p35\/styles\.css/);
+  assert.equal(/\.\.\/app\//.test(adminEntry), false, 'no unversioned app reference survives');
+});
+
+test('P3-35 a rollback moves the entry files and leaves the deployed policy alone', async (t) => {
+  const directory = await temp(t);
+  const root = await fixtureSource(directory);
+  const out = join(directory, 'out');
+  await stageRelease({ id: 'old', out, root, now: () => new Date('2026-09-05T00:00:00Z') });
+  await stageRelease({ id: 'new', out, root, now: () => new Date('2026-09-06T00:00:00Z') });
+
+  // The administrator publishes a newer policy to the deployment root.
+  const published = `${JSON.stringify({ published: true }, null, 2)}\n`;
+  await writeFile(join(out, 'policy.json'), published);
+
+  // Rolling back re-points the entry files at the older release. It must not
+  // restore the policy that shipped with that build: the policy in force is
+  // the one the administrator published, and re-deploying an old one would
+  // silently undo an emergency stop or a feature change.
+  const pointed = await pointRelease({ id: 'old', out, root });
+  assert.equal(pointed.files.includes('policy.json'), false, 'a rollback does not write the policy');
+  assert.equal(await readFile(join(out, 'policy.json'), 'utf8'), published, 'the published policy survives');
+  // The console entry does follow the rollback, so it matches the app.
+  assert.ok(pointed.files.includes('admin/index.html'));
+  assert.match(await readFile(join(out, 'admin/index.html'), 'utf8'), /releases\/old\//);
+  assert.match(await readFile(join(out, 'index.html'), 'utf8'), /releases\/old\//);
 });
