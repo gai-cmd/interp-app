@@ -203,7 +203,9 @@ test('no logging and no dynamic code: shipped sources never touch console, eval,
     const code = stripComments(await readFile(join(repoRoot, file), 'utf8'));
     for (const pattern of forbidden) {
       // main.js reads localStorage once, through usableStorage, and hands it to the key store.
-      if (file === 'app/main.js' && pattern.source === '\\blocalStorage\\b') continue;
+      // The P3-13 appearance boot is a classic pre-paint script and reads the three display keys itself
+      // (tests/appearance-boot.test.mjs proves it reads nothing else and never writes).
+      if (['app/main.js', 'app/ui/appearance-boot.js'].includes(file) && pattern.source === '\\blocalStorage\\b') continue;
       assert.equal(pattern.test(code), false, `${file} matches ${pattern}`);
     }
     for (const match of code.matchAll(/\b(?:https?|wss?):\/\/[^\s'"`)]+/g)) {
