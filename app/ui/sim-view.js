@@ -9,12 +9,18 @@
 // code is known); a missing or rejected key offers "open settings"; a manual
 // "reopen session" button replaces the running Live session; the status line
 // counts automatic session replacements while the engine reconnects.
+// P3-11 (design-p3 §1.8): venue live control. The app hands its event link over
+// with setHubControl(link) after mount (like setStorage). The section offers
+// explicit event participation for direct listening (event, venue, room code,
+// join/leave) and shows the negotiated control state for both modes:
+// supported / unsupported / stopped / lost, the control revision and the
+// venue's notice text. Joining never starts the microphone, a key or speech.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { normalizeError } from '../providers/contract.js';
 import { LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder } from './seq-view.js';
 import { createCaptionBoard } from './caption-board.js';
-import { UNKNOWN_KEY, errorCodeKey, levelPercent } from './errors.js';
+import { UNKNOWN_KEY, errorCodeKey, levelPercent, resolveKey } from './errors.js';
 
 export const VOICE_GENDER_STORAGE_KEY = 'interp-app.ui.v1.voiceGender';
 // Failure codes whose remedy is the key entry in settings.
@@ -51,6 +57,11 @@ export function readVoiceGender(storage) {
  * needs no new wiring; the app hands its usable storage over with
  * setStorage(storage) after mount (only app/main.js reads localStorage).
  * onOpenSettings() is offered as an action when the failure is a key problem.
+ * setHubControl(link) (P3-11) receives the app's event link: { snapshot(),
+ * subscribe(fn), join({ eventId, hubId, roomCode }), leave() } whose snapshot is
+ * { enabled, controlOnlyAllowed, allowedHubIds, events: [{ id, label, eventName,
+ * status }], joined: { eventId, hubId } | null, connection, errorCode, control }.
+ * Event labels are policy text shown as text; every other string is a key.
  */
 export function createSimView({ root, i18n, engines, engine, hubs = [], startDirect,
   targetLanguage = 'ja', onSequential, onOpenSettings, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
@@ -113,6 +124,29 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const key of ['sim.sourceAuto', 'sim.headphones', 'sim.seatAudio', 'sim.personalKey', 'sim.liveVoice']) node('p', '', directHints, key);
   const hubHints = node('div', 'sim-hints', section);
   for (const key of ['hub.noKeyOrMicrophone', 'hub.deviceSpeech', 'hub.recentNotice']) node('p', '', hubHints, key);
+  // P3-11: venue live control; hidden until the app hands its event link over
+  // and the site policy enables hub control.
+  const control = node('div', 'sim-control', section);
+  control.hidden = true;
+  node('h2', 'sim-control-title', control, 'hubControl.title');
+  const eventLabel = node('label', 'sim-field', control);
+  node('span', '', eventLabel, 'event.select');
+  const eventSelect = node('select', 'sim-event', eventLabel);
+  const eventNone = node('p', 'sim-event-none', control, 'event.none');
+  const eventName = node('p', 'sim-event-name', control);
+  const eventJoin = button('sim-event-join', 'event.join', control);
+  const eventLeave = button('sim-event-leave', 'event.leave', control);
+  const controlStatus = node('p', 'badge sim-control-status', control, null, { role: 'status', 'data-control': 'none' });
+  const controlRevision = node('p', 'sim-control-revision', control);
+  // The venue's notice is plain text in the UI language, never markup.
+  const controlNotice = node('p', 'sim-control-notice', control, null, { role: 'status' });
+  const eventError = node('p', 'sim-event-error', control, null, { role: 'status' });
+  const controlHints = node('div', 'sim-hints', control);
+  const controlOnlyHint = node('p', '', controlHints, 'hubControl.controlOnly');
+  node('p', '', controlHints, 'hubControl.releaseOnly');
+  node('p', '', controlHints, 'hubControl.scope');
+  const unsupportedHint = node('p', '', controlHints, 'hubControl.unsupportedHint');
+  let link = null, unsubscribeLink = null, eventFailure = null, eventOptions = '';
   const status = node('p', 'badge sim-status', section, null, { role: 'status' });
   // Active model and route (translation-only / auxiliary flash / fallback), always visible for direct listening.
   const route = node('p', 'sim-route', section, null, { role: 'status' });
@@ -232,6 +266,70 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   listen(openSettings, 'click', () => { if (typeof onOpenSettings === 'function') call(onOpenSettings); });
   listen(captionOnly, 'click', () => board.setCaptionOnly(!board.captionOnly));
   listen(fallback, 'click', () => call(async () => { await end(); if (!disposed) onSequential?.(); }));
+  // Event participation is a gesture; a refused join is named by its code here.
+  listen(eventSelect, 'change', () => render());
+  listen(eventJoin, 'click', () => {
+    if (!link || pending || disposed) return;
+    eventFailure = null;
+    try { link.join({ eventId: eventSelect.value, hubId: venueSelect.value, roomCode: room.value }); }
+    catch (error) { eventFailure = listenFailure(i18n, error); }
+    render();
+  });
+  listen(eventLeave, 'click', () => { if (link) { eventFailure = null; call(() => link.leave()); } });
+  const eventText = (entry) => (typeof entry.label?.[i18n.language] === 'string' ? entry.label[i18n.language]
+    : typeof entry.eventName === 'string' ? entry.eventName : entry.id);
+  const activeEvent = (events, id) => events.some(entry => entry.id === id && entry.status === 'active');
+
+  // The control section: returns the link snapshot when the section is shown.
+  function renderControl(hub) {
+    const ls = link?.snapshot() ?? null;
+    control.hidden = !ls?.enabled;
+    if (!ls?.enabled) return null;
+    const joined = ls.joined, events = ls.events;
+    // Rebuild the event options only when the list, statuses or language change.
+    const signature = `${i18n.language}|${events.map(entry => `${entry.id}:${entry.status}`).join(',')}`;
+    if (signature !== eventOptions) {
+      eventOptions = signature;
+      const previous = eventSelect.value;
+      for (const option of [...eventSelect.children]) option.remove();
+      for (const entry of events) {
+        const option = node('option', '', eventSelect, null, { value: entry.id });
+        setText(option, `${eventText(entry)} · ${i18n.t(resolveKey(i18n, `event.status.${entry.status}`))}`);
+        option.disabled = entry.status !== 'active';
+      }
+      const chosen = activeEvent(events, previous) ? previous : events.find(entry => entry.status === 'active')?.id ?? '';
+      eventSelect.value = chosen;
+    }
+    eventNone.hidden = joined !== null || events.length > 0;
+    eventLabel.hidden = joined !== null || events.length === 0;
+    eventSelect.disabled = pending;
+    eventJoin.hidden = joined !== null || events.length === 0;
+    eventJoin.disabled = pending || !activeEvent(events, eventSelect.value) || !ls.allowedHubIds.includes(venueSelect.value);
+    eventLeave.hidden = joined === null;
+    eventLeave.disabled = pending;
+    const entry = joined ? events.find(item => item.id === joined.eventId) : null;
+    eventName.hidden = joined === null;
+    setText(eventName, joined ? `${i18n.t('event.name')}: ${entry ? eventText(entry) : joined.eventId}` : '');
+    // Stopped wins over a lost heartbeat; before any hello the connection state shows.
+    const c = ls.control;
+    const state = joined === null ? null : c.stopped ? 'stopped' : c.heartbeatLost ? 'lost'
+      : c.supported === true ? 'supported' : c.supported === false ? 'unsupported' : null;
+    const connection = hub && snapshot?.busy ? snapshot.status : ls.connection;
+    controlStatus.hidden = joined === null;
+    controlStatus.setAttribute('data-control', state ?? (joined ? connection : 'none'));
+    setText(controlStatus, joined === null ? '' : i18n.t(resolveKey(i18n, state ? `hubControl.${state}` : `sim.status.${connection}`)));
+    controlRevision.hidden = joined === null || c.revision === null;
+    setText(controlRevision, joined !== null && c.revision !== null ? i18n.t('hubControl.revision', { revision: String(c.revision) }) : '');
+    const text = joined !== null ? c.notice?.text?.[i18n.language] : undefined;
+    controlNotice.hidden = typeof text !== 'string';
+    setText(controlNotice, typeof text === 'string' ? text : '');
+    unsupportedHint.hidden = state !== 'unsupported';
+    controlOnlyHint.hidden = hub;
+    const errorKey = eventFailure ? eventFailure.key : ls.errorCode ? resolveKey(i18n, errorCodeKey(ls.errorCode)) : null;
+    eventError.hidden = errorKey === null;
+    setText(eventError, errorKey ? i18n.t(errorKey) : '');
+    return ls;
+  }
 
   function renderCaptions() {
     const data = snapshot.captions;
@@ -246,8 +344,16 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     const hub = mode === 'hub', busy = snapshot.busy || !['idle', 'stopped', 'failed'].includes(snapshot.status);
     modeSelect.value = mode; language.value = target;
     modeSelect.disabled = language.disabled = pending;
-    venueSelect.parentNode.hidden = roomLabel.hidden = !hub;
+    // Direct listening shows venue and room code only while an event can be joined (P3-11).
+    const ls = renderControl(hub);
+    const eventUi = !hub && ls !== null && ls.joined === null && ls.events.length > 0;
+    venueSelect.parentNode.hidden = roomLabel.hidden = !hub && !eventUi;
     venueSelect.disabled = room.disabled = busy || pending;
+    for (const option of venueSelect.children) option.disabled = eventUi && !ls.allowedHubIds.includes(option.getAttribute('value'));
+    if (eventUi && !ls.allowedHubIds.includes(venueSelect.value)) {
+      const allowed = hubs.find(entry => ls.allowedHubIds.includes(entry.id));
+      if (allowed) { venueSelect.value = allowed.id; eventJoin.disabled = pending || !activeEvent(ls.events, eventSelect.value); }
+    }
     // Hub listening uses device speech, so the provider voice choice is hidden there.
     voiceLabel.hidden = hub; voice.disabled = pending;
     directHints.hidden = hub; hubHints.hidden = !hub; meter.hidden = hub;
@@ -298,6 +404,14 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   return Object.freeze({ element: section, board, render,
     refresh() { if (!disposed) { bind.refresh(); board.refresh(); render(); } },
     setStorage(next) { if (!disposed) { store = next; board.setStorage(next); restoreVoice(); } },
+    // P3-11: the app's event link (null detaches); the section re-renders on its changes.
+    setHubControl(next) {
+      if (disposed) return;
+      unsubscribeLink?.(); unsubscribeLink = null; eventFailure = null; eventOptions = '';
+      link = next && typeof next.snapshot === 'function' && typeof next.subscribe === 'function' ? next : null;
+      if (link) unsubscribeLink = link.subscribe(() => { if (!disposed) render(); });
+      render();
+    },
     // Level events carry gate: 'open' | 'closed' from capture.js; the streaming
     // capture reports gated frames as exact silence, so rms 0 also reads "no speech".
     onLevel(value) {
@@ -307,6 +421,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
       renderSpeech();
     },
     focusInput() { (mode === 'hub' ? room : start).focus(); },
-    destroy() { if (disposed) return; disposed = true; unsubscribe?.(); unsubscribeVoice(); for (const off of listeners) off(); board.destroy(); bind.clear(); room.value = ''; section.remove(); },
+    destroy() {
+      if (disposed) return;
+      disposed = true; unsubscribe?.(); unsubscribeVoice(); unsubscribeLink?.(); link = null;
+      for (const off of listeners) off(); board.destroy(); bind.clear(); room.value = ''; section.remove();
+    },
   });
 }
