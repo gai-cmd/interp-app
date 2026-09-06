@@ -309,5 +309,15 @@
   "share.hint": "Scan the QR code to open this app · Add to Home Screen",
   "share.deployment": "This QR opens the deployed site https://gai-cmd.github.io/interp-app/ rather than the current address.",
   "share.copied": "URL copied.",
-  "share.copyFailed": "Could not copy. Select the URL and copy it manually."
+  "share.copyFailed": "Could not copy. Select the URL and copy it manually.",
+  "settings.keySavedBrowser": "Key saved in this browser",
+  "settings.keySavedSession": "Kept for this run only — enter it again after reloading",
+  "settings.rememberWarning": "Uncheck on shared devices. Browser storage is not an encrypted vault.",
+  "sim.model": "Simultaneous interpretation model",
+  "sim.model0": "Gemini 3.5 Live Translate (default)",
+  "sim.model1": "Gemini 3.1 Flash Live",
+  "sim.model2": "Gemini 2.5 Flash Live",
+  "sim.modelHelp": "Changing the model stops interpretation. Press Start to compare. The selection lasts for this run.",
+  "diagnostics.speechToFirstAudioMs": "Speech onset → first audio received (ms, estimated)",
+  "diagnostics.speechEndToFirstAudioMs": "Speech end → first audio received (ms, estimated; negative means before end)"
 }

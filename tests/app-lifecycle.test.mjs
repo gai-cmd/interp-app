@@ -494,7 +494,7 @@ test('pagehide cancels active work; an unload (not bfcache) tears everything dow
   assert.throws(() => app.config.keyStore.getSelection(), /STORE_CLOSED/);
   assert.equal(b.win.listenerCount, 0, 'window listeners removed');
   assert.equal(b.doc.listenerCount, 0);
-  assert.equal(b.storage.has('interp-app.personal-key.v1.gemini'), false, 'a session-only key leaves nothing behind');
+  assert.equal(b.storage.has('interp-app.personal-key.v1.gemini'), true, 'the default remembered key survives unload');
   await app.close();
   assert.equal(app.closed, true);
 });

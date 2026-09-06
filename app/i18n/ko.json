@@ -309,5 +309,15 @@
   "share.hint": "QR을 스캔하면 이 앱이 열립니다 · 홈 화면에 추가",
   "share.deployment": "이 QR은 현재 주소가 아닌 배포 사이트 https://gai-cmd.github.io/interp-app/ 를 엽니다.",
   "share.copied": "URL을 복사했습니다.",
-  "share.copyFailed": "복사하지 못했습니다. 아래 URL을 선택해 직접 복사하세요."
+  "share.copyFailed": "복사하지 못했습니다. 아래 URL을 선택해 직접 복사하세요.",
+  "settings.keySavedBrowser": "키를 이 브라우저에 저장했습니다",
+  "settings.keySavedSession": "이번 실행 동안만 보관합니다 — 새로고침하면 다시 입력",
+  "settings.rememberWarning": "공용 기기에서는 체크를 해제하세요. 브라우저 저장소는 암호화 보관함이 아닙니다.",
+  "sim.model": "동시통역 모델",
+  "sim.model0": "Gemini 3.5 Live Translate (기본)",
+  "sim.model1": "Gemini 3.1 Flash Live",
+  "sim.model2": "Gemini 2.5 Flash Live",
+  "sim.modelHelp": "변경하면 통역이 중지됩니다. 시작을 눌러 비교하세요. 모델 선택은 이번 실행 동안 유지됩니다.",
+  "diagnostics.speechToFirstAudioMs": "발화 시작 → 첫 오디오 수신 (ms, 추정)",
+  "diagnostics.speechEndToFirstAudioMs": "발화 종료 → 첫 오디오 수신 (ms, 추정·음수는 종료 전)"
 }

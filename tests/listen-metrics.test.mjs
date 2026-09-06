@@ -58,3 +58,20 @@ test('every displayed metric has all three translations', async () => {
     for (const name of METRIC_NAMES) assert.equal(typeof dict[`diagnostics.${name}`], 'string');
   }
 });
+
+
+test('speech latency estimates preserve audio before speech end and reset across reconnects', () => {
+  let time = 0; const m = createListenMetrics({ now: () => time });
+  m.inputLevel(0.1); time = 200; m.audioReceived();
+  assert.equal(m.snapshot().speechToFirstAudioMs, 200);
+  assert.equal(m.snapshot().speechEndToFirstAudioMs, null);
+  time = 500; m.inputLevel(0.1); time = 900; m.inputLevel(0);
+  assert.equal(m.snapshot().speechEndToFirstAudioMs, -300);
+  time = 1000; m.inputLevel(0.1); time = 1400; m.inputLevel(0);
+  time = 1500; m.audioReceived();
+  assert.equal(m.snapshot().speechEndToFirstAudioMs, 500);
+  m.resetInput(); time = 2000; m.audioReceived();
+  assert.equal(m.snapshot().speechToFirstAudioMs, 500);
+  m.stop(); time = 3000; m.inputLevel(0.1); m.audioReceived();
+  assert.equal(m.snapshot().speechToFirstAudioMs, 500);
+});

@@ -25,6 +25,11 @@ test('gesture capture → manager → router setup → bounded PCM uplink, capti
   await tick();
   assert.equal(f.engine.snapshot().captions.captions.length, 2);
   assert.equal(f.audio.made.length, 1);
+  assert.ok(f.audio.made[0].at >= f.audio.context.currentTime);
+  assert.ok(f.engine.snapshot().captions.captions.every(r => r.status === 'partial'));
+  assert.equal(s.sent.some(v => v.realtimeInput?.audioStreamEnd || v.realtimeInput?.activityEnd), false);
+  assert.equal(f.engine.snapshot().metrics.firstAudioReceivedMs !== null, true);
+  assert.equal(f.engine.snapshot().metrics.firstAudioScheduledMs !== null, true);
   content(s, { turnComplete: true }); await tick();
   assert.ok(f.engine.snapshot().captions.captions.every(r => r.status === 'final'));
   assert.deepEqual(f.calls, ['live']);
@@ -204,4 +209,16 @@ test('external abort and explicit restart use fresh generations and recovery bud
   assert.equal(f.engine.snapshot().retries, 0); assert.equal(f.engine.snapshot().output, 'muted');
   content(f.sockets.at(-1), audioContent); await tick(); assert.equal(f.audio.made.length, 0);
   await f.engine.stop(); assert.equal((await next.done).status, 'stopped');
+});
+
+
+test('model selection closes current Live and only explicit restart opens the selected model', async t => {
+  const f = simFixture(); t.after(() => f.close()); await f.running();
+  await f.engine.setModel('gemini-3.1-flash-live-preview');
+  assert.equal(f.engine.snapshot().busy, false); assert.equal(f.sockets.length, 1);
+  f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
+  await f.running();
+  assert.equal(f.sockets[1].sent[0].setup.model, 'models/gemini-3.1-flash-live-preview');
+  f.frame(0); f.audio.advance(500); await tick(); f.frame(0); await tick();
+  assert.equal(f.sockets[1].sent.some(v => v.realtimeInput?.audioStreamEnd || v.realtimeInput?.activityEnd), false);
 });

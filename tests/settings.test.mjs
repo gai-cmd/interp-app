@@ -208,7 +208,7 @@ function fixtureConfig({ storage } = {}) {
 }
 
 function harness({ config = fixtureConfig(), language = 'ko', persistence = false, capture = fakeCapture(), app = null,
-  getDeviceVoices = null } = {}) {
+  getDeviceVoices = null, simEngine = null } = {}) {
   const doc = createDocument();
   const root = doc.createElement('div');
   const timers = fakeTimers();
@@ -220,7 +220,7 @@ function harness({ config = fixtureConfig(), language = 'ko', persistence = fals
   const audio = fakeAudioContext();
   const diagnostics = createDiagnostics({ config, capture, getAudioContext: () => audio, ...clock, random: () => 0, now: () => 1000 });
   const uiLanguages = [];
-  const view = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence, app, getDeviceVoices,
+  const view = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence, app, getDeviceVoices, simEngine,
     onUiLanguageChange: (value) => uiLanguages.push(value) });
   const el = (name) => byClass(root, name);
   const diagRow = (kind) => all(root, (node) => node.classes.has('diag-check') && node.getAttribute('data-kind') === kind)[0];
@@ -348,6 +348,8 @@ test('two providers show a picker; a hub-only provider blocks key entry; persona
   assert.equal(elements.modeInputs.personal.disabled, true);
   assert.equal(elements.checkButton.disabled, true);
   assert.equal(elements.deleteButton.disabled, true);
+  assert.equal(elements.rememberInput.checked, true);
+  elements.rememberInput.checked = false; // Exercise the explicit session-only choice.
   elements.keyInput.value = `  ${KEY}  `;
   const submit = h.el('settings-key-form').dispatch('submit');
   assert.equal(submit.defaultPrevented, true);
@@ -637,4 +639,45 @@ test('records clearing needs confirmation, the app section shows version and for
   h.shell.destroy();
   await h.config.dispose();
   assert.equal(h.timers.pending.length, 0);
+});
+
+
+test('key save feedback is inline, localized and distinguishes persistence, memory and failures', async t => {
+  const storage = fakeStorage();
+  const h = harness({ config: fixtureConfig({ storage }), persistence: true });
+  t.after(() => teardown(h));
+  const e = h.view.elements;
+  assert.equal(e.rememberInput.checked, true);
+  assert.equal(h.el('settings-remember').textContent.includes(ko['settings.rememberWarning']), true);
+  const save = value => { e.keyInput.value = value; h.el('settings-key-form').dispatch('submit'); };
+  save(KEY);
+  assert.equal(e.keyFeedback.textContent, ko['settings.keySavedBrowser']);
+  assert.equal(e.keyFeedback.hidden, false);
+  assert.equal(e.keyStatus.getAttribute('data-key'), 'remembered');
+  assert.equal(storage.map.size, 1);
+  for (const lang of ['en', 'ja', 'ko']) {
+    h.shell.setLanguage(lang);
+    assert.equal(e.keyFeedback.textContent, dictionaries[lang]['settings.keySavedBrowser']);
+  }
+  e.rememberInput.checked = false; save(KEY);
+  assert.equal(e.keyFeedback.textContent, ko['settings.keySavedSession']);
+  assert.equal(e.keyStatus.getAttribute('data-key'), 'memory'); assert.equal(storage.map.size, 0);
+  save(''); assert.equal(e.keyFeedback.textContent, ko['error.INVALID_KEY']);
+  save('bad key'); assert.equal(e.keyFeedback.textContent, ko['error.INVALID_KEY']);
+  e.rememberInput.checked = true;
+  storage.setItem = () => { throw Error('SECRET'); }; save(KEY);
+  assert.equal(e.keyFeedback.textContent, ko['error.STORAGE_FAILED']);
+  assert.equal(e.keyStatus.getAttribute('data-key'), 'none');
+  assert.doesNotMatch(domText(h.root), /SECRET/);
+});
+
+test('settings exposes both Live models and applies selection without starting interpretation', async t => {
+  const calls = [];
+  const simEngine = { model: 'gemini-3.5-live-translate-preview', async setModel(model) { calls.push(model); this.model = model; } };
+  const h = harness({ simEngine }); t.after(() => teardown(h));
+  const select = h.view.elements.modelSelect;
+  assert.ok(options(select).includes('gemini-3.1-flash-live-preview'));
+  choose(select, 'gemini-3.1-flash-live-preview'); await tick();
+  assert.deepEqual(calls, ['gemini-3.1-flash-live-preview']);
+  assert.equal(select.disabled, false);
 });

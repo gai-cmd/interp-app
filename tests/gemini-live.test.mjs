@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGeminiLive } from '../app/providers/gemini/live.js';
-import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS } from '../app/providers/gemini/live-config.js';
+import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD } from '../app/providers/gemini/live-config.js';
 import { ProviderError } from '../app/providers/contract.js';
 import { createGeminiLiveClient } from '../app/providers/gemini/live-client.js';
 import { fakeClock, fakeLive, pcmContent, request } from './fixtures/gemini-live.mjs';
@@ -24,12 +24,15 @@ test('fixed models have isolated translation/flash setup for all supported langu
     assert.deepEqual(s.generationConfig.responseModalities, ['AUDIO']);
     assert.deepEqual(s.inputAudioTranscription, {});
     assert.deepEqual(s.outputAudioTranscription, {});
+    assert.deepEqual(s.realtimeInputConfig.automaticActivityDetection, LIVE_VAD);
+    assert.equal(LIVE_VAD.silenceDurationMs, 400);
     assert.equal(s.sourceLanguage, undefined);
     assert.equal(s.generationConfig.speechConfig, undefined);
     if (model === LIVE_MODELS[0]) {
       assert.equal(Object.hasOwn(s, 'systemInstruction'), false);
       assert.deepEqual(s.generationConfig.translationConfig, { targetLanguageCode: targetLanguage, echoTargetLanguage: false });
     } else {
+      assert.match(s.systemInstruction.parts[0].text, /do not wait for sentence completion/);
       assert.equal(s.generationConfig.translationConfig, undefined);
       assert.match(s.systemInstruction.parts[0].text, /never answer questions/);
     }

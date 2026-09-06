@@ -6,6 +6,8 @@
  * serial physical closure, generation guards, no IPC, extra voice or raw errors.
  */
 import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
+import { createListenMetrics } from './listen-metrics.js';
+import { LIVE_MODELS, DEFAULT_LIVE_MODEL } from '../providers/gemini/live-config.js';
 import { createSessionManager } from './session-manager.js';
 import { createLiveRecovery } from './live-recovery.js';
 import { createListenState } from './listen-state.js';
@@ -42,9 +44,11 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   const state = createListenState(), listeners = new Set();
   const timing = { now, setTimeout, clearTimeout, random };
   const clock = { now, setTimeout, clearTimeout };
+  let selectedModel = DEFAULT_LIVE_MODEL, metrics;
   let active, store, errorCode = null, disposed = false, lastResult;
   const snapshot = () => Object.freeze({ ...state.snapshot(), errorCode,
     messageKey: errorCode ? `error.${errorCode}` : null,
+    metrics: metrics?.snapshot() ?? null, model: active?.model ?? selectedModel,
     captions: store?.snapshot() ?? null, busy: Boolean(active),
     retries: active?.recovery.retries ?? lastResult?.retries ?? 0 });
   const notify = () => { const value = snapshot(); for (const fn of [...listeners]) attempt(() => fn(value)); };
@@ -76,6 +80,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   function fault(op, c, error, goAway = false) {
     if (!alive(op) || op.connection !== c || !c.enabled) return;
     c.enabled = false;
+    metrics.resetInput(); metrics.observe('reconnects');
     op.uplink?.cancel(); op.player?.cancel(); store.interrupt(); store.markGap('reception');
     state.transition('reconnecting', op.generation);
     c.fault.resolve({ error: normalizeError(error), goAway });
@@ -87,10 +92,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         fault(op, c, ev.error ?? new ProviderError('SESSION_CLOSED'), ev.type === 'goAway'); return;
       }
       if (ev.type === 'audio') {
-        op.recovery.activity(); op.player?.enqueue(ev.audio);
+        op.recovery.activity(); metrics.mark('firstAudioReceivedMs'); metrics.audioReceived();
+        if (op.player?.enqueue(ev.audio)) metrics.mark('firstAudioScheduledMs');
+        if (op.player) metrics.queue(op.player.snapshot().queuedSeconds * 1000);
+        notify();
       } else if (ev.type === 'subtitle') {
         op.recovery.activity();
         const at = now();
+        metrics.mark(ev.final ? 'firstFinalMs' : 'firstPartialMs');
         store.upsertDirect({ id: ev.segmentId, sessionId: op.sessionId, generation: c.generation,
           role: ev.role, sequence: ev.seq, revision: ev.revision,
           sourceText: ev.sourceText, translatedText: ev.translatedText,
@@ -123,8 +132,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
             onEvent: ev => event(op, c, ev) });
           assertActive(op.controller.signal);
           if (c.enabled) {
-            op.recovery.opened();
-            op.uplink = createUplinkQueue({ clock, sendAudio: pcm => op.lease.sendAudio(pcm),
+            op.recovery.opened(); op.model = request.model ?? DEFAULT_LIVE_MODEL; metrics.mark('setupMs');
+            op.uplink = createUplinkQueue({ clock, sendAudio: async pcm => { await op.lease.sendAudio(pcm); metrics.observe('sentFrames'); },
               onDrop: () => { if (alive(op)) store.markGap('input'); },
               onError: err => fault(op, c, err) });
             op.uplink.setReady(true);
@@ -165,7 +174,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       }
       lastResult = Object.freeze({ status: failure ? 'failed' : 'stopped', errorCode: failure,
         messageKey: failure ? `error.${failure}` : null, retries: op.recovery.retries });
-      active = null; notify(); op.ready.resolve(lastResult); op.done.resolve(lastResult);
+      metrics.stop(); active = null; notify(); op.ready.resolve(lastResult); op.done.resolve(lastResult);
     }
   }
   function start(request = {}, context = {}) {
@@ -177,6 +186,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     const op = { controller: new AbortController(), prepared: deferred(), ready: deferred(), done: deferred(),
       sessionId: context.sessionId, turnId: context.turnId ?? context.sessionId,
       muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {} };
+    metrics = createListenMetrics({ now });
+    op.model = request.model ?? selectedModel;
     store?.close(); store = createCaptionStore({ sessionId: op.sessionId, now }); store.subscribe(notify);
     errorCode = null; active = op;
     state.transition('preparing'); op.generation = state.snapshot().generation;
@@ -188,7 +199,10 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       op.audioContext = attempt(() => getAudioContext()) ?? null;
       makePlayer(op); void op.player?.resume();
       op.capture = createStreamCapture({ platform, onLevel: value => {
-        if (alive(op)) attempt(() => onLevel?.(value));
+        if (alive(op)) {
+          if (op.uplink && op.connection?.enabled) metrics.inputLevel(value.rms);
+          attempt(() => onLevel?.(value));
+        }
       }, onFrame: pcm => {
         if (!alive(op)) return;
         op.prepared.resolve();
@@ -202,12 +216,18 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       });
     } catch { cancel(op, 'MICROPHONE_UNAVAILABLE'); }
     const input = { input: { format: 'pcm16' }, targetLanguage: request.targetLanguage,
-      ...(request.model !== undefined ? { model: request.model } : {}) };
+      model: op.model };
     void run(op, input, { providerId: context.providerId, keySource: context.keySource });
     return Object.freeze({ ready: op.ready.promise, done: op.done.promise });
   }
   function stop() { if (active) { const op = active; cancel(op); return op.done.promise; } return Promise.resolve(lastResult); }
   return Object.freeze({ start, stop, cancel: stop, snapshot,
+    get model() { return selectedModel; },
+    async setModel(model) {
+      if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
+      if (model === selectedModel) return;
+      await stop(); selectedModel = model; notify();
+    },
     subscribe(fn) {
       if (typeof fn !== 'function') throw new ProviderError('INVALID_REQUEST');
       listeners.add(fn); return () => listeners.delete(fn);

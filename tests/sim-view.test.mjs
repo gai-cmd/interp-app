@@ -61,6 +61,8 @@ test('partial captions update in place without live announcements; final revisio
   const f = setup(), payload = '<img src=x onerror=alert(1)>';
   caption(f.direct, 1, 'partial', payload);
   const row = f.get('caption');
+  assert.ok(row.textContent.includes(payload));
+  assert.equal(row.getAttribute('data-status'), 'partial');
   assert.equal(f.get('announcement').textContent, '');
   caption(f.direct, 1, 'partial', `${payload} next`, 1);
   assert.equal(f.get('caption'), row); assert.equal(f.get('announcement').textContent, '');

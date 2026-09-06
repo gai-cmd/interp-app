@@ -284,7 +284,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     const version = await pwa.getVersion();
     const standalone = pwa.snapshot().standalone;
     settingsView = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence: storage !== null,
-      app: { ...(version ? { version } : {}), standalone }, getDeviceVoices,
+      app: { ...(version ? { version } : {}), standalone }, getDeviceVoices, simEngine,
+      metrics: { snapshot: () => simEngine.snapshot().metrics,
+        subscribe: fn => simEngine.subscribe(() => fn()) },
       onUiLanguageChange: (language) => { if (storage) writeUiLanguage(storage, language); applyManifestLanguage(doc, language); } });
     controls = createPwaControls({ root: settingsView.elements.appActions, document: doc, i18n, shell, pwa, notify });
     listen(win.speechSynthesis, 'voiceschanged', () => settingsView.render());

@@ -309,5 +309,15 @@
   "share.hint": "QRを読み取るとこのアプリが開きます · ホーム画面に追加",
   "share.deployment": "このQRは現在のアドレスではなく公開サイト https://gai-cmd.github.io/interp-app/ を開きます。",
   "share.copied": "URLをコピーしました。",
-  "share.copyFailed": "コピーできませんでした。URLを選択して手動でコピーしてください。"
+  "share.copyFailed": "コピーできませんでした。URLを選択して手動でコピーしてください。",
+  "settings.keySavedBrowser": "キーをこのブラウザーに保存しました",
+  "settings.keySavedSession": "今回の実行中のみ保持します — 再読み込み後は再入力してください",
+  "settings.rememberWarning": "共用端末ではチェックを外してください。ブラウザーの保存領域は暗号化保管庫ではありません。",
+  "sim.model": "同時通訳モデル",
+  "sim.model0": "Gemini 3.5 Live Translate（既定）",
+  "sim.model1": "Gemini 3.1 Flash Live",
+  "sim.model2": "Gemini 2.5 Flash Live",
+  "sim.modelHelp": "変更すると通訳が停止します。開始を押して比較してください。モデルの選択は今回の実行中のみ保持されます。",
+  "diagnostics.speechToFirstAudioMs": "発話開始 → 最初の音声受信（ms、推定）",
+  "diagnostics.speechEndToFirstAudioMs": "発話終了 → 最初の音声受信（ms、推定・負数は終了前）"
 }
