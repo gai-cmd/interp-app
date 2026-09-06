@@ -270,6 +270,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
     shell = mount({ root, i18n, engine, listenEngines, hubs,
       beforeTabChange: stopWork, document: doc, window: win, ...timing });
+    // P3-02c: caption board preferences share the UI storage; only this module reads localStorage.
+    if (storage) shell.simView?.setStorage(storage);
     removers.push(config.keyStore.subscribe(() => {
       if (busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
       else lifecycleGeneration++;
