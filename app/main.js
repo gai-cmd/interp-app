@@ -29,6 +29,11 @@
 // effective values from the policy runtime and follows policy changes, the
 // user's own changes and another tab's changes (the window's `storage` event
 // is forwarded to preferences.sync(), which makes the runtime recompute).
+// P3-15: one UI-language path (design-p3 §1.11). The header toggle, the
+// settings select and app.setLanguage() all end in shell.setLanguage(); the
+// shell's onLanguageChange hook registered here is the only place that
+// persists the choice and swaps the manifest link. The interpretation pair and
+// any open connection are never touched by a UI language change.
 // Teardown: appearance -> policy -> settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
 import fallbackDictionary from './i18n/boot-fallback.js';
@@ -499,6 +504,12 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       // The last tab is remembered per device; the first visit opens simultaneous interpretation.
       initialTab: readUiTab(storage) ?? DEFAULT_TAB,
       onTabChange: (tab) => { if (storage) writeUiTab(storage, tab); } });
+    // P3-15: every UI language change (header toggle, settings select,
+    // app.setLanguage) is persisted and reflected in the manifest link here.
+    removers.push(shell.onLanguageChange((language) => {
+      if (storage) writeUiLanguage(storage, language);
+      applyManifestLanguage(doc, language);
+    }));
     // P3-02c: caption board preferences share the UI storage; only this module reads localStorage.
     if (storage) shell.simView?.setStorage(storage);
     // P3-11: the simultaneous screen offers event participation and shows the control state.
@@ -535,19 +546,22 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     settingsView = createSettingsView({ shell, i18n, config, engine: gatedEngine, diagnostics: gatedDiagnostics, document: doc, persistence: storage !== null,
       app: { ...(version ? { version } : {}), standalone }, getDeviceVoices, simEngine,
       metrics: { snapshot: () => simEngine.snapshot().metrics,
-        subscribe: fn => simEngine.subscribe(() => fn()) },
-      onUiLanguageChange: (language) => { if (storage) writeUiLanguage(storage, language); applyManifestLanguage(doc, language); } });
+        subscribe: fn => simEngine.subscribe(() => fn()) } });
     controls = createPwaControls({ root: settingsView.elements.appActions, document: doc, i18n, shell, pwa, notify });
     // P3-02e: the key badge and the simultaneous screen's "open settings"
     // action land on the key entry; a stored key can still be gone on this
     // device (iOS keeps separate storage for Safari and the home-screen app
     // and evicts script storage after seven days without use), so the key
     // section says that the key may have to be entered again here.
+    // P3-15: the header display button lands on the display section (its
+    // first control is the UI language select until P3-20 adds the rest).
     removers.push(shell.onSettingsOpen((target) => {
-      if (target !== 'key') return;
-      const input = settingsView.elements.keyInput;
-      attempt(() => input.scrollIntoView?.({ block: 'center' }));
-      attempt(() => input.focus());
+      const focusTarget = target === 'key' ? settingsView.elements.keyInput
+        : target === 'display' ? settingsView.elements.uiSelect : null;
+      if (!focusTarget) return;
+      if (target === 'display') attempt(() => settingsView.elements.sections.display.scrollIntoView?.({ block: 'start' }));
+      else attempt(() => focusTarget.scrollIntoView?.({ block: 'center' }));
+      attempt(() => focusTarget.focus());
     }));
     const retentionNote = doc.createElement('p');
     retentionNote.setAttribute('class', 'settings-note settings-key-retention');
@@ -639,13 +653,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // P3-14: the display-settings runtime (the display sheet and settings section drive it).
     appearance,
     get closed() { return closed; },
-    // UI language only (the interpretation pair is engine state).
-    setLanguage(language) {
-      const applied = shell.setLanguage(language);
-      if (storage) writeUiLanguage(storage, applied);
-      applyManifestLanguage(doc, applied);
-      return applied;
-    },
+    // UI language only (the interpretation pair is engine state); the shell's
+    // onLanguageChange hook above persists it and swaps the manifest.
+    setLanguage(language) { return shell.setLanguage(language); },
     close,
   });
 }

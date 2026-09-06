@@ -3,17 +3,32 @@
 // state and a settings button; the sequential/simultaneous tabs with the
 // simultaneous view and asynchronous cleanup; the notice region that shows
 // store notices and clears them; and the settings container P1-16 fills.
+// P3-15 (design-p3 §1.9, §1.11; DESIGN.md §4 header): the header order is
+// app name | tabs (desktop only) | badges | KO EN JA | display | share |
+// settings. The three UI languages are always visible (never an overflow
+// menu); pressing one calls the same setLanguage() path the settings dialog
+// uses, which changes text, document lang and title only — the interpretation
+// pair and any open connection are untouched. On desktop (the 64rem query the
+// sequential screen also uses) the tab row moves into the header between the
+// title and the badges by moving the real nodes, so DOM, keyboard and visual
+// order agree; below that it stays a separate row under the header.
 // Importing touches no browser globals; document/window are injected.
+import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
 import { NOTICE_DURATION_MS, keySelectionKeys, resolveKey } from './errors.js';
-import { createBinder, createSeqView } from './seq-view.js';
+import { DESKTOP_LAYOUT_QUERY, createBinder, createSeqView } from './seq-view.js';
 import { createSimView } from './sim-view.js';
 
 export const TABS = Object.freeze(['sequential', 'simultaneous']);
 // P3-02e: simultaneous interpretation is the first screen (owner report
 // 2026-09-06); the app remembers the last selected tab through initialTab.
 export const DEFAULT_TAB = 'simultaneous';
-// Settings targets a caller may ask the dialog to focus (P3-02e: key entry).
-export const SETTINGS_TARGETS = Object.freeze(['key']);
+// Settings targets a caller may ask the dialog to focus (P3-02e: key entry;
+// P3-15: the display section, until P3-20 gives the display button its own sheet).
+export const SETTINGS_TARGETS = Object.freeze(['key', 'display']);
+// Header layouts (P3-15): 'stacked' keeps the tab row under the header,
+// 'desktop' places it inside the header. Same query as the sequential screen.
+export const SHELL_LAYOUTS = Object.freeze({ STACKED: 'stacked', DESKTOP: 'desktop' });
+export const HEADER_LAYOUT_QUERY = DESKTOP_LAYOUT_QUERY;
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
 function element(doc, tag, { className, attributes = {} } = {}) {
@@ -28,14 +43,21 @@ function element(doc, tag, { className, attributes = {} } = {}) {
  *   initialTab?, onTabChange? })
  * builds the shell into root and returns { root, elements, seqView, i18n,
  * setLanguage, selectTab, showMessage, openSettings, closeSettings,
- * onSettingsOpen, render, destroy }. P1-19 creates i18n/config/capture/engine
- * first, then mounts; P1-16 renders settings into elements.panels.settingsBody.
+ * onSettingsOpen, openDisplay, openShare, closeShare, render, destroy }.
+ * P1-19 creates i18n/config/capture/engine first, then mounts; P1-16 renders
+ * settings into elements.panels.settingsBody.
  * The caller owns persistence of the UI language (separate from the
  * interpretation pair) and of the selected tab: initialTab is the remembered
  * tab (default: simultaneous) and onTabChange(id) reports later selections.
+ * Every UI language change — header toggle, settings select or setLanguage()
+ * — ends in onLanguageChange(language), the one place to persist it and to
+ * swap the manifest link (P3-15).
  * openSettings(target) opens the dialog and tells onSettingsOpen listeners
- * which part to focus ('key' = the personal key entry); the key badge and the
- * simultaneous view's "open settings" action use it.
+ * which part to focus ('key' = the personal key entry, 'display' = the
+ * display section); the key badge, the simultaneous view's "open settings"
+ * action and the header display button use it.
+ * The header layout follows window.matchMedia(HEADER_LAYOUT_QUERY) when the
+ * injected window offers it; otherwise the stacked order stands.
  */
 export function mount({ root, i18n, engine, document: doc = root?.ownerDocument, window: win = null,
   listenEngines, hubs = [], beforeTabChange, initialTab = DEFAULT_TAB, onTabChange = null,
@@ -57,7 +79,8 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const app = element(doc, 'div', { className: 'shell' });
   root.append(app);
 
-  // Header (§7.1): name, provider + key source, connection, settings.
+  // Header (§7.1, P3-15 order): name, [tabs on desktop], provider + key source
+  // + connection badges, then the action row: KO EN JA, display, share, settings.
   const header = element(doc, 'header', { className: 'shell-header' });
   const title = element(doc, 'h1', { className: 'shell-title' });
   bind.text(title, 'app.name');
@@ -68,13 +91,35 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     'aria-haspopup': 'dialog', 'aria-controls': 'shell-settings' } });
   const connectionBadge = element(doc, 'span', { className: 'badge shell-connection', attributes: { role: 'status', 'aria-live': 'polite' } });
   badges.append(providerBadge, modeBadge, connectionBadge);
-  const settingsButton = element(doc, 'button', { className: 'btn btn-secondary shell-settings-button',
+  const actions = element(doc, 'div', { className: 'shell-actions' });
+  // UI language toggle: one always-visible pressed button per supported
+  // language. The visible text is the language code itself (KO EN JA, the
+  // same in every language); the accessible name is the dictionary's language
+  // name and each button is tagged with its own lang.
+  const languages = element(doc, 'div', { className: 'shell-languages', attributes: { role: 'group' } });
+  bind.attribute(languages, 'aria-label', 'language.ui');
+  const languageButtons = {};
+  for (const code of SUPPORTED_LANGUAGES) {
+    const button = element(doc, 'button', { className: 'btn btn-secondary shell-language',
+      attributes: { type: 'button', 'aria-pressed': 'false', 'data-language': code, lang: code } });
+    button.textContent = code.toUpperCase();
+    bind.attribute(button, 'aria-label', `language.${code}`);
+    languageButtons[code] = button;
+    languages.append(button);
+  }
+  // Display button (DESIGN.md §10): until P3-20 mounts the display sheet it
+  // opens the settings dialog on the display section, so it already works.
+  const displayButton = element(doc, 'button', { className: 'btn btn-secondary shell-display-button',
     attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-settings' } });
-  bind.text(settingsButton, 'common.settings');
+  bind.text(displayButton, 'display.open');
   const shareButton = element(doc, 'button', { className: 'btn btn-secondary share-button',
     attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-share' } });
   bind.text(shareButton, 'share.open');
-  header.append(title, badges, shareButton, settingsButton);
+  const settingsButton = element(doc, 'button', { className: 'btn btn-secondary shell-settings-button',
+    attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-settings' } });
+  bind.text(settingsButton, 'common.settings');
+  actions.append(languages, displayButton, shareButton, settingsButton);
+  header.append(title, badges, actions);
 
   // Live regions: store notices (dismissable) and short shell messages.
   const notice = element(doc, 'div', { className: 'shell-notice', attributes: { role: 'status', 'aria-live': 'polite' } });
@@ -177,8 +222,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       closeShare();
       restoreFocus = doc.activeElement ?? settingsButton;
       settings.hidden = false;
-      settingsButton.setAttribute('aria-expanded', 'true');
-      modeBadge.setAttribute('aria-expanded', 'true');
+      for (const opener of [settingsButton, modeBadge, displayButton]) opener.setAttribute('aria-expanded', 'true');
       for (const target of inertTargets) target.setAttribute('inert', '');
       attempt(() => settingsClose.focus());
     }
@@ -187,15 +231,17 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   function closeSettings() {
     if (settings.hidden) return;
     settings.hidden = true;
-    settingsButton.setAttribute('aria-expanded', 'false');
-    modeBadge.setAttribute('aria-expanded', 'false');
+    for (const opener of [settingsButton, modeBadge, displayButton]) opener.setAttribute('aria-expanded', 'false');
     for (const target of inertTargets) target.removeAttribute('inert');
     const target = restoreFocus;
     restoreFocus = null;
     attempt(() => (target ?? settingsButton).focus());
   }
+  // The display entry point (P3-15); P3-20 replaces the target with its sheet.
+  function openDisplay() { openSettings('display'); }
   listen(settingsButton, 'click', () => openSettings());
   listen(modeBadge, 'click', () => openSettings('key'));
+  listen(displayButton, 'click', openDisplay);
   listen(settingsClose, 'click', closeSettings);
   listen(settings, 'keydown', (event) => { if (event.key === 'Escape') { event.preventDefault?.(); closeSettings(); } });
 
@@ -280,6 +326,42 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
 
   app.append(header, notice, message, tabs, main, settings, share);
 
+  // Header layout (P3-15). Desktop puts the tab row inside the header between
+  // the title and the badges; below 64rem it is its own row under the header
+  // (design-p3 §1.9). Real nodes move (no CSS order), and a focused tab keeps
+  // focus across the move as in the sequential screen.
+  let layout = null;
+  function applyLayout(desktop) {
+    const next = desktop ? SHELL_LAYOUTS.DESKTOP : SHELL_LAYOUTS.STACKED;
+    if (next === layout) return layout;
+    const active = doc.activeElement;
+    layout = next;
+    app.setAttribute('data-layout', layout);
+    if (desktop) {
+      header.append(title, tabs, badges, actions);
+      app.append(header, notice, message, main, settings, share);
+    } else {
+      header.append(title, badges, actions);
+      app.append(header, notice, message, tabs, main, settings, share);
+    }
+    if (active && active !== doc.activeElement && attempt(() => app.contains(active))) attempt(() => active.focus());
+    return layout;
+  }
+  // Only the injected window's matchMedia is used (the sequential view owns
+  // the document's); without it the stacked order stands.
+  const media = attempt(() => win?.matchMedia?.(HEADER_LAYOUT_QUERY)) ?? null;
+  const onMediaChange = (event) => applyLayout((event?.matches ?? media?.matches) === true);
+  if (media) {
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', onMediaChange);
+      removers.push(() => attempt(() => media.removeEventListener('change', onMediaChange)));
+    } else if (typeof media.addListener === 'function') {
+      media.addListener(onMediaChange);
+      removers.push(() => attempt(() => media.removeListener?.(onMediaChange)));
+    }
+  }
+  applyLayout(media?.matches === true);
+
   // Short shell-level messages (e.g. blocked tab); auto-clear.
   function showMessage(key) {
     message.textContent = i18n.t(resolveKey(i18n, key));
@@ -349,11 +431,22 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     if (doc.documentElement) doc.documentElement.setAttribute('lang', i18n.language);
     doc.title = i18n.t('app.name');
     bind.refresh();
+    for (const code of SUPPORTED_LANGUAGES) languageButtons[code].setAttribute('aria-pressed', String(code === i18n.language));
     if (shareStatusKey) shareStatus.textContent = i18n.t(shareStatusKey);
     seqView.refresh();
     simView?.refresh();
     render(snapshot);
     for (const listener of [...languageListeners]) attempt(() => listener(i18n.language));
+  }
+  // UI language only (§12): the interpretation pair stays in the store and
+  // nothing about an open session is touched; the pressed button is a no-op.
+  function setLanguage(language) {
+    i18n.setLanguage(language);
+    applyLanguage();
+    return i18n.language;
+  }
+  for (const code of SUPPORTED_LANGUAGES) {
+    listen(languageButtons[code], 'click', () => { if (code !== i18n.language) setLanguage(code); });
   }
   applyLanguage();
   selectTab(TABS.includes(initialTab) ? initialTab : DEFAULT_TAB);
@@ -364,11 +457,15 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     seqView, simView,
     elements: Object.freeze({ header, providerBadge, modeBadge, connectionBadge, settingsButton, notice, noticeClose, message,
       tabs, tabButtons: Object.freeze({ ...tabButtons }),
-      panels: Object.freeze({ sequential: panels.sequential, simultaneous: panels.simultaneous, settings, settingsBody, settingsClose }) }),
+      // P3-15: the action row, the language toggle and the display/share entry points.
+      actions, languages, languageButtons: Object.freeze({ ...languageButtons }), displayButton, shareButton,
+      panels: Object.freeze({ sequential: panels.sequential, simultaneous: panels.simultaneous, settings, settingsBody, settingsClose,
+        share, shareClose, shareURL, shareCopy, shareStatus, shareImage, shareDeployment }) }),
     get selectedTab() { return selected; },
     get settingsOpen() { return !settings.hidden; },
-    // UI language only; the interpretation pair lives in the store.
-    setLanguage(language) { i18n.setLanguage(language); applyLanguage(); return i18n.language; },
+    get shareOpen() { return !share.hidden; },
+    get layout() { return layout; },
+    setLanguage,
     onLanguageChange(listener) {
       if (typeof listener !== 'function') throw new Error('INVALID_REQUEST');
       languageListeners.add(listener);
@@ -383,6 +480,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       settingsOpenListeners.add(listener);
       return () => settingsOpenListeners.delete(listener);
     },
+    openDisplay,
     openShare, closeShare,
     render,
     destroy() {
