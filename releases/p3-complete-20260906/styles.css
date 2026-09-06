@@ -1,0 +1,1136 @@
+/* Design tokens and shared components (DESIGN.md §2–§10, design-p3 §1.9–§1.10).
+   Mobile-first; text is rem-based so the html[data-text] step scales everything
+   while touch targets stay a fixed 44px; four tones (navy/warm/forest/mono) x
+   light/dark; state is carried by text and attributes, never by color alone;
+   visible focus; reduced motion honoured. Verified by tests/design-tokens.test.mjs. */
+
+/* 1. Palette. Light and dark values sit side by side per tone so the mode
+   blocks in §2 pick one set without repeating tone rules for every mode.
+   A tone only changes the accent and background families; every other token
+   is shared (DESIGN.md §10). */
+:root {
+  --light-bg: #f6f7f9;
+  --light-surface: #ffffff;
+  --light-surface-alt: #eef1f5;
+  --light-text: #1a1d21;
+  --light-text-muted: #4d5560;
+  --light-border: #c9d0d8;
+  --light-accent: #1f5f8b;
+  --light-accent-soft: #e8f1f8;
+  --light-accent-text: #ffffff;
+  --light-success: #1e7a46;
+  --light-warning: #8a5a00;
+  --light-danger: #a5282c;
+  --light-danger-text: #ffffff;
+  --light-recording: #b3261e;
+
+  --dark-bg: #14171b;
+  --dark-surface: #1e2329;
+  --dark-surface-alt: #262c34;
+  --dark-text: #edf0f3;
+  --dark-text-muted: #aab3bd;
+  --dark-border: #3a434d;
+  --dark-accent: #7fb6dd;
+  --dark-accent-soft: #22313d;
+  --dark-accent-text: #0f1a22;
+  --dark-success: #7fd5a3;
+  --dark-warning: #ffcf6a;
+  --dark-danger: #ff8a80;
+  --dark-danger-text: #2a0b0b;
+  --dark-recording: #ff6b60;
+
+  --focus: #ff9f1c;
+
+  /* Shape, spacing (DESIGN.md §5 scale), motion and touch. --touch is in px on
+     purpose: the S text step must not shrink interactive targets. */
+  --radius: 0.75rem;
+  --radius-card: 1rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --gap: var(--space-3);
+  --page-x: var(--space-4);
+  --touch: 44px;
+  --motion: 150ms ease-out;
+  --dialog-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+
+:root[data-tone="warm"] {
+  --light-bg: #faf6f0;
+  --light-surface: #fffdfa;
+  --light-surface-alt: #f2ebe1;
+  --light-accent: #8a4b1f;
+  --light-accent-soft: #f5e6d8;
+  --light-accent-text: #ffffff;
+  --dark-bg: #1b1613;
+  --dark-surface: #241e1a;
+  --dark-surface-alt: #2e2723;
+  --dark-accent: #e0a071;
+  --dark-accent-soft: #3a2a1f;
+  --dark-accent-text: #221610;
+}
+
+:root[data-tone="forest"] {
+  --light-bg: #f3f8f5;
+  --light-surface: #ffffff;
+  --light-surface-alt: #e8f0eb;
+  --light-accent: #1f6b4a;
+  --light-accent-soft: #e1f0e7;
+  --light-accent-text: #ffffff;
+  --dark-bg: #121b16;
+  --dark-surface: #1a2520;
+  --dark-surface-alt: #23302a;
+  --dark-accent: #86d1a8;
+  --dark-accent-soft: #1c3328;
+  --dark-accent-text: #0d1a12;
+}
+
+:root[data-tone="mono"] {
+  --light-bg: #ffffff;
+  --light-surface: #ffffff;
+  --light-surface-alt: #ececec;
+  --light-accent: #111111;
+  --light-accent-soft: #e6e6e6;
+  --light-accent-text: #ffffff;
+  --dark-bg: #000000;
+  --dark-surface: #000000;
+  --dark-surface-alt: #1a1a1a;
+  --dark-accent: #ffffff;
+  --dark-accent-soft: #262626;
+  --dark-accent-text: #000000;
+}
+
+/* 2. Mode. Light is the base; the system dark rule is skipped when the user
+   forces light, and a forced dark wins regardless of the system setting. */
+:root {
+  color-scheme: light;
+  --bg: var(--light-bg);
+  --surface: var(--light-surface);
+  --surface-alt: var(--light-surface-alt);
+  --text: var(--light-text);
+  --text-muted: var(--light-text-muted);
+  --border: var(--light-border);
+  --accent: var(--light-accent);
+  --accent-soft: var(--light-accent-soft);
+  --accent-text: var(--light-accent-text);
+  --success: var(--light-success);
+  --warning: var(--light-warning);
+  --danger: var(--light-danger);
+  --danger-text: var(--light-danger-text);
+  --recording: var(--light-recording);
+  /* Legacy name kept as an alias while views move to --accent-soft. */
+  --translation-bg: var(--accent-soft);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode="light"]) {
+    color-scheme: dark;
+    --bg: var(--dark-bg);
+    --surface: var(--dark-surface);
+    --surface-alt: var(--dark-surface-alt);
+    --text: var(--dark-text);
+    --text-muted: var(--dark-text-muted);
+    --border: var(--dark-border);
+    --accent: var(--dark-accent);
+    --accent-soft: var(--dark-accent-soft);
+    --accent-text: var(--dark-accent-text);
+    --success: var(--dark-success);
+    --warning: var(--dark-warning);
+    --danger: var(--dark-danger);
+    --danger-text: var(--dark-danger-text);
+    --recording: var(--dark-recording);
+  }
+}
+
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --bg: var(--dark-bg);
+  --surface: var(--dark-surface);
+  --surface-alt: var(--dark-surface-alt);
+  --text: var(--dark-text);
+  --text-muted: var(--dark-text-muted);
+  --border: var(--dark-border);
+  --accent: var(--dark-accent);
+  --accent-soft: var(--dark-accent-soft);
+  --accent-text: var(--dark-accent-text);
+  --success: var(--dark-success);
+  --warning: var(--dark-warning);
+  --danger: var(--dark-danger);
+  --danger-text: var(--dark-danger-text);
+  --recording: var(--dark-recording);
+}
+
+/* 3. Text steps (DESIGN.md §10). Everything is rem so the page scales together;
+   the caption board keeps its own --caption-size on top of this. */
+html { font-size: 100%; }
+html[data-text="s"] { font-size: 87.5%; }
+html[data-text="m"] { font-size: 100%; }
+html[data-text="l"] { font-size: 112.5%; }
+html[data-text="xl"] { font-size: 125%; }
+
+/* 4. Base and typography (DESIGN.md §3). System fonts only, no web font load. */
+* { box-sizing: border-box; }
+
+html, body { margin: 0; min-height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4 { margin: 0; font-size: 1.25rem; font-weight: 700; line-height: 1.3; }
+p { margin: 0 0 var(--space-2); }
+p:last-child { margin-bottom: 0; }
+a { color: var(--accent); text-underline-offset: 0.15em; }
+code, kbd, samp, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+.text-sub { font-size: 0.875rem; }
+.text-muted { color: var(--text-muted); }
+.label { font-size: 0.8125rem; font-weight: 600; }
+.title { font-size: 1.25rem; font-weight: 700; }
+.app-title { font-size: 1.125rem; font-weight: 700; }
+.caption-text { font-size: 1.25rem; line-height: 1.5; }
+
+[hidden] { display: none !important; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* 5. Focus (DESIGN.md §2: 2px ring, offset 2px). The --focus orange alone is
+   about 2:1 on light backgrounds, so a 2px ring in the text colour fills the
+   offset gap; one of the two rings is always at least 3:1 against the page. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--text);
+}
+
+/* 6. Buttons (DESIGN.md §4). Height >= 44px, radius 0.75rem, weight 600.
+   Disabled uses the surface-alt/text-muted tokens, never opacity. Loading is
+   conveyed by the button text, not by a spinner. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--touch);
+  min-width: var(--touch);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color var(--motion), border-color var(--motion), color var(--motion);
+}
+
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn-secondary { background: var(--surface-alt); border-color: var(--border); color: var(--text); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-text); }
+.btn-text { background: transparent; border-color: transparent; color: var(--accent); text-decoration: none; }
+.btn-block { display: flex; width: 100%; }
+
+.btn:disabled, .btn[aria-disabled="true"] {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.btn[aria-busy="true"] { cursor: progress; }
+
+@media (hover: hover) {
+  .btn:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--text); }
+  .btn-primary:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--accent-text); }
+  .btn-danger:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--danger-text); }
+  .btn-text:hover:not(:disabled):not([aria-disabled="true"]) { border-color: transparent; text-decoration: underline; }
+  .tab:hover:not([aria-disabled="true"]), .shell-tab:hover:not([aria-disabled="true"]) { color: var(--text); }
+}
+
+/* 7. Inputs (DESIGN.md §4): height >= 44px, 1px border, focus ring from §5.
+   Native select is kept for the mobile wheel. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select, textarea {
+  min-height: var(--touch);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+textarea { width: 100%; resize: vertical; }
+input:disabled, select:disabled, textarea:disabled { background: var(--surface-alt); color: var(--text-muted); cursor: not-allowed; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
+
+/* 8. Badge (DESIGN.md §4): capsule, 0.8125rem, state carried by its text. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 1.75rem;
+  padding: 0.125rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.badge[data-state="recording"] { border-color: var(--recording); }
+.badge[data-state="connected"] { border-color: var(--success); }
+.badge[data-state="warning"] { border-color: var(--warning); border-style: dashed; }
+.badge[data-state="error"] { border-color: var(--danger); border-style: dashed; }
+
+/* 9. Card (DESIGN.md §4): surface, 1px border, 1rem radius, no shadow. */
+.card, .shell-main, .settings-section, .turn {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.card > * + * { margin-top: var(--space-3); }
+
+/* 10. Tabs (DESIGN.md §4): top segment, active = 3px accent underline + bold,
+   aria-selected required. Disabled tabs are italic and muted, not faded. */
+.tabs, .shell-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab, .shell-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--touch);
+  margin-bottom: -1px;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color var(--motion), border-color var(--motion);
+}
+
+.tab[aria-selected="true"], .shell-tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 700;
+}
+
+.tab[aria-disabled="true"], .shell-tab[aria-disabled="true"] { color: var(--text-muted); font-style: italic; cursor: not-allowed; }
+
+/* 11. Sheet / modal (DESIGN.md §4, design-p3 §1.9). Mobile: full-screen sheet
+   with a fixed title row, scrolling body and sticky action row. Tablet+:
+   centred modal up to 640px with the only shadow in the system. Focus trap,
+   inert and Escape are behaviour (P3-16); the layout lives here. */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: env(safe-area-inset-top);
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.sheet-header, .sheet-footer {
+  position: sticky;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--page-x);
+  background: var(--surface);
+}
+
+.sheet-header { top: 0; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.sheet-title { flex: 1 1 auto; margin: 0; font-size: 1.25rem; font-weight: 700; }
+.sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-4) var(--page-x); }
+.sheet-footer {
+  bottom: 0;
+  justify-content: flex-end;
+  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+
+/* 12. Notice (DESIGN.md §4): top banner, role=status, closable. */
+.notice, .shell-notice, .shell-message {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-inline-start: 0.375rem solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.notice[data-kind="warning"] { border-inline-start-color: var(--warning); }
+.notice[data-kind="danger"], .notice[data-kind="error"] { border-inline-start-color: var(--danger); }
+.notice[data-kind="success"] { border-inline-start-color: var(--success); }
+
+/* 13. Shell layout (DESIGN.md §5, §8). One column on mobile with 1rem side
+   padding; the main column is capped at 40rem from tablet and 60rem on desktop. */
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.shell-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--page-x) var(--space-2);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-title { margin: 0; font-size: 1.125rem; font-weight: 700; flex: 1 1 auto; min-width: 0; }
+.shell-badges { display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
+.shell-connection[data-connection="offline"] { border-style: dashed; }
+
+/* Header action row (P3-15, design-p3 §1.9): KO EN JA · display · share ·
+   settings. On mobile it is the header's second line (title and badges are
+   the first); it wraps freely so XL text, Japanese labels or 200% zoom never
+   push the language toggle into an overflow menu or clip it. */
+.shell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.shell-languages { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
+.shell-language { padding-inline: var(--space-3); font-variant-numeric: tabular-nums; }
+.shell-language[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+
+.shell-notice, .shell-message { margin: var(--gap) var(--page-x) 0; }
+.shell-notice-text { flex: 1 1 auto; min-width: 0; }
+
+.shell-tabs { padding: var(--gap) var(--page-x) 0; }
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  margin: var(--gap) var(--page-x) var(--space-5);
+}
+
+/* The visible panel fills the card so the sequential dock can sit in the thumb
+   range even when the transcript is short (DESIGN.md §5: bottom third). */
+.shell-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+
+.shell-planned { margin: 0; color: var(--text-muted); }
+
+/* Settings dialog (content rendered by P1-16). P3-16: the box, the fixed title
+   row, the scrolling body and the centred desktop modal all come from .sheet,
+   which this element now carries; only what is specific to settings is left. */
+.shell-settings-close { min-width: var(--touch); min-height: var(--touch); }
+
+/* 14. Sequential screen (P3-17, DESIGN.md §4 PTT/bubbles, §5, §8). The PTT is
+   full width, 64px on mobile and 56px on desktop, growing with text zoom;
+   while pressed it shows a 3px recording border (inset so the button does not
+   shift) plus the "recording" text. Stacked layout (default): language pair,
+   transcript, then the dock (status, PTT, start/finish, hint, text form) which
+   sticks to the bottom of the viewport so the PTT and input stay reachable
+   while the page scrolls or the keyboard opens. The DOM is in that order; no
+   CSS `order` is used anywhere on this screen. */
+.seq { display: flex; flex-direction: column; flex: 1 1 auto; gap: var(--gap); min-width: 0; }
+
+.seq-transcript { display: flex; flex-direction: column; flex: 1 1 auto; gap: var(--gap); min-width: 0; }
+
+.seq-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+  margin-top: auto;
+  padding-top: var(--gap);
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.seq-column { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+
+.seq-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas: "source-label . target-label" "source swap target";
+  gap: 0.375rem var(--gap);
+  align-items: end;
+}
+
+.seq-pair-label { font-size: 0.8125rem; font-weight: 600; color: var(--text-muted); }
+.seq-pair-label:nth-of-type(1) { grid-area: source-label; }
+.seq-pair-label:nth-of-type(2) { grid-area: target-label; }
+.seq-select { width: 100%; }
+#seq-source { grid-area: source; }
+#seq-target { grid-area: target; }
+.seq-swap { grid-area: swap; }
+
+.seq-status-row { display: flex; align-items: center; gap: var(--gap); min-width: 0; }
+.seq[data-status="recording"] .seq-status { border-color: var(--recording); }
+
+.seq-level {
+  flex: 1 1 auto;
+  height: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+  overflow: hidden;
+}
+
+.seq-level-bar {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 80ms linear;
+}
+
+/* PTT on its own full-width row; start/finish and cancel share the next row
+   and the remaining button widens when cancel is hidden. */
+.seq-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.seq-toggle, .seq-cancel { flex: 1 1 8rem; min-width: 0; }
+
+.seq-ptt {
+  flex: 1 1 100%;
+  width: 100%;
+  min-height: max(64px, 4rem);
+  font-size: 1.25rem;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.seq-ptt[aria-pressed="true"] {
+  border-color: var(--recording);
+  box-shadow: inset 0 0 0 3px var(--recording);
+}
+
+.seq-ptt[aria-pressed="true"]:focus-visible {
+  box-shadow: 0 0 0 2px var(--text), inset 0 0 0 3px var(--recording);
+}
+
+.seq-hint { margin: 0; font-size: 0.875rem; color: var(--text-muted); }
+
+/* Text form: textarea | send on one row, hint underneath (DOM order matches). */
+.seq-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "text submit" "hint hint";
+  gap: var(--space-2);
+  align-items: start;
+  min-width: 0;
+}
+.seq-text { grid-area: text; min-width: 0; }
+.seq-submit { grid-area: submit; }
+#seq-submit-hint { grid-area: hint; }
+
+.seq-records {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.seq-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+
+.seq-empty { margin: 0; color: var(--text-muted); }
+
+.seq-turns { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+
+/* Turn bubbles (DESIGN.md §4): source on surface-alt, translation on
+   accent-soft, a 2px start bar per speaker, muted 0.8125rem meta, actions at
+   the end. Phase is also in data-phase and the badge text, not just the border. */
+.turn { padding: var(--space-3); }
+.turn-active { border-width: 2px; border-color: var(--accent); }
+.turn[data-phase="error"] { border-style: dashed; border-color: var(--danger); }
+.turn[data-phase="cancelled"], .turn[data-phase="silence"], .turn[data-phase="unrecognized"] { border-style: dashed; }
+
+.turn-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.turn-engine, .turn-latency { font-variant-numeric: tabular-nums; }
+.turn-block { margin: var(--space-1) 0; min-width: 0; }
+.turn-label { display: block; font-size: 0.8125rem; font-weight: 600; color: var(--text-muted); }
+/* Long translations and pasted URLs wrap inside the bubble; never a horizontal scroll. */
+.turn-text {
+  margin: 0.125rem 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-inline-start: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+}
+.turn-text-translation {
+  border-inline-start-color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 1.25rem;
+}
+.turn-text:empty { display: none; }
+.turn-voice { margin: var(--space-2) 0 0; font-size: 0.8125rem; color: var(--text-muted); }
+.turn-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* 15. Settings, diagnostics and PWA share the tokens above. */
+.settings, .settings-section, .settings-field, .settings-key-form,
+.settings-shared-form, .diag-checks, .pwa-controls {
+  display: grid;
+  gap: var(--gap);
+  min-width: 0;
+}
+.settings-section { margin-bottom: var(--gap); }
+.settings-section h3 { margin: 0; font-size: 1.125rem; }
+.settings-label, .diag-check-label { font-size: 0.8125rem; font-weight: 600; }
+.settings-note, .settings-terms, .diag-scope, .diag-user-start,
+.diag-check-model, .pwa-install-hint, .pwa-update-hint {
+  margin: 0;
+  color: var(--text-muted);
+}
+.settings-key-input, .settings-shared-input, .settings-select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--touch);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.settings-actions, .settings-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  min-width: 0;
+}
+.settings-confirm {
+  flex-basis: 100%;
+  padding: var(--gap);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+.settings-confirm-text { flex-basis: 100%; }
+.settings-remember, .settings-mode-option {
+  grid-template-columns: var(--touch) minmax(0, 1fr);
+  align-items: center;
+}
+/* The control and its label take the two columns; anything else in the row
+   (the storage warning under "remember this key") is a full-width line. A
+   third child used to land in the 44px control column, which squeezed a
+   Japanese sentence into one character per line on a phone. */
+.settings-remember > :not(.settings-checkbox):not(.settings-radio):not(label),
+.settings-mode-option > :not(.settings-checkbox):not(.settings-radio):not(label) {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.settings-checkbox, .settings-radio {
+  width: var(--touch);
+  height: var(--touch);
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.settings-remember label, .settings-mode-option label {
+  display: flex;
+  align-items: center;
+  min-height: var(--touch);
+  cursor: pointer;
+}
+.settings-key-status, .settings-shared-status { margin: 0; font-weight: 600; }
+.diag-capabilities { width: 100%; table-layout: fixed; border-collapse: collapse; margin: var(--gap) 0; }
+.diag-capabilities th, .diag-capabilities td {
+  padding: var(--space-2);
+  text-align: start;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.diag-check {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: var(--gap);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+}
+.diag-check-state { justify-self: start; }
+.diag-check-message { margin: 0; }
+.diag-check[data-state="failed"] { border-color: var(--danger); border-style: dashed; }
+.diag-check[data-state="running"] { border-color: var(--accent); border-width: 2px; }
+.pwa-controls { width: 100%; }
+.pwa-install, .pwa-update { justify-self: stretch; white-space: normal; }
+
+/* 16. Simultaneous listening (P2-16): bounded viewport with explicit scroll
+   anchoring. Partial sentences are muted, final ones in the text colour, and
+   gaps carry a warning badge in addition to the dashed bar. */
+.sim { display: grid; gap: var(--gap); min-width: 0; }
+.sim-controls { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: end; }
+.sim-field { display: grid; gap: var(--space-1); flex: 1 1 12rem; min-width: 0; }
+.sim-field select, .sim-room { width: 100%; min-width: 0; min-height: var(--touch); font: inherit; }
+.sim-hints, .sim-output, .sim-recent { color: var(--text-muted); }
+.sim-hints p { margin: var(--space-1) 0; }
+.sim-captions { overflow-y: auto; overflow-anchor: none; max-height: 60vh; min-height: 8rem;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: var(--gap); }
+.sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--accent-soft); border-radius: var(--radius); }
+.sim-caption .turn-text { padding: 0; border: 0; background: transparent; font-size: var(--caption-size, 1.25rem); }
+.sim-caption[data-status="partial"] { color: var(--text-muted); border-inline-start: 3px dashed var(--accent); }
+.sim-caption[data-status="interrupted"] { border-inline-start: 3px solid var(--danger); }
+.sim-level { width: 100%; min-height: 1rem; }
+
+/* P3-02c caption board: inline in the tab, or a captions-only full screen.
+   The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
+/* P3-31: plan, usage and rates. The cost block is absent on Free, so nothing
+   here should imply a hidden number rather than none. */
+.billing-view { display: grid; gap: var(--space-2); min-width: 0; }
+.billing-usage { margin: 0; font-weight: 700; }
+.billing-breakdown { margin: 0; padding-inline-start: 1.25rem; display: grid; gap: var(--space-1); }
+.billing-breakdown-title { margin: 0; }
+.billing-cost { display: grid; gap: var(--space-2); padding: var(--space-3);
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.billing-estimate { margin: 0; font-weight: 700; }
+.billing-rate-source, .billing-rate-verified { margin: 0; color: var(--text-muted); }
+.billing-local-input { min-height: var(--touch); }
+
+/* P3-24/28: the microphone permission and audio device section. The status is
+   a badge, the help appears only while the permission is denied, and every
+   control keeps the full touch target. */
+.audio-settings, .audio-devices { display: grid; gap: var(--space-2); min-width: 0; }
+.audio-permission-status[data-permission="denied"] { border-color: var(--warning); }
+.audio-permission-request, .audio-device-refresh { justify-self: start; min-width: var(--touch); min-height: var(--touch); }
+.audio-permission-help {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.audio-permission-help-title { margin: 0; font-size: 1rem; }
+.audio-device .settings-select { min-height: var(--touch); }
+.audio-output-status { font-weight: 600; }
+
+/* P3-21: the shared key guidance card. One rule set for all three placements
+   so the settings section, the first-run greeting and the empty direct screen
+   read identically. Long URLs and Japanese wrap instead of widening the page. */
+.key-guide {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.key-guide-title { margin: 0; font-size: 1.125rem; }
+.key-guide-lead, .key-guide-free, .key-guide-not-all-free, .key-guide-restriction-why { margin: 0; }
+.key-guide-free, .key-guide-not-all-free, .key-guide-restriction-why { color: var(--text-muted); }
+.key-guide-restriction { margin: 0; font-weight: 700; }
+.key-guide-steps { margin: 0; padding-inline-start: 1.5rem; display: grid; gap: var(--space-1); }
+.key-guide-link { margin: 0; }
+.key-guide-anchor {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--touch);
+  color: var(--accent);
+}
+.key-guide-new-tab { color: var(--text-muted); font-size: 0.875em; }
+.key-guide-open-settings { justify-self: start; min-height: var(--touch); }
+.shell-first-run { display: grid; gap: var(--gap); min-width: 0; }
+
+/* P3-20: the display controls, mounted both in the header's 화면 sheet and in
+   the settings screen. One rule set serves both mounts, so the two entry points
+   look the same as well as behaving the same. Radios keep a full touch target
+   and wrap instead of clipping at XL text. */
+.display-controls { display: grid; gap: var(--gap); min-width: 0; }
+.display-title { margin: 0; font-size: 1.125rem; }
+.display-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.display-legend { flex: 1 0 100%; padding: 0; font-weight: 700; }
+.display-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch);
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.display-input { min-width: 1.25rem; min-height: 1.25rem; }
+.display-option:has(.display-input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.display-option:has(.display-input:disabled) { color: var(--text-muted); cursor: not-allowed; }
+.display-hint { flex: 1 0 100%; margin: 0; color: var(--text-muted); }
+.display-captions-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+.display-captions-slider { flex: 1 1 8rem; min-width: 0; min-height: var(--touch); }
+.display-captions-smaller, .display-captions-larger { min-width: var(--touch); min-height: var(--touch); }
+.display-captions-value { min-width: 5ch; font-variant-numeric: tabular-nums; }
+.display-preview { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.display-preview-title { margin: 0 0 var(--space-2); font-size: 1rem; }
+.display-preview-sample { margin: 0; font-size: var(--caption-size, 1.5rem); overflow-wrap: anywhere; }
+.display-not-saved { color: var(--warning); }
+
+/* Two-way interpretation (owner, 2026-09-06): the toggle, the other language
+   and the pair readout sit with the rest of the simultaneous controls. */
+.sim-two-way { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--touch); }
+.sim-two-way-input { min-width: 1.25rem; min-height: 1.25rem; }
+.sim-two-way-pair { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+.sim-two-way-hint, .sim-two-way-voice { margin: 0; color: var(--text-muted); }
+
+/* P3-18: the caption board's own size and contrast controls sit next to the
+   board, because the caption scale (§1.10) is separate from the app-wide text
+   size and is read at a distance. The row wraps so XL text and Japanese never
+   clip it, and every control keeps the full touch target. */
+.sim-caption-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.sim-caption-smaller, .sim-caption-larger, .sim-caption-contrast {
+  min-width: var(--touch);
+  min-height: var(--touch);
+}
+.sim-caption-size { min-width: 5ch; font-variant-numeric: tabular-nums; }
+.sim-caption-range { flex: 1 0 100%; margin: 0; color: var(--text-muted); }
+
+.caption-board { display: grid; gap: var(--gap); min-width: 0; --caption-size: 1.5rem; }
+.caption-board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.caption-board-size { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--touch); flex: 1 1 14rem; min-width: 0; }
+.caption-board-slider { flex: 1 1 6rem; min-width: 5rem; min-height: var(--touch); margin: 0; accent-color: var(--accent); }
+.caption-board-size-value { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+.caption-board-wake, .caption-board-status, .caption-board-notice, .caption-board-gap { margin: 0; }
+.caption-board-wake { flex-basis: 100%; font-size: 0.875rem; color: var(--text-muted); }
+.caption-board-notice { border-inline-start: 0.375rem solid var(--accent); padding-inline-start: var(--space-2); }
+.caption-board-primary { display: flex; align-items: center; justify-content: center; }
+.sim-fs-primary { min-height: max(64px, 4rem); min-width: 12rem; font-size: 1.25rem; }
+.sim[data-caption-only="true"] > :not(.caption-board) { display: none; }
+.caption-board[data-caption-only="true"] {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100vh;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+}
+.caption-board[data-caption-only="true"] .caption-board-bar {
+  padding: var(--space-2) var(--gap);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.caption-board[data-caption-only="true"] .caption-board-status,
+.caption-board[data-caption-only="true"] .caption-board-notice,
+.caption-board[data-caption-only="true"] .caption-board-gap,
+.caption-board[data-caption-only="true"] .caption-board-empty { margin: 0 var(--gap); }
+.caption-board[data-caption-only="true"] .caption-board-primary { flex: 1 1 auto; }
+.caption-board[data-caption-only="true"] .sim-captions {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0 var(--gap) calc(var(--touch) + var(--gap));
+  overscroll-behavior: contain;
+}
+.caption-board[data-caption-only="true"] .sim-caption {
+  margin: 0;
+  padding: var(--space-2) 0;
+  background: transparent;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+}
+.caption-board[data-caption-only="true"] .sim-caption[data-status="partial"] { padding-inline-start: var(--space-2); }
+.caption-board[data-caption-only="true"] .sim-caption[data-status="interrupted"] { padding-inline-start: var(--space-2); }
+.caption-board[data-caption-only="true"] .sim-latest {
+  position: absolute;
+  bottom: calc(var(--gap) + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+}
+/* Board display modes reuse the current tone's light/dark sets from §1 and the
+   §10 mono high-contrast set (black background, white text), scoped to the
+   board only. The alias is re-declared so it follows the board's own tokens. */
+.caption-board[data-caption-only="true"][data-display="light"] {
+  color-scheme: light;
+  --bg: var(--light-bg); --surface: var(--light-surface); --surface-alt: var(--light-surface-alt);
+  --text: var(--light-text); --text-muted: var(--light-text-muted); --border: var(--light-border);
+  --accent: var(--light-accent); --accent-soft: var(--light-accent-soft); --accent-text: var(--light-accent-text);
+  --danger: var(--light-danger); --translation-bg: var(--accent-soft);
+}
+.caption-board[data-caption-only="true"][data-display="dark"] {
+  color-scheme: dark;
+  --bg: var(--dark-bg); --surface: var(--dark-surface); --surface-alt: var(--dark-surface-alt);
+  --text: var(--dark-text); --text-muted: var(--dark-text-muted); --border: var(--dark-border);
+  --accent: var(--dark-accent); --accent-soft: var(--dark-accent-soft); --accent-text: var(--dark-accent-text);
+  --danger: var(--dark-danger); --translation-bg: var(--accent-soft);
+}
+.caption-board[data-caption-only="true"][data-display="mono"] {
+  color-scheme: dark;
+  --bg: #000000; --surface: #000000; --surface-alt: #1a1a1a; --text: #ffffff; --text-muted: #d4d4d4;
+  --border: #8a8a8a; --accent: #ffffff; --accent-text: #000000; --accent-soft: #000000;
+  --danger: #ffb4ab; --translation-bg: var(--accent-soft);
+}
+
+/* 17. Site sharing (P3-16: on the shared .sheet contract, so the QR and the URL
+   scroll in .sheet-body while the copy action stays in the sticky .sheet-footer).
+   The P2-25 URL, QR and clipboard behaviour is unchanged. */
+.share-dialog .sheet-body > * { max-width: 32rem; margin-inline: auto; }
+.share-button, .share-close, .share-copy { min-width: var(--touch); min-height: var(--touch); }
+.share-image { display: block; width: 100%; height: auto; background: white; }
+.share-url {
+  display: block;
+  width: 100%;
+  min-height: var(--touch);
+  margin-block: var(--gap);
+  padding: var(--space-2);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  resize: vertical;
+  user-select: text;
+}
+.share-copy { display: block; }
+.share-deployment { overflow-wrap: anywhere; }
+
+.settings-key-feedback { display: block; white-space: normal; overflow-wrap: anywhere; }
+.settings-key-feedback[hidden] { display: none; }
+
+/* 17b. Settings sections (design-p3 §1.12) and policy locks (§1.6, P3-19).
+   Every section has a title and a hint; a block is a sub-group inside a
+   section (personal key, shared key, key source, voice). A lock note sits
+   under its control: padlock + "value set by the administrator" + reason,
+   linked by aria-describedby, so the state is text, never colour alone. */
+.settings-section-hint { margin: 0; color: var(--text-muted); font-size: 0.875rem; }
+.settings-block { display: grid; gap: var(--gap); min-width: 0; padding-top: var(--space-2); }
+.settings-block-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.settings-lock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.settings-lock[data-locked="true"] { color: var(--text); }
+.settings-lock-icon::before { content: "🔒"; }
+.settings-lock-label { font-weight: 600; }
+.settings-lock-reason { flex-basis: 100%; }
+.settings-select:disabled { background: var(--surface-alt); color: var(--text-muted); cursor: not-allowed; }
+.policy { display: grid; gap: var(--gap); min-width: 0; padding-top: var(--space-2); }
+.policy-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.policy-status { justify-self: start; }
+.policy-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--gap); margin: 0; }
+.policy-fact { display: contents; }
+.policy-fact-label { font-size: 0.8125rem; font-weight: 600; }
+.policy-fact-value { margin: 0; overflow-wrap: anywhere; }
+.policy-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.policy-blocked {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--gap);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+.policy-blocked-title { margin: 0; font-weight: 600; }
+.policy-blocked p { margin: 0; }
+.policy-emergency { display: grid; gap: var(--space-1); overflow-wrap: anywhere; }
+.policy-emergency-label { font-size: 0.8125rem; font-weight: 600; }
+.policy-locks, .policy-hub { display: grid; gap: var(--space-2); }
+.policy-locks-title, .policy-hub-title { margin: 0; font-size: 0.8125rem; font-weight: 600; }
+.policy-lock-list, .policy-feature-list { margin: 0; padding-inline-start: 1.25rem; }
+.policy-lock-list:empty, .policy-feature-list:empty { display: none; }
+.policy-lock-item { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.policy-lock-item-label { font-weight: 600; }
+.policy-lock-item-reason { flex-basis: 100%; color: var(--text-muted); }
+.policy-hub-state { justify-self: start; }
+.policy-hub-revision { margin: 0; }
+
+/* 18. Breakpoints (DESIGN.md §8): min-width only, 40rem and 64rem. */
+@media (min-width: 40rem) {
+  .card, .shell-main, .settings-section { padding: 1.25rem; }
+  .caption-text, .turn-text-translation { font-size: 1.5rem; }
+  .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 40rem; margin-left: auto; margin-right: auto; width: calc(100% - 2 * var(--page-x)); }
+  .shell-settings-body { max-width: 40rem; margin-inline: auto; }
+  .diag-check { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+  .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
+  .pwa-install, .pwa-update { justify-self: start; }
+  .sheet {
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(640px, calc(100% - 2 * var(--space-4)));
+    max-height: calc(100vh - 2 * var(--space-4));
+    max-height: calc(100dvh - 2 * var(--space-4));
+    padding-top: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--dialog-shadow);
+  }
+  .sheet-footer { padding-bottom: var(--space-3); }
+}
+
+@media (min-width: 64rem) {
+  .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 60rem; }
+  .shell-settings-body { max-width: 60rem; }
+  /* Desktop header (P3-15, DESIGN.md §4): app name | tabs | badges | KO EN JA
+     | display | share | settings on one wrapping line. The in-header tab
+     rules key on the data-layout the shell sets after it has moved the tab
+     row, so the stylesheet and the DOM order always agree. The title and the
+     action row share the free space so the tabs sit near the centre. */
+  .shell[data-layout="desktop"] .shell-title { flex: 1 1 0; }
+  .shell[data-layout="desktop"] .shell-actions { flex: 1 1 0; justify-content: flex-end; }
+  .shell[data-layout="desktop"] .shell-header .shell-tabs {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: none;
+    margin: 0 var(--space-3);
+    padding: 0;
+    border-bottom: 0;
+  }
+  .shell[data-layout="desktop"] .shell-header .shell-tab { flex: 0 0 auto; }
+  .seq-ptt { min-height: max(56px, 3.5rem); }
+  /* Desktop sequential (DESIGN.md §5): 24rem control column + variable
+     transcript. The grid only switches on once the view has moved the nodes
+     into that order (data-layout), so DOM and visual order always agree. */
+  .seq[data-layout="desktop"] {
+    display: grid;
+    grid-template-columns: 24rem minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-5);
+  }
+  .seq[data-layout="desktop"] .seq-column { position: sticky; top: var(--gap); }
+  .seq[data-layout="desktop"] .seq-dock {
+    position: static;
+    margin-top: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top: 0;
+    background: transparent;
+  }
+}
+
+/* 19. Motion and forced colours (DESIGN.md §6). Transitions are 150ms
+   ease-out and drop to zero under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+  .seq-level-bar { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .seq-level-bar { background: CanvasText; }
+  .tab[aria-selected="true"], .shell-tab[aria-selected="true"] { outline: 2px solid CanvasText; }
+  .btn, .badge, .card, .sheet, .turn-text { border-color: CanvasText; }
+  .seq-ptt[aria-pressed="true"] { outline: 3px solid Highlight; outline-offset: -3px; }
+}
