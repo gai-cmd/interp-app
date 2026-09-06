@@ -640,3 +640,57 @@ test('P3-03 strings are translated per language and interpolate only public disp
     assert.ok(i18n.t('display.captions.value', { size: 1.5 }).includes(i18n.formatNumber(1.5)));
   }
 });
+
+// P3-37: the language review. Key completeness is checked elsewhere; these are
+// the terminology rules the review settled, so a later string cannot drift back.
+test('P3-37 one word per concept in each language', () => {
+  const uses = (language, term) => Object.entries(dictionaries[language])
+    .filter(([, value]) => value.includes(term)).map(([key]) => key);
+
+  // Japanese had three words for "device". The review split them:
+  //   端末   the handset the person is holding
+  //   機器   an audio device (microphone, speaker)
+  //   デバイス only inside デバイス音声, the fixed term for device speech
+  for (const key of uses('ja', 'デバイス')) {
+    assert.ok(dictionaries.ja[key].includes('デバイス音声'),
+      `ja ${key}: デバイス is reserved for デバイス音声; an audio device is 機器, the handset is 端末`);
+  }
+  // Korean makes the same split with 기기 (handset) and 장치 (audio device).
+  for (const key of ['device.input', 'device.output', 'device.none', 'device.disappeared']) {
+    assert.ok(dictionaries.ko[key].includes('장치'), `ko ${key} uses 장치 for an audio device`);
+    assert.ok(dictionaries.ja[key].includes('機器'), `ja ${key} uses 機器 for an audio device`);
+  }
+  for (const key of ['display.savedOnDevice', 'diagnostics.metrics']) {
+    assert.ok(dictionaries.ko[key].includes('기기'), `ko ${key} uses 기기 for the handset`);
+    assert.ok(dictionaries.ja[key].includes('端末'), `ja ${key} uses 端末 for the handset`);
+  }
+
+  // The app interprets; it does not "translate" except where it names captions.
+  assert.ok(uses('ko', '통역').length > uses('ko', '번역').length);
+  assert.ok(uses('ja', '通訳').length > uses('ja', '翻訳').length);
+});
+
+test('P3-37 no string promises what the app cannot deliver', () => {
+  // Creating a key is free; using every model is not (§1.12).
+  for (const language of SUPPORTED_LANGUAGES) {
+    assert.ok(dictionaries[language]['keyGuide.notAllFree'], `${language} states the limit`);
+    assert.ok(dictionaries[language]['billing.displayOnly'], `${language} states Paid changes no billing`);
+    assert.ok(dictionaries[language]['billing.notZero'], `${language} refuses to show an unknown cost as zero`);
+    assert.ok(dictionaries[language]['permission.gestureOnly'], `${language} states the app cannot grant permission`);
+    assert.ok(dictionaries[language]['permission.notEvidence'], `${language} refuses a stored value as evidence`);
+    assert.ok(dictionaries[language]['admin.export.notPublished'], `${language} states a download is not a publication`);
+  }
+  // The estimate is always labelled as an estimate, never as a price.
+  for (const language of SUPPORTED_LANGUAGES) {
+    const estimate = dictionaries[language]['billing.estimateAlways'];
+    assert.ok(estimate.length > 0, language);
+  }
+});
+
+test('P3-37 the review is recorded with what remains unverified', async () => {
+  const review = await readFile(new URL('../docs/p3-language-review.md', import.meta.url), 'utf8');
+  for (const language of ['한국어', 'English', '日本語']) assert.ok(review.includes(language), language);
+  // A key count is not a review, and the document has to say so.
+  assert.match(review, /키 수/);
+  assert.match(review, /미검증|확인 필요/);
+});
