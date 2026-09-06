@@ -17,6 +17,13 @@
 // direct Live and hub join call policy.assertAction() first, the router checks
 // the route again, and a restrictive policy change runs the existing
 // stopWork() cleanup. A wider policy only reopens the gate; nothing restarts.
+// P3-11: venue live control (design-p3 §1.8). One control state per app feeds
+// policyRuntime.setHubControl(); the hub listening socket carries the
+// negotiation while the user has joined an event, and direct listening keeps a
+// control-only audience connection instead. That connection is not app work:
+// it holds no activity lease, uses no key, microphone or speech, and
+// stopWork() never closes it, so a release notice still arrives after a stop.
+// It ends only with leaving the event, the event ending in the policy, or teardown.
 // Teardown: policy -> settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
 import fallbackDictionary from './i18n/boot-fallback.js';
@@ -42,8 +49,9 @@ import { ProviderError } from './providers/contract.js';
 import { createActivity } from './engine/activity.js';
 import { createSimEngine } from './engine/sim.js';
 import { createHubListenEngine } from './engine/hub-listen.js';
-import { createHubClient } from './hub/client.js';
-import { REGISTERED_HUBS } from './hub/protocol.js';
+import { createHubClient, createHubControl } from './hub/client.js';
+import { REGISTERED_HUBS, validateRoomCode } from './hub/protocol.js';
+import { resolveEffective } from './policy/resolve.js';
 import { createPwa, createPwaControls, UPDATE_KEYS } from './pwa.js';
 
 // UI settings live in localStorage per device (§11.1); keys are ours alone.
@@ -63,6 +71,8 @@ const GESTURE_EVENTS = Object.freeze(['pointerdown', 'keydown']);
 const POLICY_CHANGE_KEYS = Object.freeze({ reopened: 'policy.changed.reopened', display: 'policy.changed.display',
   pricing: 'policy.changed.pricing', updated: 'policy.changed.updated' });
 const languagePattern = /^(ko|en|ja)$/;
+// Policy sharedEvents[].id shape (P3-04 schema), for explicit event participation.
+const eventIdPattern = /^[a-z0-9-]{1,64}$/;
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
@@ -183,6 +193,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let audioContext = null, closing = null;
   let simEngine = null, hubEngine = null, listenEngines = null;
   let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null;
+  // P3-11: live-control state, the joined event and the control-only connection.
+  let hubControl = null, eventLink = null, membership = null, controlOp = null, listenControlled = false;
+  let controlClosing = Promise.resolve(), linkState = 'idle', linkError = null;
   const activity = createActivity(timing);
   let lifecycleGeneration = 0, transitions = 0, cleanupFailed = false;
   const listeningBusy = () => closed || doc.hidden || cleanupFailed || activity.occupied || transitions > 0
@@ -341,7 +354,135 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     const hubTTS = deviceTTS ?? Object.freeze({
       speak: async () => ({ status: 'unavailable' }), cancel() {},
     });
-    hubEngine = createHubListenEngine({ client: createHubClient({ hubs, WebSocket: win.WebSocket, ...timing }), deviceTTS: hubTTS, ...timing });
+    // P3-11: live control (design-p3 §1.8). Only a code-registered hub the site
+    // policy allows is trusted; the negotiation is sent only for the event the
+    // user joined, and the hub's answer is applied only for that same event.
+    hubControl = createHubControl({ now, ...timing });
+    const hubClient = createHubClient({ hubs, WebSocket: win.WebSocket, ...timing });
+    const controlClient = createHubClient({ hubs, WebSocket: win.WebSocket, ...timing });
+    const hubRule = () => policyRuntime.snapshot().policy?.hubControl ?? null;
+    const hubAllowed = (hubId) => { const rule = hubRule(); return rule?.enabled === true && rule.allowedHubIds.includes(hubId); };
+    // The hello of the next attempt: the joined event plus the last accepted epoch and revision.
+    const controlFor = (hubId) => {
+      if (!membership || !hubAllowed(hubId)) return null;
+      const state = hubControl.snapshot();
+      return state.supported === true && state.eventId === membership.eventId
+        ? { eventId: membership.eventId, epoch: state.epoch, revision: state.revision ?? 0 } : { eventId: membership.eventId };
+    };
+    // Whichever connection carries the negotiation feeds the one control state.
+    const controlEvents = (hubId, inner) => (event) => {
+      inner?.(event);
+      if ((event.type !== 'hello' && event.type !== 'control') || !membership || !hubAllowed(hubId)) return;
+      if (event.type === 'hello') hubControl.negotiate(event.control?.eventId === membership.eventId ? event.control : null);
+      else hubControl.receive(event);
+    };
+    const linkListeners = new Set();
+    const notifyLink = () => { for (const listener of [...linkListeners]) attempt(() => listener(eventLink.snapshot())); };
+    // Control-only audience connection for direct listening: receive-only, no
+    // activity lease, no key, microphone or speech. Suspended while a listening
+    // socket carries the negotiation and resumed when that socket has closed.
+    function openControlOnly() {
+      if (!membership || controlOp || listenControlled || closed || hubRule()?.allowDirectSubscription !== true) return;
+      const { hubId, roomCode } = membership;
+      let op;
+      try {
+        op = controlClient.join({ hubId, roomCode }, { control: () => controlFor(hubId),
+          onEvent: controlEvents(hubId, (event) => {
+            if (event.type === 'connection' && controlOp === op) { linkState = event.state; notifyLink(); }
+          }) });
+      } catch (error) { linkState = 'failed'; linkError = redact(error).code; notifyLink(); return; }
+      controlOp = op; linkState = 'connecting'; linkError = null;
+      op.done.then((outcome) => {
+        if (controlOp !== op) return;
+        controlOp = null; linkState = outcome.state;
+        linkError = outcome.error && outcome.error.code !== 'ABORTED' ? outcome.error.code : null;
+        // Ended without a successor: the venue control cannot be confirmed (TTL covers reconnects).
+        if (membership && !listenControlled) hubControl.disconnected();
+        notifyLink();
+      });
+      notifyLink();
+    }
+    function suspendControlOnly() {
+      const op = controlOp;
+      if (!op) return controlClosing;
+      controlOp = null; linkState = 'stopping'; notifyLink();
+      // Ownership is kept until the socket has physically closed (P2-11 contract).
+      controlClosing = op.close().catch(() => op.closed).then(() => { if (controlOp === null && linkState === 'stopping') { linkState = 'idle'; notifyLink(); } });
+      return controlClosing;
+    }
+    async function resumeControlOnly() { await controlClosing; openControlOnly(); }
+    const listenClient = Object.freeze({ join(request, options = {}) {
+      const hubId = request?.hubId;
+      const carries = controlFor(hubId) !== null;
+      const handle = hubClient.join(request, { ...options, onEvent: controlEvents(hubId, options.onEvent),
+        ...(carries ? { control: () => controlFor(hubId) } : {}) });
+      if (carries) {
+        // The listening socket is reused for control (§1.8); one connection per hub.
+        listenControlled = true;
+        void suspendControlOnly();
+        handle.closed.then(() => { listenControlled = false; void resumeControlOnly(); });
+      }
+      return handle;
+    } });
+    // The joined event: explicit participation first, else the shared key's event (P3-08).
+    function syncEvent() {
+      const shared = attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'shared')?.eventId);
+      attempt(() => policyRuntime.setEvent(membership?.eventId ?? (typeof shared === 'string' ? shared : null)));
+    }
+    const eventEntries = () => {
+      const policy = policyRuntime.snapshot().policy;
+      return Object.freeze((policy?.sharedEvents ?? []).map((entry) => Object.freeze({ id: entry.id, label: entry.label, eventName: entry.eventName,
+        status: resolveEffective({ policy, preferences: null, event: entry.id, now }).event?.status ?? 'removed' })));
+    };
+    function joinEvent({ eventId, hubId, roomCode } = {}) {
+      if (closed) throw new ProviderError('SESSION_CLOSED');
+      if (membership) throw new ProviderError('SESSION_LIMIT');
+      if (typeof eventId !== 'string' || !eventIdPattern.test(eventId)) throw new ProviderError('INVALID_REQUEST');
+      validateRoomCode(roomCode);
+      const snapshot = policyRuntime.snapshot();
+      const refuse = (code) => { const error = new PolicyError(code); announceBlock(error); throw error; };
+      if (snapshot.blocked !== null) refuse(snapshot.blocked.code);
+      const rule = snapshot.policy?.hubControl;
+      if (!rule || rule.enabled !== true) refuse('POLICY_FEATURE_DISABLED');
+      if (!rule.allowedHubIds.includes(hubId)) throw new ProviderError('HUB_REQUIRED');
+      if (resolveEffective({ policy: snapshot.policy, preferences: null, event: eventId, now }).event?.status !== 'active') refuse('EVENT_ENDED');
+      membership = { eventId, hubId, roomCode };
+      syncEvent();
+      try { policyRuntime.assertAction(ACTIONS.eventJoin); }
+      catch (error) { membership = null; syncEvent(); announceBlock(error); throw error; }
+      openControlOnly();
+      notify('event.joined');
+      notifyLink();
+    }
+    // Leaving ends event-scoped work, clears the control state (the gate reopens
+    // only through the policy runtime) and closes the control-only connection.
+    async function leaveEvent() {
+      if (!membership) return;
+      membership = null;
+      notifyLink();
+      if (busy()) await stopWork().catch(() => {});
+      hubControl.reset();
+      syncEvent();
+      await suspendControlOnly();
+      if (!closed) notify('event.left');
+      notifyLink();
+    }
+    eventLink = Object.freeze({
+      snapshot() {
+        const rule = hubRule();
+        return Object.freeze({ enabled: rule?.enabled === true, controlOnlyAllowed: rule?.allowDirectSubscription === true,
+          allowedHubIds: Object.freeze([...(rule?.allowedHubIds ?? [])]), events: eventEntries(),
+          joined: membership ? Object.freeze({ eventId: membership.eventId, hubId: membership.hubId }) : null,
+          connection: linkState, errorCode: linkError, control: hubControl.snapshot() });
+      },
+      subscribe(listener) {
+        if (typeof listener !== 'function') throw new ProviderError('INVALID_REQUEST');
+        linkListeners.add(listener); return () => linkListeners.delete(listener);
+      },
+      join: joinEvent, leave: leaveEvent,
+    });
+    removers.push(hubControl.subscribe((state) => { attempt(() => policyRuntime.setHubControl(membership ? state : null)); notifyLink(); }));
+    hubEngine = createHubListenEngine({ client: listenClient, deviceTTS: hubTTS, ...timing });
     listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
     shell = mount({ root, i18n, engine: gatedEngine, listenEngines, hubs,
       beforeTabChange: stopWork, document: doc, window: win, ...timing,
@@ -350,13 +491,21 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       onTabChange: (tab) => { if (storage) writeUiTab(storage, tab); } });
     // P3-02c: caption board preferences share the UI storage; only this module reads localStorage.
     if (storage) shell.simView?.setStorage(storage);
+    // P3-11: the simultaneous screen offers event participation and shows the control state.
+    shell.simView?.setHubControl(eventLink);
     removers.push(config.keyStore.subscribe(() => {
       if (busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
       else lifecycleGeneration++;
       // The joined shared-key event follows the shared metadata (eventId once
-      // P3-08's v2 payload carries it); the runtime resolves it against the policy.
-      const eventId = attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'shared')?.eventId);
-      attempt(() => policyRuntime.setEvent(typeof eventId === 'string' ? eventId : null));
+      // P3-08's v2 payload carries it) unless the user joined an event explicitly.
+      syncEvent();
+    }));
+    // The event list follows the policy; an event that is no longer active is left (§1.8 scope).
+    removers.push(policyRuntime.subscribe((snapshot) => {
+      if (membership && snapshot.policy && snapshot.eventId === membership.eventId && snapshot.event?.status !== 'active') {
+        queueMicrotask(() => { leaveEvent().catch(() => {}); });
+      }
+      notifyLink();
     }));
     diagnostics = createDiagnostics({ config, voiceEngine, capture, getAudioContext, ...timing,
       isBusy: () => listeningBusy() || engine.snapshot().busy || pwa?.snapshot().applying === true });
@@ -450,6 +599,11 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     controls?.destroy();
     settingsView?.destroy();
     await stopWork().catch(() => {});
+    // The control-only connection ends with the page, never with stopWork().
+    membership = null;
+    hubControl?.reset();
+    if (controlOp) { const op = controlOp; controlOp = null; await op.close().catch(() => {}); }
+    hubControl?.close();
     await Promise.allSettled([simEngine?.close(), hubEngine?.close()]);
     await diagnostics?.close();
     shell?.destroy();
@@ -469,6 +623,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   return Object.freeze({
     i18n, config, engine: gatedEngine, capture, voiceEngine, shell, diagnostics: gatedDiagnostics, settingsView, controls, pwa, getAudioContext,
     listenEngines, activity, stopWork, policy: policyRuntime, policyClient, preferences,
+    // P3-11: live-control state and the event link the simultaneous screen uses.
+    hubControl, eventLink,
     get closed() { return closed; },
     // UI language only (the interpretation pair is engine state).
     setLanguage(language) {

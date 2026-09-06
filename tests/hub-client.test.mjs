@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHubClient, HUB_CLIENT_LIMITS } from '../app/hub/client.js';
+import { createHubClient, createHubControl, HUB_CLIENT_LIMITS, HUB_CONTROL_INITIAL_EPOCH } from '../app/hub/client.js';
+import { HUB_LIMITS } from '../app/hub/protocol.js';
 import { createSocketFixture, createClock, deferred, DelayedBlob, tick,
   hub, hello, caption, status, wire } from './fixtures/hub-socket.mjs';
+import { EPOCH, EVENT_ID, controlHello, releaseSnapshot, snapshot } from './fixtures/hub.mjs';
 
 function fixture(options = {}) {
   const clock = createClock(), transport = createSocketFixture(options);
@@ -235,4 +237,160 @@ test('invalid UTF-8, duplicate hello and pre-hello captions fail safely', async 
     assert.equal((await op.done).error.code, 'INVALID_RESULT');
     await op.closed; assert.equal(f.sockets.length, 1);
   }
+});
+
+// --- P3-11: live-control negotiation on the audience socket (design-p3 §1.8) ---
+const negotiation = (epoch, revision) => ({ type: 'hello', settings: {}, control: { version: 1, eventId: EVENT_ID, epoch, revision } });
+
+test('a joined event sends the §1.8 hello once the socket opens; hello.control and snapshots arrive in order and nothing else is sent', async () => {
+  const f = fixture(), op = f.join({ control: { eventId: EVENT_ID } }); await tick();
+  const socket = f.sockets[0];
+  assert.deepEqual(socket.sent, [], 'nothing before open');
+  socket.open();
+  assert.deepEqual(socket.sent, [negotiation(HUB_CONTROL_INITIAL_EPOCH, 0)]);
+  socket.json(controlHello()); await op.ready;
+  assert.deepEqual(f.events.find((e) => e.type === 'hello').control, { version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 12 });
+  socket.json(snapshot()); socket.json(caption()); await tick();
+  const types = f.events.filter((e) => e.type === 'control' || e.type === 'caption').map((e) => e.type);
+  assert.deepEqual(types, ['control', 'caption']);
+  const control = f.events.find((e) => e.type === 'control');
+  assert.equal(control.revision, 13); assert.equal(control.stopped, true);
+  assert.deepEqual([...control.disabledFeatures], ['simultaneousDirect']);
+  assert.equal(control.notice.text.ko, '잠시 통역을 중지합니다.');
+  assert.equal(socket.sent.length, 1, 'the hello is the only text ever sent');
+  await op.close();
+  assert.equal(socket.listenerCount, 0, 'the open listener is removed with the others');
+  // A legacy hub answers without control: the consumer sees control null and listening continues.
+  const g = fixture(), legacy = g.join({ control: { eventId: EVENT_ID, epoch: EPOCH, revision: 12 } }); await tick();
+  g.sockets[0].open(); assert.deepEqual(g.sockets[0].sent, [negotiation(EPOCH, 12)]);
+  g.sockets[0].json(hello()); await legacy.ready;
+  assert.equal(g.events.find((e) => e.type === 'hello').control, null);
+  assert.equal(legacy.snapshot().state, 'running');
+  await legacy.close();
+});
+
+test('a control function is re-evaluated per attempt; null means a legacy hello-less attempt; a pre-hello snapshot is invalid', async () => {
+  let current = { eventId: EVENT_ID };
+  const f = fixture(), op = f.join({ control: () => current }); await tick();
+  f.sockets[0].open(); f.sockets[0].json(controlHello()); await op.ready;
+  current = { eventId: EVENT_ID, epoch: EPOCH, revision: 13 };
+  f.sockets[0].finishClose(1006); await tick(); f.clock.advance(1000); await tick();
+  f.sockets[1].open();
+  assert.deepEqual(f.sockets[1].sent, [negotiation(EPOCH, 13)]);
+  f.sockets[1].json(controlHello()); await tick();
+  current = null;
+  f.sockets[1].finishClose(1006); await tick(); f.clock.advance(2000); await tick();
+  f.sockets[2].open();
+  assert.deepEqual(f.sockets[2].sent, [], 'no event joined any more: nothing is sent');
+  f.sockets[2].json(snapshot()); await tick();
+  assert.equal((await op.done).error.code, 'INVALID_RESULT', 'a snapshot before hello is a malformed server');
+  await op.closed;
+});
+
+test('a refused hello send is a connection failure with retries; malformed control input is the caller\'s error and leaks nothing', async () => {
+  const f = fixture({ throwSend: true }), op = f.join({ control: { eventId: EVENT_ID } }); await tick();
+  f.sockets[0].open(); await tick();
+  assert.equal(f.sockets[0].closeCalls, 1);
+  f.clock.advance(1000); await tick();
+  assert.equal(f.sockets.length, 2, 'a failed send is retried like any connection failure');
+  for (const wait of [2000, 4000, 10000]) { f.sockets.at(-1).open(); await tick(); f.clock.advance(wait); await tick(); }
+  const result = await op.done;
+  assert.equal(result.error.code, 'BUDGET_EXHAUSTED');
+  assert.equal(JSON.stringify([result, f.events]).includes('SECRET'), false);
+  await op.closed;
+  assert.ok(f.sockets.every((socket) => socket.listenerCount === 0));
+  assert.throws(() => f.join({ control: 'service' }), { code: 'INVALID_REQUEST' });
+  assert.throws(() => f.join({ control: ['service'] }), { code: 'INVALID_REQUEST' });
+  assert.equal(f.sockets.length, 4);
+  const g = fixture(), bad = g.join({ control: () => ({ eventId: 'https://evil.invalid/SECRET' }) }); await tick();
+  g.sockets[0].open(); await tick();
+  assert.equal((await bad.done).error.code, 'INVALID_REQUEST');
+  assert.deepEqual(g.sockets[0].sent, []);
+  assert.equal(JSON.stringify(g.events).includes('SECRET'), false);
+  await bad.closed;
+  assert.equal(g.clock.size, 0);
+});
+
+// --- createHubControl: the P3-10 state, defined in client.js until control.js exists ---
+function controlFixture() {
+  const clock = createClock(), changes = [];
+  const control = createHubControl(clock);
+  control.subscribe((value) => changes.push(value));
+  return { clock, changes, control, parse: (message) => ({ ...message, type: 'control', disabledFeatures: [...message.disabledFeatures] }) };
+}
+const initialState = { supported: null, eventId: null, epoch: null, revision: null, stopped: false,
+  disabledFeatures: [], notice: null, heartbeatLost: false, expiresAt: null };
+
+test('control state: initial, negotiation, ordering, duplicates as heartbeat, other epoch or event ignored', () => {
+  const { control, parse, clock, changes } = controlFixture();
+  assert.deepEqual(control.snapshot(), initialState);
+  assert.ok(Object.isFrozen(control.snapshot()));
+  assert.equal(control.receive(parse(snapshot())), false, 'nothing is accepted before a negotiation');
+  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 12 });
+  assert.equal(control.snapshot().supported, true);
+  assert.equal(control.snapshot().revision, null, 'the hello revision is a hint; the first snapshot is accepted at any revision');
+  assert.equal(control.snapshot().expiresAt, HUB_LIMITS.ttlMaxSeconds * 1000);
+  assert.equal(control.receive(parse(snapshot({ epoch: 'other-epoch' }))), false);
+  assert.equal(control.receive(parse(snapshot({ eventId: 'other-event' }))), false);
+  assert.equal(control.receive({ ...parse(snapshot()), type: 'hello' }), false);
+  assert.equal(control.receive(parse(snapshot())), true);
+  const applied = control.snapshot();
+  assert.equal(applied.revision, 13); assert.equal(applied.stopped, true);
+  assert.deepEqual([...applied.disabledFeatures], ['simultaneousDirect']);
+  assert.equal(applied.notice.id, 'pause-13'); assert.equal(applied.expiresAt, 60000);
+  assert.ok(Object.isFrozen(applied.disabledFeatures));
+  clock.advance(1000);
+  const before = changes.length;
+  assert.equal(control.receive(parse(snapshot())), false, 'a repeat is the heartbeat');
+  assert.equal(control.snapshot().expiresAt, 61000, 'the heartbeat re-arms the TTL');
+  assert.equal(changes.length, before + 1);
+  assert.equal(control.receive(parse(releaseSnapshot({ revision: 12 }))), false, 'a lower revision never releases');
+  assert.equal(control.snapshot().stopped, true);
+  assert.equal(control.receive(parse(releaseSnapshot())), true);
+  assert.deepEqual({ ...control.snapshot(), expiresAt: null }, { ...initialState, supported: true, eventId: EVENT_ID, epoch: EPOCH, revision: 14 });
+  assert.throws(() => control.negotiate({ version: 1 }), { code: 'INVALID_REQUEST' });
+  assert.throws(() => control.subscribe(null), { code: 'INVALID_REQUEST' });
+  control.close();
+});
+
+test('control state: TTL expiry and disconnection only set heartbeatLost; the stop latch survives until a newer snapshot or reset', () => {
+  const { control, parse, clock } = controlFixture();
+  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 0 });
+  control.receive(parse(snapshot({ ttlSeconds: 10 })));
+  clock.advance(9999); assert.equal(control.snapshot().heartbeatLost, false);
+  clock.advance(1); assert.equal(control.snapshot().heartbeatLost, true);
+  assert.equal(control.snapshot().stopped, true, 'expiry does not release');
+  assert.equal(control.receive(parse(snapshot({ ttlSeconds: 10 }))), false);
+  assert.equal(control.snapshot().heartbeatLost, false, 'the heartbeat clears the loss');
+  control.disconnected();
+  assert.equal(control.snapshot().heartbeatLost, true);
+  assert.equal(control.snapshot().expiresAt, null);
+  assert.equal(control.snapshot().stopped, true, 'disconnection does not release');
+  assert.equal(clock.size, 0, 'no timer while disconnected');
+  // Same epoch again: revision ordering continues and the latch stays.
+  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 13 });
+  assert.equal(control.snapshot().heartbeatLost, false);
+  assert.equal(control.snapshot().revision, 13); assert.equal(control.snapshot().stopped, true);
+  assert.equal(control.receive(parse(releaseSnapshot({ revision: 13 }))), false);
+  assert.equal(control.snapshot().stopped, true);
+  // A new epoch (broadcast restart) accepts its first snapshot at any revision.
+  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: 'next-epoch', revision: 0 });
+  assert.equal(control.snapshot().revision, null); assert.equal(control.snapshot().stopped, true);
+  assert.equal(control.receive(parse(releaseSnapshot({ epoch: 'next-epoch', revision: 1 }))), true);
+  assert.equal(control.snapshot().stopped, false);
+  // A hub without the extension after a stop: unsupported, nothing released.
+  control.receive(parse(snapshot({ epoch: 'next-epoch', revision: 2 })));
+  control.negotiate(null);
+  assert.equal(control.snapshot().supported, false);
+  assert.equal(control.snapshot().stopped, true);
+  assert.equal(control.receive(parse(snapshot({ epoch: 'next-epoch', revision: 3 }))), false);
+  clock.advance(120000);
+  assert.equal(control.snapshot().heartbeatLost, false, 'an unsupported hub has no heartbeat to lose');
+  control.reset();
+  assert.deepEqual(control.snapshot(), initialState);
+  assert.equal(clock.size, 0);
+  control.close();
+  control.negotiate({ version: 1, eventId: EVENT_ID, epoch: EPOCH, revision: 0 });
+  assert.deepEqual(control.snapshot(), initialState, 'closed state changes nothing');
+  assert.throws(() => createHubControl({ now: 'later' }), { code: 'INVALID_REQUEST' });
 });
