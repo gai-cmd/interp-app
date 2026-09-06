@@ -53,6 +53,8 @@ import { createAppearance } from './ui/appearance.js';
 import { createDisplayControls } from './ui/display-view.js';
 import { createKeyGuide } from './ui/key-guide.js';
 import { discoverLiveModels } from './providers/gemini/model-discovery.js';
+import { createMicrophonePermission } from './audio/permissions.js';
+import { createAudioSettings } from './ui/audio-settings.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
 import { ACTIONS, PolicyError, createPolicyRuntime, isPolicyError } from './policy/runtime.js';
@@ -206,10 +208,11 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   const displayViews = [];
   const keyGuides = [];
+  let audioSettings = null;
   // Set once the key guide cards exist; the simultaneous card follows the tab.
   let onTabChanged = null;
   let audioContext = null, closing = null;
-  let simEngine = null, hubEngine = null, listenEngines = null;
+  let simEngine = null, hubEngine = null, listenEngines = null, platform = null, micPermission = null;
   let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null, appearance = null;
   // P3-11: live-control state, the joined event and the control-only connection.
   let hubControl = null, eventLink = null, membership = null, controlOp = null, listenControlled = false;
@@ -292,6 +295,20 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
           // no AudioWorklet: streaming capture cannot run).
           if (typeof nav.mediaDevices?.getUserMedia !== 'function' || typeof win.AudioWorkletNode !== 'function'
             || typeof (win.AudioContext ?? win.webkitAudioContext) !== 'function') throw new ProviderError('INPUT_UNSUPPORTED');
+          // P3-24 (§1.14): the permission request starts in this gesture. The
+          // stream it produces is handed to the capture path, so the start does
+          // not ask the browser a second time. A refusal is left to the capture
+          // to report — this must not become its own error path — and a stream
+          // that arrives after a cancel is stopped by the service itself.
+          if (micPermission) {
+            const granted = attempt(() => micPermission.request({ purpose: 'start', signal: owned.signal }));
+            // Offered synchronously as a promise: capture calls getUserMedia
+            // before this settles, and the platform awaits the offer. A refusal
+            // resolves to null, so capture asks the browser as it always did.
+            if (granted && typeof granted.then === 'function') {
+              attempt(() => platform.provideStream(granted.then((result) => result?.stream ?? null, () => null)));
+            }
+          }
           handle = raw.start(request, { ...selection, signal: owned.signal,
             sessionId: `listen-${owned.generation}` });
         } else handle = raw.join(request, { signal: owned.signal });
@@ -368,7 +385,15 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       ? () => attempt(() => win.speechSynthesis.getVoices()) ?? [] : null;
 
     // 5. One capture and one voice engine shared by the sequential engine and diagnostics.
-    capture = createCapture({ platform: createPlatform(win),
+    // P3-24: ONE platform for both capture paths, because the permission
+    // handover (provideStream) is held on the platform instance — two of them
+    // would mean a start still asked the browser a second time.
+    platform = createPlatform(win);
+    // P3-24: one owner of the microphone permission, shared by the settings
+    // section and by the direct-listening start. Nothing requests on its own.
+    micPermission = createMicrophonePermission({ navigator: nav, now });
+    void micPermission.query();
+    capture = createCapture({ platform,
       onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
     voiceEngine = createVoiceEngine({ router: config.router, deviceTTS, getAudioContext, sessionManager: config.sessionManager, ...timing });
     engine = createSeqEngine({ config, capture, voiceEngine, ...timing,
@@ -381,7 +406,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       replay: gated(ACTIONS.seqReplay, engine.replay) });
 
     simEngine = createSimEngine({ router: config.router, sessionManager: config.sessionManager,
-      platform: createPlatform(win), getAudioContext, ...timing,
+      platform, getAudioContext, ...timing,
       resolveFallback: (...args) => config.resolveFallback(PROVIDER_ID, 'live')?.(...args),
       onLevel: level => shell?.simView?.onLevel(level) });
     // P2-13 requires speak/cancel even on browsers without speech synthesis.
@@ -604,6 +629,12 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Nothing mounts on the hub listening path: an audience member following a
     // venue broadcast needs no key, and a "create a key" card there would block
     // the one route that works without credentials.
+    // P3-24: the microphone permission and device controls, in the audio section.
+    audioSettings = createAudioSettings({ permission: micPermission, i18n, document: doc,
+      onRequest: ({ purpose }) => micPermission.request({ purpose }) });
+    settingsView.elements.audioControls.append(audioSettings.element);
+    removers.push(shell.onLanguageChange(() => audioSettings.refresh()));
+
     const settingsGuide = createKeyGuide({ i18n, document: doc, variant: 'settings' });
     settingsView.elements.keyGuideHost.append(settingsGuide.element);
     keyGuides.push(settingsGuide);
@@ -720,6 +751,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Own listeners first, then the P1-16 order: policy -> settings ->
     // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
+    audioSettings?.destroy(); audioSettings = null;
+    micPermission?.destroy(); micPermission = null;
     for (const guide of keyGuides.splice(0)) attempt(() => guide.destroy());
     for (const view of displayViews.splice(0)) attempt(() => view.destroy());
     appearance?.destroy();

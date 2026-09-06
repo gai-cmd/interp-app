@@ -565,6 +565,9 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   // apply at the next capture start. P3-24/28 add permission and device controls.
   const audioSection = section('audio');
   note(audioSection, 'audio.description');
+  // P3-24 mounts the microphone permission and device controls here.
+  const audioControls = block('settings-audio-controls');
+  audioSection.append(audioControls);
   function toggle(id, labelKey, helpKey, onChange) {
     const row = element(doc, 'div', { className: 'settings-field settings-audio-toggle' });
     const input = element(doc, 'input', { className: 'settings-checkbox', attributes: { type: 'checkbox', id } });
@@ -885,7 +888,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
       checkButton, deleteButton, deleteConfirm, keyStatus, keyFeedback, modelSelect, sharedInput, sharedImport, sharedEnd, sharedEvent, modeInputs: Object.freeze(
         Object.fromEntries(KEY_SOURCES.map((source) => [source, modeInputs[source].input]))),
       outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions, displayControls, keyGuideHost,
-      noiseInput, filterInput, sensitivitySelect, appliedLine,
+      noiseInput, filterInput, sensitivitySelect, appliedLine, audioControls,
       locks: Object.freeze({ sourceSelect: sourceLock?.element ?? null, targetSelect: targetLock?.element ?? null, outputSelect: outputLock?.element ?? null }),
       policy: policyView?.elements ?? null,
       sections: Object.freeze({ ...sections,
