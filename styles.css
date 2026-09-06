@@ -1,44 +1,178 @@
-/* New implementation of design-v0.6 §7 and §12: mobile-first, relative units
-   for text zoom, 44px minimum touch targets, visible focus, state conveyed by
-   text and attributes (never color alone), light/dark and reduced motion. */
+/* Design tokens and shared components (DESIGN.md §2–§10, design-p3 §1.9–§1.10).
+   Mobile-first; text is rem-based so the html[data-text] step scales everything
+   while touch targets stay a fixed 44px; four tones (navy/warm/forest/mono) x
+   light/dark; state is carried by text and attributes, never by color alone;
+   visible focus; reduced motion honoured. Verified by tests/design-tokens.test.mjs. */
 
+/* 1. Palette. Light and dark values sit side by side per tone so the mode
+   blocks in §2 pick one set without repeating tone rules for every mode.
+   A tone only changes the accent and background families; every other token
+   is shared (DESIGN.md §10). */
 :root {
-  color-scheme: light dark;
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-alt: #eef1f5;
-  --text: #1a1d21;
-  --text-muted: #4d5560;
-  --border: #c9d0d8;
-  --accent: #1f5f8b;
-  --accent-text: #ffffff;
-  --danger: #a5282c;
-  --danger-text: #ffffff;
+  --light-bg: #f6f7f9;
+  --light-surface: #ffffff;
+  --light-surface-alt: #eef1f5;
+  --light-text: #1a1d21;
+  --light-text-muted: #4d5560;
+  --light-border: #c9d0d8;
+  --light-accent: #1f5f8b;
+  --light-accent-soft: #e8f1f8;
+  --light-accent-text: #ffffff;
+  --light-success: #1e7a46;
+  --light-warning: #8a5a00;
+  --light-danger: #a5282c;
+  --light-danger-text: #ffffff;
+  --light-recording: #b3261e;
+
+  --dark-bg: #14171b;
+  --dark-surface: #1e2329;
+  --dark-surface-alt: #262c34;
+  --dark-text: #edf0f3;
+  --dark-text-muted: #aab3bd;
+  --dark-border: #3a434d;
+  --dark-accent: #7fb6dd;
+  --dark-accent-soft: #22313d;
+  --dark-accent-text: #0f1a22;
+  --dark-success: #7fd5a3;
+  --dark-warning: #ffcf6a;
+  --dark-danger: #ff8a80;
+  --dark-danger-text: #2a0b0b;
+  --dark-recording: #ff6b60;
+
   --focus: #ff9f1c;
-  --recording: #b3261e;
-  --translation-bg: #e8f1f8;
+
+  /* Shape, spacing (DESIGN.md §5 scale), motion and touch. --touch is in px on
+     purpose: the S text step must not shrink interactive targets. */
   --radius: 0.75rem;
-  --gap: 0.75rem;
+  --radius-card: 1rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --gap: var(--space-3);
+  --page-x: var(--space-4);
   --touch: 44px;
-  font-size: 100%;
+  --motion: 150ms ease-out;
+  --dialog-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+
+:root[data-tone="warm"] {
+  --light-bg: #faf6f0;
+  --light-surface: #fffdfa;
+  --light-surface-alt: #f2ebe1;
+  --light-accent: #8a4b1f;
+  --light-accent-soft: #f5e6d8;
+  --light-accent-text: #ffffff;
+  --dark-bg: #1b1613;
+  --dark-surface: #241e1a;
+  --dark-surface-alt: #2e2723;
+  --dark-accent: #e0a071;
+  --dark-accent-soft: #3a2a1f;
+  --dark-accent-text: #221610;
+}
+
+:root[data-tone="forest"] {
+  --light-bg: #f3f8f5;
+  --light-surface: #ffffff;
+  --light-surface-alt: #e8f0eb;
+  --light-accent: #1f6b4a;
+  --light-accent-soft: #e1f0e7;
+  --light-accent-text: #ffffff;
+  --dark-bg: #121b16;
+  --dark-surface: #1a2520;
+  --dark-surface-alt: #23302a;
+  --dark-accent: #86d1a8;
+  --dark-accent-soft: #1c3328;
+  --dark-accent-text: #0d1a12;
+}
+
+:root[data-tone="mono"] {
+  --light-bg: #ffffff;
+  --light-surface: #ffffff;
+  --light-surface-alt: #ececec;
+  --light-accent: #111111;
+  --light-accent-soft: #e6e6e6;
+  --light-accent-text: #ffffff;
+  --dark-bg: #000000;
+  --dark-surface: #000000;
+  --dark-surface-alt: #1a1a1a;
+  --dark-accent: #ffffff;
+  --dark-accent-soft: #262626;
+  --dark-accent-text: #000000;
+}
+
+/* 2. Mode. Light is the base; the system dark rule is skipped when the user
+   forces light, and a forced dark wins regardless of the system setting. */
+:root {
+  color-scheme: light;
+  --bg: var(--light-bg);
+  --surface: var(--light-surface);
+  --surface-alt: var(--light-surface-alt);
+  --text: var(--light-text);
+  --text-muted: var(--light-text-muted);
+  --border: var(--light-border);
+  --accent: var(--light-accent);
+  --accent-soft: var(--light-accent-soft);
+  --accent-text: var(--light-accent-text);
+  --success: var(--light-success);
+  --warning: var(--light-warning);
+  --danger: var(--light-danger);
+  --danger-text: var(--light-danger-text);
+  --recording: var(--light-recording);
+  /* Legacy name kept as an alias while views move to --accent-soft. */
+  --translation-bg: var(--accent-soft);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171b;
-    --surface: #1e2329;
-    --surface-alt: #262c34;
-    --text: #edf0f3;
-    --text-muted: #aab3bd;
-    --border: #3a434d;
-    --accent: #7fb6dd;
-    --accent-text: #0f1a22;
-    --danger: #ff8a80;
-    --danger-text: #2a0b0b;
-    --translation-bg: #22313d;
+  :root:not([data-mode="light"]) {
+    color-scheme: dark;
+    --bg: var(--dark-bg);
+    --surface: var(--dark-surface);
+    --surface-alt: var(--dark-surface-alt);
+    --text: var(--dark-text);
+    --text-muted: var(--dark-text-muted);
+    --border: var(--dark-border);
+    --accent: var(--dark-accent);
+    --accent-soft: var(--dark-accent-soft);
+    --accent-text: var(--dark-accent-text);
+    --success: var(--dark-success);
+    --warning: var(--dark-warning);
+    --danger: var(--dark-danger);
+    --danger-text: var(--dark-danger-text);
+    --recording: var(--dark-recording);
   }
 }
 
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --bg: var(--dark-bg);
+  --surface: var(--dark-surface);
+  --surface-alt: var(--dark-surface-alt);
+  --text: var(--dark-text);
+  --text-muted: var(--dark-text-muted);
+  --border: var(--dark-border);
+  --accent: var(--dark-accent);
+  --accent-soft: var(--dark-accent-soft);
+  --accent-text: var(--dark-accent-text);
+  --success: var(--dark-success);
+  --warning: var(--dark-warning);
+  --danger: var(--dark-danger);
+  --danger-text: var(--dark-danger-text);
+  --recording: var(--dark-recording);
+}
+
+/* 3. Text steps (DESIGN.md §10). Everything is rem so the page scales together;
+   the caption board keeps its own --caption-size on top of this. */
+html { font-size: 100%; }
+html[data-text="s"] { font-size: 87.5%; }
+html[data-text="m"] { font-size: 100%; }
+html[data-text="l"] { font-size: 112.5%; }
+html[data-text="xl"] { font-size: 125%; }
+
+/* 4. Base and typography (DESIGN.md §3). System fonts only, no web font load. */
 * { box-sizing: border-box; }
 
 html, body { margin: 0; min-height: 100%; }
@@ -46,12 +180,26 @@ html, body { margin: 0; min-height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", "Noto Sans JP", "Hiragino Sans", sans-serif;
+  font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
   font-size: 1rem;
   line-height: 1.5;
   -webkit-text-size-adjust: 100%;
   overflow-wrap: anywhere;
+  overflow-x: hidden;
 }
+
+h1, h2, h3, h4 { margin: 0; font-size: 1.25rem; font-weight: 700; line-height: 1.3; }
+p { margin: 0 0 var(--space-2); }
+p:last-child { margin-bottom: 0; }
+a { color: var(--accent); text-underline-offset: 0.15em; }
+code, kbd, samp, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+.text-sub { font-size: 0.875rem; }
+.text-muted { color: var(--text-muted); }
+.label { font-size: 0.8125rem; font-weight: 600; }
+.title { font-size: 1.25rem; font-weight: 700; }
+.app-title { font-size: 1.125rem; font-weight: 700; }
+.caption-text { font-size: 1.25rem; line-height: 1.5; }
 
 [hidden] { display: none !important; }
 
@@ -67,37 +215,69 @@ body {
   white-space: nowrap;
 }
 
+/* 5. Focus (DESIGN.md §2: 2px ring, offset 2px). The --focus orange alone is
+   about 2:1 on light backgrounds, so a 2px ring in the text colour fills the
+   offset gap; one of the two rings is always at least 3:1 against the page. */
 :focus-visible {
-  outline: 3px solid var(--focus);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--text);
 }
 
-/* Buttons: every interactive control meets the 44px touch target. */
+/* 6. Buttons (DESIGN.md §4). Height >= 44px, radius 0.75rem, weight 600.
+   Disabled uses the surface-alt/text-muted tokens, never opacity. Loading is
+   conveyed by the button text, not by a spinner. */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: var(--space-2);
   min-height: var(--touch);
   min-width: var(--touch);
-  padding: 0.5rem 1rem;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
   font: inherit;
   font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
   cursor: pointer;
   touch-action: manipulation;
+  transition: background-color var(--motion), border-color var(--motion), color var(--motion);
 }
 
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-.btn-secondary { background: var(--surface-alt); }
+.btn-secondary { background: var(--surface-alt); border-color: var(--border); color: var(--text); }
 .btn-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-text); }
+.btn-text { background: transparent; border-color: transparent; color: var(--accent); text-decoration: none; }
+.btn-block { display: flex; width: 100%; }
 
+.btn:disabled, .btn[aria-disabled="true"] {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.btn[aria-busy="true"] { cursor: progress; }
+
+@media (hover: hover) {
+  .btn:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--text); }
+  .btn-primary:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--accent-text); }
+  .btn-danger:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--danger-text); }
+  .btn-text:hover:not(:disabled):not([aria-disabled="true"]) { border-color: transparent; text-decoration: underline; }
+  .tab:hover:not([aria-disabled="true"]), .shell-tab:hover:not([aria-disabled="true"]) { color: var(--text); }
+}
+
+/* 7. Inputs (DESIGN.md §4): height >= 44px, 1px border, focus ring from §5.
+   Native select is kept for the mobile wheel. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
 select, textarea {
   min-height: var(--touch);
-  padding: 0.5rem 0.75rem;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -106,21 +286,138 @@ select, textarea {
 }
 
 textarea { width: 100%; resize: vertical; }
+input:disabled, select:disabled, textarea:disabled { background: var(--surface-alt); color: var(--text-muted); cursor: not-allowed; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
+/* 8. Badge (DESIGN.md §4): capsule, 0.8125rem, state carried by its text. */
 .badge {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   min-height: 1.75rem;
   padding: 0.125rem 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-alt);
   color: var(--text);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
+  line-height: 1.3;
 }
 
-/* Shell */
+.badge[data-state="recording"] { border-color: var(--recording); }
+.badge[data-state="connected"] { border-color: var(--success); }
+.badge[data-state="warning"] { border-color: var(--warning); border-style: dashed; }
+.badge[data-state="error"] { border-color: var(--danger); border-style: dashed; }
+
+/* 9. Card (DESIGN.md §4): surface, 1px border, 1rem radius, no shadow. */
+.card, .shell-main, .settings-section, .turn {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.card > * + * { margin-top: var(--space-3); }
+
+/* 10. Tabs (DESIGN.md §4): top segment, active = 3px accent underline + bold,
+   aria-selected required. Disabled tabs are italic and muted, not faded. */
+.tabs, .shell-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab, .shell-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--touch);
+  margin-bottom: -1px;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color var(--motion), border-color var(--motion);
+}
+
+.tab[aria-selected="true"], .shell-tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 700;
+}
+
+.tab[aria-disabled="true"], .shell-tab[aria-disabled="true"] { color: var(--text-muted); font-style: italic; cursor: not-allowed; }
+
+/* 11. Sheet / modal (DESIGN.md §4, design-p3 §1.9). Mobile: full-screen sheet
+   with a fixed title row, scrolling body and sticky action row. Tablet+:
+   centred modal up to 640px with the only shadow in the system. Focus trap,
+   inert and Escape are behaviour (P3-16); the layout lives here. */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: env(safe-area-inset-top);
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.sheet-header, .sheet-footer {
+  position: sticky;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--page-x);
+  background: var(--surface);
+}
+
+.sheet-header { top: 0; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.sheet-title { flex: 1 1 auto; margin: 0; font-size: 1.25rem; font-weight: 700; }
+.sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-4) var(--page-x); }
+.sheet-footer {
+  bottom: 0;
+  justify-content: flex-end;
+  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+
+/* 12. Notice (DESIGN.md §4): top banner, role=status, closable. */
+.notice, .shell-notice, .shell-message {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-inline-start: 0.375rem solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.notice[data-kind="warning"] { border-inline-start-color: var(--warning); }
+.notice[data-kind="danger"], .notice[data-kind="error"] { border-inline-start-color: var(--danger); }
+.notice[data-kind="success"] { border-inline-start-color: var(--success); }
+
+/* 13. Shell layout (DESIGN.md §5, §8). One column on mobile with 1rem side
+   padding; the main column is capped at 40rem from tablet and 60rem on desktop. */
 .shell {
   display: flex;
   flex-direction: column;
@@ -134,78 +431,35 @@ textarea { width: 100%; resize: vertical; }
   flex-wrap: wrap;
   align-items: center;
   gap: var(--gap);
-  padding: calc(0.5rem + env(safe-area-inset-top)) var(--gap) 0.5rem;
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--page-x) var(--space-2);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
-.shell-title { margin: 0; font-size: 1.25rem; flex: 1 1 auto; }
-.shell-badges { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.shell-title { margin: 0; font-size: 1.125rem; font-weight: 700; flex: 1 1 auto; min-width: 0; }
+.shell-badges { display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
 .shell-connection[data-connection="offline"] { border-style: dashed; }
 .shell-settings-button { margin-left: auto; }
 
-.shell-notice, .shell-message {
-  display: flex;
-  align-items: center;
-  gap: var(--gap);
-  margin: var(--gap) var(--gap) 0;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border);
-  border-left: 0.375rem solid var(--accent);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
+.shell-notice, .shell-message { margin: var(--gap) var(--page-x) 0; }
+.shell-notice-text { flex: 1 1 auto; min-width: 0; }
 
-.shell-notice-text { flex: 1 1 auto; }
-.shell-message { margin-top: var(--gap); }
-
-.shell-tabs {
-  display: flex;
-  gap: 0.25rem;
-  padding: var(--gap) var(--gap) 0;
-}
-
-.shell-tab {
-  flex: 1 1 0;
-  min-height: var(--touch);
-  padding: 0.5rem;
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: var(--radius) var(--radius) 0 0;
-  background: var(--surface-alt);
-  color: var(--text-muted);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.shell-tab[aria-selected="true"] {
-  background: var(--surface);
-  color: var(--text);
-  text-decoration: underline;
-  text-underline-offset: 0.35em;
-}
-
-.shell-tab[aria-disabled="true"] { opacity: 0.7; font-style: italic; }
+.shell-tabs { padding: var(--gap) var(--page-x) 0; }
 
 .shell-main {
   flex: 1 1 auto;
-  margin: 0 var(--gap) var(--gap);
-  padding: var(--gap);
-  border: 1px solid var(--border);
-  border-radius: 0 0 var(--radius) var(--radius);
-  background: var(--surface);
+  margin: var(--gap) var(--page-x) var(--space-5);
 }
 
 .shell-planned { margin: 0; color: var(--text-muted); }
 
-/* Settings dialog (content rendered by P1-16) */
+/* Settings dialog (content rendered by P1-16; P3-16 moves it onto .sheet). */
 .shell-settings {
   position: fixed;
   inset: 0;
   z-index: 10;
   overflow: auto;
-  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--gap) calc(var(--gap) + env(safe-area-inset-bottom));
+  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--page-x) calc(var(--gap) + env(safe-area-inset-bottom));
   background: var(--bg);
 }
 
@@ -219,18 +473,20 @@ textarea { width: 100%; resize: vertical; }
 
 .shell-settings-title { margin: 0; font-size: 1.25rem; }
 
-/* Sequential screen */
-.seq { display: flex; flex-direction: column; gap: var(--gap); }
+/* 14. Sequential screen. The PTT is full width, 64px on mobile and 56px on
+   desktop, growing with text zoom; while pressed it shows a 3px recording
+   border (inset so the button does not shift) plus the "recording" text. */
+.seq { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 
 .seq-pair {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   grid-template-areas: "source-label . target-label" "source swap target";
   gap: 0.375rem var(--gap);
   align-items: end;
 }
 
-.seq-pair-label { font-size: 0.875rem; color: var(--text-muted); }
+.seq-pair-label { font-size: 0.8125rem; font-weight: 600; color: var(--text-muted); }
 .seq-pair-label:nth-of-type(1) { grid-area: source-label; }
 .seq-pair-label:nth-of-type(2) { grid-area: target-label; }
 .seq-select { width: 100%; }
@@ -238,7 +494,7 @@ textarea { width: 100%; resize: vertical; }
 #seq-target { grid-area: target; }
 .seq-swap { grid-area: swap; }
 
-.seq-status-row { display: flex; align-items: center; gap: var(--gap); }
+.seq-status-row { display: flex; align-items: center; gap: var(--gap); min-width: 0; }
 .seq[data-status="recording"] .seq-status { border-color: var(--recording); }
 
 .seq-level {
@@ -259,12 +515,13 @@ textarea { width: 100%; resize: vertical; }
 
 .seq-controls {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--gap);
 }
 
 .seq-ptt {
-  min-height: 5rem;
+  width: 100%;
+  min-height: max(64px, 4rem);
   font-size: 1.25rem;
   touch-action: none;
   user-select: none;
@@ -273,46 +530,44 @@ textarea { width: 100%; resize: vertical; }
 }
 
 .seq-ptt[aria-pressed="true"] {
-  background: var(--recording);
   border-color: var(--recording);
-  color: #ffffff;
-  outline: 3px dashed var(--recording);
-  outline-offset: 3px;
+  box-shadow: inset 0 0 0 3px var(--recording);
+}
+
+.seq-ptt[aria-pressed="true"]:focus-visible {
+  box-shadow: 0 0 0 2px var(--text), inset 0 0 0 3px var(--recording);
 }
 
 .seq-hint { margin: 0; font-size: 0.875rem; color: var(--text-muted); }
 
-.seq-form { display: flex; flex-direction: column; gap: 0.5rem; }
+.seq-form { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 
 .seq-records {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .seq-confirm {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
   width: 100%;
-  padding: 0.5rem;
+  padding: var(--space-2);
   border: 1px solid var(--danger);
   border-radius: var(--radius);
 }
 
 .seq-empty { margin: 0; color: var(--text-muted); }
 
-.seq-turns { display: flex; flex-direction: column; gap: var(--gap); }
+.seq-turns { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 
-.turn {
-  padding: 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
+/* Turn bubbles (DESIGN.md §4): source on surface-alt, translation on
+   accent-soft, a 2px start bar per speaker, muted 0.8125rem meta, actions at
+   the end. Phase is also in data-phase and the badge text, not just the border. */
+.turn { padding: var(--space-3); }
 .turn-active { border-width: 2px; border-color: var(--accent); }
 .turn[data-phase="error"] { border-style: dashed; border-color: var(--danger); }
 .turn[data-phase="cancelled"], .turn[data-phase="silence"], .turn[data-phase="unrecognized"] { border-style: dashed; }
@@ -321,56 +576,41 @@ textarea { width: 100%; resize: vertical; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.5rem;
-  font-size: 0.875rem;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: 0.8125rem;
   color: var(--text-muted);
 }
 
-.turn-block { margin: 0.25rem 0; }
-.turn-label { display: block; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.turn-text { margin: 0.125rem 0 0; white-space: pre-wrap; }
-.turn-text-translation {
-  padding: 0.5rem 0.75rem;
+.turn-block { margin: var(--space-1) 0; min-width: 0; }
+.turn-label { display: block; font-size: 0.8125rem; font-weight: 600; color: var(--text-muted); }
+.turn-text {
+  margin: 0.125rem 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-inline-start: 2px solid var(--border);
   border-radius: var(--radius);
-  background: var(--translation-bg);
-  font-size: 1.125rem;
+  background: var(--surface-alt);
+  white-space: pre-wrap;
+}
+.turn-text-translation {
+  border-inline-start-color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 1.25rem;
 }
 .turn-text:empty { display: none; }
-.turn-voice { margin: 0.5rem 0 0; font-size: 0.875rem; color: var(--text-muted); }
-.turn-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.turn-voice { margin: var(--space-2) 0 0; font-size: 0.8125rem; color: var(--text-muted); }
+.turn-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 
-@media (min-width: 40rem) {
-  .shell-main { max-width: 48rem; margin-left: auto; margin-right: auto; width: calc(100% - 2 * var(--gap)); }
-  .shell-tabs { max-width: 48rem; margin-left: auto; margin-right: auto; }
-  .seq-controls { grid-template-columns: 2fr 1fr 1fr; align-items: stretch; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .seq-level-bar { transition: none; }
-}
-
-@media (forced-colors: active) {
-  .seq-level-bar { background: CanvasText; }
-  .shell-tab[aria-selected="true"] { outline: 2px solid CanvasText; }
-}
-
-/* Settings, diagnostics and PWA share the shell's light/dark tokens. */
+/* 15. Settings, diagnostics and PWA share the tokens above. */
 .settings, .settings-section, .settings-field, .settings-key-form,
 .settings-shared-form, .diag-checks, .pwa-controls {
   display: grid;
   gap: var(--gap);
   min-width: 0;
 }
-.settings-section {
-  margin-bottom: var(--gap);
-  padding: var(--gap);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
+.settings-section { margin-bottom: var(--gap); }
 .settings-section h3 { margin: 0; font-size: 1.125rem; }
-.settings-label, .diag-check-label { font-weight: 600; }
+.settings-label, .diag-check-label { font-size: 0.8125rem; font-weight: 600; }
 .settings-note, .settings-terms, .diag-scope, .diag-user-start,
 .diag-check-model, .pwa-install-hint, .pwa-update-hint {
   margin: 0;
@@ -380,7 +620,7 @@ textarea { width: 100%; resize: vertical; }
   width: 100%;
   min-width: 0;
   min-height: var(--touch);
-  padding: 0.5rem 0.75rem;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -421,7 +661,7 @@ textarea { width: 100%; resize: vertical; }
 .settings-key-status, .settings-shared-status { margin: 0; font-weight: 600; }
 .diag-capabilities { width: 100%; table-layout: fixed; border-collapse: collapse; margin: var(--gap) 0; }
 .diag-capabilities th, .diag-capabilities td {
-  padding: 0.5rem;
+  padding: var(--space-2);
   text-align: start;
   vertical-align: top;
   border-bottom: 1px solid var(--border);
@@ -430,7 +670,7 @@ textarea { width: 100%; resize: vertical; }
 .diag-check {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0.5rem;
+  gap: var(--space-2);
   padding: var(--gap);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -443,24 +683,19 @@ textarea { width: 100%; resize: vertical; }
 .pwa-controls { width: 100%; }
 .pwa-install, .pwa-update { justify-self: stretch; white-space: normal; }
 
-@media (min-width: 40rem) {
-  .shell-settings-header, .shell-settings-body { max-width: 48rem; margin-inline: auto; }
-  .diag-check { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
-  .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
-  .pwa-install, .pwa-update { justify-self: start; }
-}
-
-/* P2-16 simultaneous listening: bounded viewport with explicit scroll anchoring. */
+/* 16. Simultaneous listening (P2-16): bounded viewport with explicit scroll
+   anchoring. Partial sentences are muted, final ones in the text colour, and
+   gaps carry a warning badge in addition to the dashed bar. */
 .sim { display: grid; gap: var(--gap); min-width: 0; }
 .sim-controls { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: end; }
-.sim-field { display: grid; gap: 0.25rem; flex: 1 1 12rem; min-width: 0; }
+.sim-field { display: grid; gap: var(--space-1); flex: 1 1 12rem; min-width: 0; }
 .sim-field select, .sim-room { width: 100%; min-width: 0; min-height: var(--touch); font: inherit; }
 .sim-hints, .sim-output, .sim-recent { color: var(--text-muted); }
-.sim-hints p { margin: 0.25rem 0; }
+.sim-hints p { margin: var(--space-1) 0; }
 .sim-captions { overflow-y: auto; overflow-anchor: none; max-height: 60vh; min-height: 8rem;
   border: 1px solid var(--border); border-radius: var(--radius); padding: var(--gap); }
-.sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--translation-bg); border-radius: var(--radius); }
-.sim-caption .turn-text { font-size: var(--caption-size, 1.25rem); }
+.sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--accent-soft); border-radius: var(--radius); }
+.sim-caption .turn-text { padding: 0; border: 0; background: transparent; font-size: var(--caption-size, 1.25rem); }
 .sim-caption[data-status="partial"] { color: var(--text-muted); border-inline-start: 3px dashed var(--accent); }
 .sim-caption[data-status="interrupted"] { border-inline-start: 3px solid var(--danger); }
 .sim-level { width: 100%; min-height: 1rem; }
@@ -468,15 +703,15 @@ textarea { width: 100%; resize: vertical; }
 /* P3-02c caption board: inline in the tab, or a captions-only full screen.
    The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
 .caption-board { display: grid; gap: var(--gap); min-width: 0; --caption-size: 1.25rem; }
-.caption-board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.caption-board-size { display: inline-flex; align-items: center; gap: 0.5rem; min-height: var(--touch); flex: 1 1 14rem; min-width: 0; }
+.caption-board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.caption-board-size { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--touch); flex: 1 1 14rem; min-width: 0; }
 .caption-board-slider { flex: 1 1 6rem; min-width: 5rem; min-height: var(--touch); margin: 0; accent-color: var(--accent); }
 .caption-board-size-value { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
 .caption-board-wake, .caption-board-status, .caption-board-notice, .caption-board-gap { margin: 0; }
 .caption-board-wake { flex-basis: 100%; font-size: 0.875rem; color: var(--text-muted); }
-.caption-board-notice { border-inline-start: 0.375rem solid var(--accent); padding-inline-start: 0.5rem; }
+.caption-board-notice { border-inline-start: 0.375rem solid var(--accent); padding-inline-start: var(--space-2); }
 .caption-board-primary { display: flex; align-items: center; justify-content: center; }
-.sim-fs-primary { min-height: 5rem; min-width: 12rem; font-size: 1.25rem; }
+.sim-fs-primary { min-height: max(64px, 4rem); min-width: 12rem; font-size: 1.25rem; }
 .sim[data-caption-only="true"] > :not(.caption-board) { display: none; }
 .caption-board[data-caption-only="true"] {
   position: fixed;
@@ -484,7 +719,7 @@ textarea { width: 100%; resize: vertical; }
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
   height: 100vh;
   height: 100dvh;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
@@ -493,7 +728,7 @@ textarea { width: 100%; resize: vertical; }
   color: var(--text);
 }
 .caption-board[data-caption-only="true"] .caption-board-bar {
-  padding: 0.5rem var(--gap);
+  padding: var(--space-2) var(--gap);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
@@ -513,57 +748,63 @@ textarea { width: 100%; resize: vertical; }
 }
 .caption-board[data-caption-only="true"] .sim-caption {
   margin: 0;
-  padding: 0.5rem 0;
+  padding: var(--space-2) 0;
   background: transparent;
   border-radius: 0;
   border-bottom: 1px solid var(--border);
 }
-.caption-board[data-caption-only="true"] .sim-caption[data-status="partial"] { padding-inline-start: 0.5rem; }
-.caption-board[data-caption-only="true"] .sim-caption[data-status="interrupted"] { padding-inline-start: 0.5rem; }
+.caption-board[data-caption-only="true"] .sim-caption[data-status="partial"] { padding-inline-start: var(--space-2); }
+.caption-board[data-caption-only="true"] .sim-caption[data-status="interrupted"] { padding-inline-start: var(--space-2); }
 .caption-board[data-caption-only="true"] .sim-latest {
   position: absolute;
   bottom: calc(var(--gap) + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
 }
-/* Display modes reuse the DESIGN.md §2 light/dark tokens and the §10 mono tone
-   (black background, white text) scoped to the board only. */
+/* Board display modes reuse the current tone's light/dark sets from §1 and the
+   §10 mono high-contrast set (black background, white text), scoped to the
+   board only. The alias is re-declared so it follows the board's own tokens. */
 .caption-board[data-caption-only="true"][data-display="light"] {
   color-scheme: light;
-  --bg: #f6f7f9; --surface: #ffffff; --surface-alt: #eef1f5; --text: #1a1d21; --text-muted: #4d5560;
-  --border: #c9d0d8; --accent: #1f5f8b; --accent-text: #ffffff; --danger: #a5282c; --translation-bg: #e8f1f8;
+  --bg: var(--light-bg); --surface: var(--light-surface); --surface-alt: var(--light-surface-alt);
+  --text: var(--light-text); --text-muted: var(--light-text-muted); --border: var(--light-border);
+  --accent: var(--light-accent); --accent-soft: var(--light-accent-soft); --accent-text: var(--light-accent-text);
+  --danger: var(--light-danger); --translation-bg: var(--accent-soft);
 }
 .caption-board[data-caption-only="true"][data-display="dark"] {
   color-scheme: dark;
-  --bg: #14171b; --surface: #1e2329; --surface-alt: #262c34; --text: #edf0f3; --text-muted: #aab3bd;
-  --border: #3a434d; --accent: #7fb6dd; --accent-text: #0f1a22; --danger: #ff8a80; --translation-bg: #22313d;
+  --bg: var(--dark-bg); --surface: var(--dark-surface); --surface-alt: var(--dark-surface-alt);
+  --text: var(--dark-text); --text-muted: var(--dark-text-muted); --border: var(--dark-border);
+  --accent: var(--dark-accent); --accent-soft: var(--dark-accent-soft); --accent-text: var(--dark-accent-text);
+  --danger: var(--dark-danger); --translation-bg: var(--accent-soft);
 }
 .caption-board[data-caption-only="true"][data-display="mono"] {
   color-scheme: dark;
   --bg: #000000; --surface: #000000; --surface-alt: #1a1a1a; --text: #ffffff; --text-muted: #d4d4d4;
-  --border: #8a8a8a; --accent: #ffffff; --accent-text: #000000; --danger: #ffb4ab; --translation-bg: #000000;
+  --border: #8a8a8a; --accent: #ffffff; --accent-text: #000000; --accent-soft: #000000;
+  --danger: #ffb4ab; --translation-bg: var(--accent-soft);
 }
 
-/* Site sharing uses the shell's modal and touch target tokens. */
+/* 17. Site sharing uses the shell's modal and touch target tokens (P3-16 moves it onto .sheet). */
 .share-dialog {
   position: fixed;
   inset: 0;
   z-index: 10;
   overflow: auto;
-  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--gap) calc(var(--gap) + env(safe-area-inset-bottom));
+  padding: calc(var(--gap) + env(safe-area-inset-top)) var(--page-x) calc(var(--gap) + env(safe-area-inset-bottom));
   background: var(--bg);
 }
 .share-dialog > * { max-width: 32rem; margin-inline: auto; }
 .share-header { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); }
 .share-header h2 { font-size: 1.25rem; }
-.share-button, .share-close, .share-copy { min-width: 44px; min-height: 44px; }
+.share-button, .share-close, .share-copy { min-width: var(--touch); min-height: var(--touch); }
 .share-image { display: block; width: 100%; height: auto; background: white; }
 .share-url {
   display: block;
   width: 100%;
-  min-height: 44px;
+  min-height: var(--touch);
   margin-block: var(--gap);
-  padding: 0.5rem;
+  padding: var(--space-2);
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -577,3 +818,54 @@ textarea { width: 100%; resize: vertical; }
 
 .settings-key-feedback { display: block; white-space: normal; overflow-wrap: anywhere; }
 .settings-key-feedback[hidden] { display: none; }
+
+/* 18. Breakpoints (DESIGN.md §8): min-width only, 40rem and 64rem. */
+@media (min-width: 40rem) {
+  .card, .shell-main, .settings-section { padding: 1.25rem; }
+  .caption-text, .turn-text-translation { font-size: 1.5rem; }
+  .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 40rem; margin-left: auto; margin-right: auto; width: calc(100% - 2 * var(--page-x)); }
+  .seq-controls { grid-template-columns: 2fr 1fr 1fr; align-items: stretch; }
+  .shell-settings-header, .shell-settings-body { max-width: 40rem; margin-inline: auto; }
+  .diag-check { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+  .diag-check-message, .diag-check-model { grid-column: 1 / -1; }
+  .pwa-install, .pwa-update { justify-self: start; }
+  .sheet {
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(640px, calc(100% - 2 * var(--space-4)));
+    max-height: calc(100vh - 2 * var(--space-4));
+    max-height: calc(100dvh - 2 * var(--space-4));
+    padding-top: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--dialog-shadow);
+  }
+  .sheet-footer { padding-bottom: var(--space-3); }
+}
+
+@media (min-width: 64rem) {
+  .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 60rem; }
+  .shell-settings-header, .shell-settings-body { max-width: 60rem; }
+  .seq-ptt { min-height: max(56px, 3.5rem); }
+}
+
+/* 19. Motion and forced colours (DESIGN.md §6). Transitions are 150ms
+   ease-out and drop to zero under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+  .seq-level-bar { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .seq-level-bar { background: CanvasText; }
+  .tab[aria-selected="true"], .shell-tab[aria-selected="true"] { outline: 2px solid CanvasText; }
+  .btn, .badge, .card, .sheet, .turn-text { border-color: CanvasText; }
+  .seq-ptt[aria-pressed="true"] { outline: 3px solid Highlight; outline-offset: -3px; }
+}
