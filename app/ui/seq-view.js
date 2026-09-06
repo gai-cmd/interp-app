@@ -4,7 +4,17 @@
 // translation) is rendered with textContent, never as markup. The DOM stays
 // bounded because the store keeps at most MAX_TURNS turns and this view
 // mirrors that list one element per turn.
-import { MAX_TURNS, SEQ_STATUS } from '../state.js';
+//
+// P3-17 (DESIGN.md §5, §8; design-p3 §1.9): the screen has two layouts and the
+// DOM order follows the visual order in both, so Tab order never diverges.
+//   stacked (<64rem): language pair, transcript, then a sticky bottom dock with
+//     the status row, PTT, start/finish, hint and text form (thumb range).
+//   desktop (>=64rem): a 24rem control column (pair + dock) on the left and the
+//     transcript in the variable-width column on the right.
+// The switch moves real nodes (matchMedia on the same 64rem breakpoint as the
+// stylesheet) instead of using CSS `order`, which would leave keyboard
+// navigation in the source order.
+import { MAX_TURNS, SEQ_STATUS, TURN_PHASE } from '../state.js';
 import { SEQ_POLICY } from '../engine/seq.js';
 import { MAX_CAPTURE_MS } from '../audio/capture.js';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
@@ -12,6 +22,9 @@ import { describeTurn, errorKey, levelPercent, replayOutput, resolveKey, statusK
 
 export const SOURCE_OPTIONS = Object.freeze(['auto', ...SUPPORTED_LANGUAGES]);
 export const MAX_RENDERED_TURNS = MAX_TURNS;
+// Must equal the desktop breakpoint in styles.css (DESIGN.md §8: 64rem).
+export const DESKTOP_LAYOUT_QUERY = '(min-width: 64rem)';
+export const SEQ_LAYOUTS = Object.freeze({ STACKED: 'stacked', DESKTOP: 'desktop' });
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
 /** Records dictionary-bound text/attributes so a UI language change re-applies them. */
@@ -121,10 +134,10 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
     meterBar.style.width = `${percent}%`;
   }
 
-  // Push-to-talk plus the accessible start/finish alternative (§7.2).
+  // Push-to-talk plus the accessible start/finish alternative (§7.2). The PTT
+  // label is render-driven: it reads "recording" while pressed (DESIGN.md §4).
   const controls = element(doc, 'div', { className: 'seq-controls' });
   const pttButton = element(doc, 'button', { className: 'btn btn-primary seq-ptt', attributes: { type: 'button', 'aria-pressed': 'false' } });
-  bind.text(pttButton, 'seq.holdToTalk');
   const toggleButton = element(doc, 'button', { className: 'btn btn-secondary seq-toggle', attributes: { type: 'button' } });
   const cancelButton = element(doc, 'button', { className: 'btn btn-secondary seq-cancel', attributes: { type: 'button' } });
   bind.text(cancelButton, 'common.cancel');
@@ -184,7 +197,8 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
   const submitHint = element(doc, 'p', { className: 'seq-hint', attributes: { id: 'seq-submit-hint' } });
   bind.text(submitHint, 'seq.submitHint');
   textarea.setAttribute('aria-describedby', 'seq-submit-hint');
-  form.append(textLabel, textarea, submitHint, submitButton);
+  // Visual order is textarea | send, hint underneath; the DOM matches it.
+  form.append(textLabel, textarea, submitButton, submitHint);
   function submit() {
     const value = typeof textarea.value === 'string' ? textarea.value : '';
     if (!value.trim()) { attempt(() => textarea.focus()); return; }
@@ -227,14 +241,59 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
   const list = element(doc, 'div', { className: 'seq-turns', attributes: { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions text' } });
   const empty = element(doc, 'p', { className: 'seq-empty' });
   bind.text(empty, 'seq.empty');
-  section.append(pairRow, statusRow, controls, hint, form, recordsRow, empty, list);
+
+  // Layout containers (P3-17). The transcript owns the records row because
+  // "clear" acts on the transcript; the dock holds everything needed while
+  // speaking so it can stay visible at the bottom of a phone screen.
+  const transcript = element(doc, 'div', { className: 'seq-transcript' });
+  transcript.append(recordsRow, empty, list);
+  const dock = element(doc, 'div', { className: 'seq-dock' });
+  dock.append(statusRow, controls, hint, form);
+  const column = element(doc, 'div', { className: 'seq-column' });
+  let layout = null;
+  function applyLayout(desktop) {
+    const next = desktop ? SEQ_LAYOUTS.DESKTOP : SEQ_LAYOUTS.STACKED;
+    if (next === layout) return layout;
+    // Moving a focused node blurs it in real browsers; put focus back so a
+    // rotation or window resize does not drop the user out of the screen.
+    const active = doc.activeElement;
+    layout = next;
+    section.setAttribute('data-layout', layout);
+    if (desktop) {
+      column.append(pairRow, dock);
+      section.append(column, transcript);
+    } else {
+      column.remove();
+      section.append(pairRow, transcript, dock);
+    }
+    if (active && active !== doc.activeElement && attempt(() => section.contains(active))) attempt(() => active.focus());
+    return layout;
+  }
+  // Same query as the stylesheet; without matchMedia (no window, old engines)
+  // the stacked order stands and the CSS grid stays off (it keys on data-layout).
+  const media = attempt(() => doc.defaultView?.matchMedia?.(DESKTOP_LAYOUT_QUERY)) ?? null;
+  const onMediaChange = (event) => applyLayout((event?.matches ?? media?.matches) === true);
+  let stopMedia = () => {};
+  if (media) {
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', onMediaChange);
+      stopMedia = () => attempt(() => media.removeEventListener('change', onMediaChange));
+    } else if (typeof media.addListener === 'function') {
+      media.addListener(onMediaChange);
+      stopMedia = () => attempt(() => media.removeListener?.(onMediaChange));
+    }
+  }
+  applyLayout(media?.matches === true);
 
   function createTurnNode(turn) {
     const article = element(doc, 'article', { className: 'turn', attributes: { 'data-turn-id': turn.turnId } });
+    // Meta (DESIGN.md §4): time, status, engine and elapsed time, muted 0.8125rem.
     const meta = element(doc, 'p', { className: 'turn-meta' });
     const time = element(doc, 'time', { className: 'turn-time' });
     const status = element(doc, 'span', { className: 'badge turn-status' });
-    meta.append(time, status);
+    const engine_ = element(doc, 'span', { className: 'turn-engine mono' });
+    const latency = element(doc, 'span', { className: 'turn-latency' });
+    meta.append(time, status, engine_, latency);
     const sourceBlock = element(doc, 'div', { className: 'turn-block turn-source' });
     const sourceLabelNode = element(doc, 'span', { className: 'turn-label' });
     const sourceText = element(doc, 'p', { className: 'turn-text' });
@@ -259,8 +318,16 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
       stopPlayback: button('turn-stop', 'seq.stopPlayback', () => call(() => engine.cancel())),
     };
     article.append(meta, sourceBlock, translationBlock, voice, actions);
-    return { article, time, status, sourceLabel: sourceLabelNode, sourceText, translationLabel: translationLabelNode,
-      translatedText, voice, buttons, createdAt: null };
+    return { article, time, status, engine: engine_, latency, sourceLabel: sourceLabelNode, sourceText,
+      translationLabel: translationLabelNode, translatedText, voice, buttons, createdAt: null };
+  }
+
+  // Elapsed time of a finished turn (start to end, including playback), as a
+  // localized unit string; no dictionary key is needed for the unit.
+  function elapsedText(turn) {
+    if (typeof turn.createdAt !== 'number' || typeof turn.endedAt !== 'number' || turn.endedAt < turn.createdAt) return '';
+    const seconds = (turn.endedAt - turn.createdAt) / 1000;
+    return attempt(() => i18n.formatNumber(seconds, { style: 'unit', unit: 'second', unitDisplay: 'narrow', maximumFractionDigits: 1 })) ?? '';
   }
 
   function updateTurnNode(node, turn) {
@@ -273,6 +340,16 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
     }
     node.time.textContent = attempt(() => i18n.formatDate(new Date(turn.createdAt), { timeStyle: 'short' })) ?? '';
     node.status.textContent = i18n.t(description.statusKey);
+    // State also travels as an attribute (border style), never by colour alone.
+    if (turn.phase === TURN_PHASE.ERROR) node.status.setAttribute('data-state', 'error');
+    else if (turn.phase === TURN_PHASE.RECORDING) node.status.setAttribute('data-state', 'recording');
+    else node.status.removeAttribute('data-state');
+    const engineName = typeof turn.model === 'string' ? turn.model : '';
+    node.engine.textContent = engineName;
+    node.engine.hidden = engineName === '';
+    const elapsed = elapsedText(turn);
+    node.latency.textContent = elapsed;
+    node.latency.hidden = elapsed === '';
     node.sourceLabel.textContent = i18n.t('seq.original');
     node.translationLabel.textContent = i18n.t('seq.translation');
     node.sourceText.textContent = description.sourceText;
@@ -312,7 +389,10 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
     const busy = snapshot.activeTurnId !== null;
     section.setAttribute('data-status', status);
     statusBadge.textContent = i18n.t(statusKey(status));
+    if (status === SEQ_STATUS.RECORDING) statusBadge.setAttribute('data-state', 'recording');
+    else statusBadge.removeAttribute('data-state');
     pttButton.setAttribute('aria-pressed', String(status === SEQ_STATUS.RECORDING));
+    pttButton.textContent = i18n.t(status === SEQ_STATUS.RECORDING ? 'seq.recording' : 'seq.holdToTalk');
     toggleButton.textContent = i18n.t(status === SEQ_STATUS.RECORDING ? 'seq.stopRecording' : 'seq.startRecording');
     cancelButton.hidden = !busy || status === SEQ_STATUS.RECORDING;
     if (status !== SEQ_STATUS.RECORDING) {
@@ -332,6 +412,8 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
   return Object.freeze({
     element: section,
     render,
+    // 'stacked' or 'desktop' (P3-17); follows the 64rem media query.
+    get layout() { return layout; },
     // UI language changed: re-apply dictionary text and re-render bubbles.
     refresh() { bind.refresh(); render(snapshot); },
     onLevel(level) { if (recording()) setLevel(levelPercent(level)); },
@@ -339,6 +421,7 @@ export function createSeqView({ root, i18n, engine, document: doc = root?.ownerD
     focusInput() { attempt(() => textarea.focus()); },
     destroy() {
       unsubscribe();
+      stopMedia();
       bind.clear();
       turnNodes.clear();
       section.remove();
