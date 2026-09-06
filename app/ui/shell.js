@@ -132,6 +132,11 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   bind.text(noticeClose, 'common.close');
   notice.append(noticeText, noticeClose);
   const message = element(doc, 'p', { className: 'shell-message', attributes: { role: 'status', 'aria-live': 'polite' } });
+  // P3-21: the first-run host. The app mounts the shared key guide here when a
+  // first run has no key to work with; it stays empty and hidden otherwise, and
+  // never appears for hub listening, which needs no key at all.
+  const firstRun = element(doc, 'div', { className: 'shell-first-run' });
+  firstRun.hidden = true;
   message.hidden = true;
 
   // Tabs: both are live; simultaneous is the first screen unless a tab was remembered.
@@ -214,7 +219,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   settingsHeader.append(settingsTitle, settingsClose);
   const settingsBody = element(doc, 'div', { className: 'shell-settings-body sheet-body' });
   settings.append(settingsHeader, settingsBody);
-  const inertTargets = [header, notice, message, tabs, main];
+  const inertTargets = [header, notice, message, firstRun, tabs, main];
   const settingsOpenListeners = new Set();
   // One group for every modal surface of the shell: opening one closes the
   // others, the background is inert only while something is open, and focus
@@ -329,7 +334,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     if (key === 'share.copyFailed') attempt(() => { shareURL.focus(); shareURL.select(); });
   });
 
-  app.append(header, notice, message, tabs, main, settings, display, share);
+  app.append(header, notice, message, firstRun, tabs, main, settings, display, share);
 
   // Header layout (P3-15). Desktop puts the tab row inside the header between
   // the title and the badges; below 64rem it is its own row under the header
@@ -344,10 +349,10 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     app.setAttribute('data-layout', layout);
     if (desktop) {
       header.append(title, tabs, badges, actions);
-      app.append(header, notice, message, main, settings, display, share);
+      app.append(header, notice, message, firstRun, main, settings, display, share);
     } else {
       header.append(title, badges, actions);
-      app.append(header, notice, message, tabs, main, settings, display, share);
+      app.append(header, notice, message, firstRun, tabs, main, settings, display, share);
     }
     if (active && active !== doc.activeElement && attempt(() => app.contains(active))) attempt(() => active.focus());
     return layout;
@@ -460,7 +465,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     root: app,
     i18n,
     seqView, simView,
-    elements: Object.freeze({ header, providerBadge, modeBadge, connectionBadge, settingsButton, notice, noticeClose, message,
+    elements: Object.freeze({ header, providerBadge, modeBadge, connectionBadge, settingsButton, notice, noticeClose, message, firstRun,
       tabs, tabButtons: Object.freeze({ ...tabButtons }),
       // P3-15: the action row, the language toggle and the display/share entry points.
       actions, languages, languageButtons: Object.freeze({ ...languageButtons }), displayButton, shareButton,

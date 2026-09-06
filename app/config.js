@@ -16,6 +16,18 @@ import { GEMINI_ENDPOINTS, GEMINI_PROVIDER_ID, registerGemini, resolveGeminiFall
 export const ENDPOINT_ALLOWLIST = Object.freeze([...new Set([...GEMINI_ENDPOINTS, ...HUB_ENDPOINTS])]);
 export const ENDPOINT_ORIGINS = Object.freeze([...new Set(ENDPOINT_ALLOWLIST.map((endpoint) => new URL(endpoint).origin))]);
 
+// P3-21: documents the UI links the reader OUT to (design-p3 §1.12 fixes these
+// three). They are navigation targets opened in a new tab, never fetched, so
+// they are a separate registry: adding one here does NOT widen the CSP
+// connect-src that ENDPOINT_ALLOWLIST builds. Every outbound link in the app
+// comes from this table, so a new destination is a reviewed change here.
+export const DOCUMENTATION_LINKS = Object.freeze({
+  apiKeyCreate: 'https://aistudio.google.com/apikey',
+  apiKeyUsage: 'https://ai.google.dev/gemini-api/docs/api-key',
+  billing: 'https://ai.google.dev/gemini-api/docs/billing?hl=en',
+});
+export const DOCUMENTATION_ORIGINS = Object.freeze([...new Set(Object.values(DOCUMENTATION_LINKS).map((url) => new URL(url).origin))]);
+
 // P1 ships one real provider; test-only providers are never registered here.
 export const PRODUCT_PROVIDER_IDS = Object.freeze([GEMINI_PROVIDER_ID]);
 

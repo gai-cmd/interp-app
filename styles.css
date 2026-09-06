@@ -755,6 +755,37 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 /* P3-02c caption board: inline in the tab, or a captions-only full screen.
    The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
+/* P3-21: the shared key guidance card. One rule set for all three placements
+   so the settings section, the first-run greeting and the empty direct screen
+   read identically. Long URLs and Japanese wrap instead of widening the page. */
+.key-guide {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.key-guide-title { margin: 0; font-size: 1.125rem; }
+.key-guide-lead, .key-guide-free, .key-guide-not-all-free, .key-guide-restriction-why { margin: 0; }
+.key-guide-free, .key-guide-not-all-free, .key-guide-restriction-why { color: var(--text-muted); }
+.key-guide-restriction { margin: 0; font-weight: 700; }
+.key-guide-steps { margin: 0; padding-inline-start: 1.5rem; display: grid; gap: var(--space-1); }
+.key-guide-link { margin: 0; }
+.key-guide-anchor {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--touch);
+  color: var(--accent);
+}
+.key-guide-new-tab { color: var(--text-muted); font-size: 0.875em; }
+.key-guide-open-settings { justify-self: start; min-height: var(--touch); }
+.shell-first-run { display: grid; gap: var(--gap); min-width: 0; }
+
 /* P3-20: the display controls, mounted both in the header's 화면 sheet and in
    the settings screen. One rule set serves both mounts, so the two entry points
    look the same as well as behaving the same. Radios keep a full touch target

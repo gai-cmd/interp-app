@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
-import { ENDPOINT_ALLOWLIST, ENDPOINT_ORIGINS } from '../app/config.js';
+import { DOCUMENTATION_LINKS, DOCUMENTATION_ORIGINS, ENDPOINT_ALLOWLIST, ENDPOINT_ORIGINS } from '../app/config.js';
 import { GEMINI_ENDPOINTS } from '../app/providers/gemini/index.js';
 import { REST_ENDPOINT } from '../app/providers/gemini/config.js';
 import { LIVE_ENDPOINT } from '../app/providers/gemini/live-client.js';
@@ -198,7 +198,13 @@ test('no logging and no dynamic code: shipped sources never touch console, eval,
   const forbidden = [/\bconsole\./, /\beval\(/, /\bnew Function\(/, /\.innerHTML\b/, /\.outerHTML\b/, /insertAdjacentHTML/, /document\.write/,
     /\bimportScripts\(/, /\blocalStorage\b/, /\bsessionStorage\b/, /\bindexedDB\b/, /\bdebugger\b/];
   const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
-  const allowedOrigins = new Set(ENDPOINT_ORIGINS);
+  // P3-21: the UI links the reader out to three fixed documents (§1.12). They
+  // are navigation targets, not fetch destinations, so they live in their own
+  // registry and never widen the CSP connect-src; only config.js and the card
+  // that renders them may carry such a URL.
+  const allowedOrigins = new Set([...ENDPOINT_ORIGINS, ...DOCUMENTATION_ORIGINS]);
+  const documentationUrls = new Set(Object.values(DOCUMENTATION_LINKS));
+  const documentationFiles = new Set(['app/config.js']);
   for (const file of sources) {
     const code = stripComments(await readFile(join(repoRoot, file), 'utf8'));
     for (const pattern of forbidden) {
@@ -210,6 +216,10 @@ test('no logging and no dynamic code: shipped sources never touch console, eval,
     }
     for (const match of code.matchAll(/\b(?:https?|wss?):\/\/[^\s'"`)]+/g)) {
       assert.ok(allowedOrigins.has(new URL(match[0]).origin), `${file} references ${match[0]}`);
+      // A documentation URL may only be written down in the registry itself.
+      if (documentationUrls.has(match[0])) {
+        assert.ok(documentationFiles.has(file), `${file} hard-codes the documentation link ${match[0]}`);
+      }
     }
     assert.equal(SECRET_PATTERNS.some((pattern) => pattern.test(code)), false, `${file} is key-shaped clean`);
     assert.equal(code.includes(SECRET_MARK), false, `${file} carries no test marker`);

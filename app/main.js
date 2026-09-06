@@ -51,6 +51,7 @@ import { DEFAULT_TAB, TABS, mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
 import { createAppearance } from './ui/appearance.js';
 import { createDisplayControls } from './ui/display-view.js';
+import { createKeyGuide } from './ui/key-guide.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
 import { ACTIONS, PolicyError, createPolicyRuntime, isPolicyError } from './policy/runtime.js';
@@ -203,6 +204,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let config = null, engine = null, voiceEngine = null, capture = null, store = null;
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   const displayViews = [];
+  const keyGuides = [];
+  // Set once the key guide cards exist; the simultaneous card follows the tab.
+  let onTabChanged = null;
   let audioContext = null, closing = null;
   let simEngine = null, hubEngine = null, listenEngines = null;
   let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null, appearance = null;
@@ -505,7 +509,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       beforeTabChange: stopWork, document: doc, window: win, ...timing,
       // The last tab is remembered per device; the first visit opens simultaneous interpretation.
       initialTab: readUiTab(storage) ?? DEFAULT_TAB,
-      onTabChange: (tab) => { if (storage) writeUiTab(storage, tab); } });
+      onTabChange: (tab) => { if (storage) writeUiTab(storage, tab); onTabChanged?.(tab); } });
     // P3-15: every UI language change (header toggle, settings select,
     // app.setLanguage) is persisted and reflected in the manifest link here.
     removers.push(shell.onLanguageChange((language) => {
@@ -577,6 +581,50 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       else attempt(() => focusTarget.scrollIntoView?.({ block: 'center' }));
       attempt(() => focusTarget.focus());
     }));
+    // P3-21: one guidance card in the three places §1.12 names. The settings
+    // mount is always present (it is reference material, not a prompt); the
+    // other two appear only while a personal key is actually missing.
+    // Nothing mounts on the hub listening path: an audience member following a
+    // venue broadcast needs no key, and a "create a key" card there would block
+    // the one route that works without credentials.
+    const settingsGuide = createKeyGuide({ i18n, document: doc, variant: 'settings' });
+    settingsView.elements.keyGuideHost.append(settingsGuide.element);
+    keyGuides.push(settingsGuide);
+    const openKeyEntry = () => attempt(() => shell.openSettings('key'));
+    for (const [variant, host] of [['firstRun', shell.elements.firstRun],
+      ['emptyDirect', shell.simView?.element ?? null]]) {
+      if (!host) continue;
+      const guide = createKeyGuide({ i18n, document: doc, variant, onOpenSettings: openKeyEntry });
+      guide.setVisible(false);
+      host.append(guide.element);
+      keyGuides.push(guide);
+    }
+    // A personal key for the selected provider is the only thing that decides
+    // whether the two conditional cards are shown.
+    const hasPersonalKey = () => {
+      const selection = attempt(() => config.keyStore.getSelection());
+      if (!selection || selection.keySource !== 'personal') return false;
+      return Boolean(attempt(() => config.keyStore.getMetadata(selection.providerId, selection.keySource)));
+    };
+    const renderKeyGuides = () => {
+      const missing = !hasPersonalKey();
+      for (const guide of keyGuides) {
+        if (guide.variant === 'settings') continue;
+        // The first-run card is the one that greets a new visitor; the direct
+        // card belongs to the simultaneous screen and follows the tab.
+        const applies = guide.variant === 'firstRun'
+          ? missing
+          : missing && shell.selectedTab === 'simultaneous';
+        guide.setVisible(applies);
+      }
+      shell.elements.firstRun.hidden = !keyGuides.some((guide) => guide.variant === 'firstRun' && guide.visible);
+    };
+    renderKeyGuides();
+    onTabChanged = () => renderKeyGuides();
+    removers.push(() => { onTabChanged = null; });
+    removers.push(config.keyStore.subscribe(() => renderKeyGuides()));
+    removers.push(shell.onLanguageChange(() => { for (const guide of keyGuides) guide.refresh(); }));
+
     const retentionNote = doc.createElement('p');
     retentionNote.setAttribute('class', 'settings-note settings-key-retention');
     const renderRetentionNote = () => { retentionNote.textContent = i18n.t('settings.keyRetentionHint'); };
@@ -632,6 +680,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Own listeners first, then the P1-16 order: policy -> settings ->
     // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
+    for (const guide of keyGuides.splice(0)) attempt(() => guide.destroy());
     for (const view of displayViews.splice(0)) attempt(() => view.destroy());
     appearance?.destroy();
     policyRuntime?.close();

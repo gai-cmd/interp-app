@@ -294,9 +294,13 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     bind.text(option, labelKey(desc));
     providerSelect.append(option);
   }
+  // P3-21 mounts the shared key guide card here; the block keeps its place in
+  // the section whether or not the app decides to fill it.
+  const keyGuideHost = block('settings-key-guide');
   const providerField = field(providerSection, 'settings-provider-select', 'settings.provider', providerSelect);
   providerField.hidden = config.providers.length < 2;
   providerTitle.hidden = !providerField.hidden;
+  providerSection.append(keyGuideHost);
   providerSelect.addEventListener('change', () => selectProvider(providerSelect.value));
   providerSection.append(providerTitle);
   const terms = element(doc, 'p', { className: 'settings-terms' });
@@ -721,7 +725,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     elements: Object.freeze({ uiSelect, sourceSelect, targetSelect, providerSelect, providerTitle, keyInput, rememberInput, saveButton,
       checkButton, deleteButton, deleteConfirm, keyStatus, keyFeedback, modelSelect, sharedInput, sharedImport, sharedEnd, sharedEvent, modeInputs: Object.freeze(
         Object.fromEntries(KEY_SOURCES.map((source) => [source, modeInputs[source].input]))),
-      outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions, displayControls,
+      outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions, displayControls, keyGuideHost,
       noiseInput, filterInput, sensitivitySelect, appliedLine,
       locks: Object.freeze({ sourceSelect: sourceLock?.element ?? null, targetSelect: targetLock?.element ?? null, outputSelect: outputLock?.element ?? null }),
       policy: policyView?.elements ?? null,
