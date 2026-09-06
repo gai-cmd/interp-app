@@ -186,6 +186,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   shareHeader.append(shareTitle, shareClose);
   const shareImage = element(doc, 'img', { className: 'share-image', attributes: { width: '720', height: '720' } });
   bind.attribute(shareImage, 'alt', 'share.imageAlt');
+  const shareImageHost = element(doc, 'div', { className: 'share-image-host' });
   const shareURL = element(doc, 'textarea', { className: 'share-url', attributes: { readonly: '', rows: '2' } });
   bind.attribute(shareURL, 'aria-label', 'share.urlLabel');
   const shareCopy = element(doc, 'button', { className: 'btn btn-primary share-copy', attributes: { type: 'button' } });
@@ -195,7 +196,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const shareDeployment = element(doc, 'p', { className: 'share-deployment' });
   bind.text(shareDeployment, 'share.deployment');
   const shareStatus = element(doc, 'p', { attributes: { role: 'status', 'aria-live': 'polite' } });
-  share.append(shareHeader, shareImage, shareURL, shareCopy, shareHint, shareDeployment, shareStatus);
+  share.append(shareHeader, shareImageHost, shareURL, shareCopy, shareHint, shareDeployment, shareStatus);
   let shareFocus = null, shareEpoch = 0, shareStatusKey = null;
   function openShare() {
     if (destroyed || !share.hidden) return;
@@ -208,7 +209,8 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     if (!path.endsWith('/')) path += '/';
     shareURL.value = `${location?.origin ?? ''}${path}`;
     shareImage.setAttribute('src', `${path}icons/qr-site.png`);
-    shareDeployment.hidden = shareURL.value === 'https://gai-cmd.github.io/interp-app/';
+    shareImageHost.append(shareImage);
+    shareDeployment.hidden = location?.hostname === 'gai-cmd.github.io' && location?.protocol === 'https:' && path === '/interp-app/';
     shareStatusKey = null;
     shareStatus.textContent = '';
     share.hidden = false;
@@ -219,6 +221,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   function closeShare() {
     if (share.hidden) return;
     shareEpoch++;
+    shareImage.remove();
     share.hidden = true;
     shareButton.setAttribute('aria-expanded', 'false');
     for (const target of inertTargets) target.removeAttribute('inert');
