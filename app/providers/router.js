@@ -30,9 +30,16 @@ function abortable(operation, signal, onLate = () => {}) {
  * These injection interfaces bridge P1-03/P1-05, which do not exist yet.
  * Optional hub.call(capability, request, context) is a trusted verified hub
  * adapter, absent in P1. It receives no direct adapter or direct credentials.
+ * Optional policy.assertRoute({ providerId, capability, keySource, transport })
+ * (P3-07, app/policy/runtime.js) is the site-policy gate at the router boundary:
+ * it throws a PolicyError (name 'PolicyError', code error.POLICY_* etc.) before
+ * any credential is resolved. PolicyErrors are rethrown as they are, never
+ * normalized into provider codes; without a policy guard nothing changes.
  */
-export function createRouter({ registry, getCredentialRef, hub } = {}) {
+export function createRouter({ registry, getCredentialRef, hub, policy } = {}) {
   if (!registry || typeof getCredentialRef !== 'function') throw new ProviderError('INVALID_REQUEST');
+  if (policy !== undefined && policy !== null && typeof policy.assertRoute !== 'function') throw new ProviderError('INVALID_REQUEST');
+  const isPolicyError = (error) => error !== null && typeof error === 'object' && error.name === 'PolicyError' && typeof error.code === 'string';
 
   async function call(capability, request, context = {}) {
     let normalize;
@@ -85,6 +92,8 @@ export function createRouter({ registry, getCredentialRef, hub } = {}) {
       detach = () => context.signal.removeEventListener('abort', abort);
       if (context.signal.aborted) abort();
       const address = Object.freeze({ providerId: descriptor.id, keySource, transport });
+      // Site policy gate (P3-07): allowed capability and key source, before any credential work.
+      if (policy) policy.assertRoute({ ...address, capability });
       const credential = await abortable(() => getCredentialRef(address, { signal }), signal);
       if (!credential) throw new ProviderError('CREDENTIAL_REQUIRED');
       if (credential.providerId !== address.providerId || credential.keySource !== keySource
@@ -153,7 +162,7 @@ export function createRouter({ registry, getCredentialRef, hub } = {}) {
     } catch (error) {
       cancelWork();
       stopSession();
-      throw normalizeError(error, normalize);
+      throw isPolicyError(error) ? error : normalizeError(error, normalize);
     } finally {
       if (!keepSession) detach();
     }

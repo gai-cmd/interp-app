@@ -39,9 +39,9 @@ function assertAllowed(descriptors) {
 }
 
 /**
- * createAppConfig({ fetch?, WebSocket?, Blob?, storage?, setTimeout?, clearTimeout?, now? })
+ * createAppConfig({ fetch?, WebSocket?, Blob?, storage?, setTimeout?, clearTimeout?, now?, policy? })
  * returns { registry, keyStore, router, sessionManager, providers, endpoints,
- * endpointOrigins, defaults, resolveFallback, dispose }. Create it once per app
+ * endpointOrigins, defaults, policy, resolveFallback, dispose }. Create it once per app
  * (P1-19) after bootstrapSharedKey has removed any URL fragment; pass
  * localStorage only when personal-key persistence is offered. Keys flow
  * keyStore -> router reference -> adapter authentication boundary; nothing
@@ -49,19 +49,25 @@ function assertAllowed(descriptors) {
  * slot shared by voice, diagnostics and later simultaneous interpretation.
  * resolveFallback(providerId, capability = 'translate') returns the registered model-fallback resolver
  * for createRetryExecutor, or null when the provider declares none.
+ * policy (P3-07) is an optional { assertRoute(route) } guard handed to the
+ * router so the site policy is checked at the provider boundary as well as
+ * before each start; the composition root passes the policy runtime's guard.
+ * Without it the P1/P2 router contract is unchanged (module tests, fixtures).
  */
-export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, clearTimeout, now } = {}) {
+export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, clearTimeout, now, policy = null } = {}) {
+  if (policy !== null && typeof policy?.assertRoute !== 'function') throw new ProviderError('INVALID_REQUEST');
   const registry = createRegistry();
   const keyStore = createKeyStore({ registry, storage, now, setTimeout, clearTimeout });
   const resolveCredential = (reference, address, options) => keyStore.resolveCredential(reference, address, options);
   registerGemini(registry, { resolveCredential, fetch, WebSocket, Blob, setTimeout, clearTimeout });
   const providers = registry.list();
   assertAllowed(providers);
-  const router = createRouter({ registry, getCredentialRef: (address, options) => keyStore.getCredentialRef(address, options) });
+  const router = createRouter({ registry, getCredentialRef: (address, options) => keyStore.getCredentialRef(address, options),
+    ...(policy ? { policy } : {}) });
   const sessionManager = createSessionManager({ timeoutMs: VOICE_POLICY.turnTimeoutMs, setTimeout, clearTimeout });
   const fallbacks = Object.freeze({ [GEMINI_PROVIDER_ID]: resolveGeminiFallback });
   return Object.freeze({
-    registry, keyStore, router, sessionManager, providers, hubs: REGISTERED_HUBS,
+    registry, keyStore, router, sessionManager, providers, hubs: REGISTERED_HUBS, policy,
     endpoints: ENDPOINT_ALLOWLIST, endpointOrigins: ENDPOINT_ORIGINS, defaults: APP_DEFAULTS,
     resolveFallback(providerId, capability = 'translate') {
       if (providerId === GEMINI_PROVIDER_ID && capability === 'live') return resolveGeminiLiveFallback;

@@ -10,11 +10,15 @@ import {
   AUDIO_CONTEXT_OPTIONS, INSTALL_HINT_STORAGE_KEY, UI_LANGUAGE_STORAGE_KEY, applyManifestLanguage,
   autoStart, captureSharedFragment, readUiLanguage, startApp, usableStorage, writeUiLanguage,
 } from '../app/main.js';
-import { createBrowser as listeningBrowser } from './fixtures/scenarios.mjs';
+import { APP_ORIGIN, POLICY_URL, createBrowser as listeningBrowser, policyReply, scenarioPolicy } from './fixtures/scenarios.mjs';
 import { createSeqEngine } from '../app/engine/seq.js';
 import { createAppConfig } from '../app/config.js';
 import { createSocketFixture } from './fixtures/live.mjs';
 import { response as geminiResponse } from './fixtures/gemini.mjs';
+import { examplePolicy, policyWith, trilingual } from './fixtures/policy.mjs';
+import { POLICY_CLIENT } from '../app/policy/client.js';
+import { ACTIONS, PolicyError } from '../app/policy/runtime.js';
+import { APP_VERSION } from '../app/version.js';
 
 // P1-19 bootstrap: the real modules (i18n, config with the Gemini adapter,
 // key store, capture, voice and sequential engines, shell, diagnostics,
@@ -166,14 +170,16 @@ class FakeMessageChannel {
   constructor() { this.port1 = new FakePort(); this.port2 = new FakePort(); this.port1.peer = this.port2; this.port2.peer = this.port1; }
 }
 
-// The fake browser. fetch serves app/i18n/*.json from disk and scripted
-// Gemini responses; everything else is refused.
+// The fake browser. fetch serves app/i18n/*.json from disk, the site policy
+// at the deployed root (P3-07; `policy` is a document, a function or null to
+// refuse) and scripted Gemini responses; everything else is refused.
 function createBrowser({ hash = '', storage: storageInit = {}, languages = ['ko-KR', 'en-US'], withStorage = true,
-  controller = null, waiting = null, replaceStateError = null, clients = 1 } = {}) {
+  controller = null, waiting = null, replaceStateError = null, clients = 1, policy = scenarioPolicy() } = {}) {
   const ops = [];
   const { doc, root, manifest } = createDocument();
   const timers = fakeTimers();
   const gemini = { calls: [], script: [] };
+  const policyCalls = [];
   const sockets = createSocketFixture({ inspectURL: (url) => { if (/SECRET/i.test(url)) throw new Error('KEY_IN_URL'); } });
   const win = new FakeElement(doc, 'window');
   win.document = doc;
@@ -184,7 +190,8 @@ function createBrowser({ hash = '', storage: storageInit = {}, languages = ['ko-
   win.setTimeout = timers.setTimeout;
   win.clearTimeout = timers.clearTimeout;
   win.matchMedia = () => ({ matches: false });
-  win.location = { hash, pathname: '/', search: '', reloads: 0, reload() { this.reloads += 1; } };
+  win.location = { hash, pathname: '/', search: '', origin: APP_ORIGIN, protocol: 'https:',
+    get href() { return `${APP_ORIGIN}${this.pathname}${this.search}${this.hash}`; }, reloads: 0, reload() { this.reloads += 1; } };
   win.history = { replaceState(state, title, url) {
     ops.push(`replaceState:${url}`);
     if (replaceStateError) throw replaceStateError;
@@ -215,9 +222,18 @@ function createBrowser({ hash = '', storage: storageInit = {}, languages = ['ko-
       const next = gemini.script.shift();
       return typeof next === 'function' ? next(call) : next ?? geminiResponse();
     }
+    if (url === POLICY_URL) {
+      ops.push('fetch:policy');
+      const call = { url, init, signal: init.signal, index: policyCalls.length };
+      policyCalls.push(call);
+      if (policy === null) throw new Error('UNEXPECTED_FETCH');
+      const produced = typeof policy === 'function' ? await policy(call, call.index) : policy;
+      if (produced instanceof Error) throw produced;
+      return produced instanceof Response ? produced : policyReply(produced);
+    }
     throw new Error('UNEXPECTED_FETCH');
   };
-  return { win, doc, root, manifest, ops, timers, gemini, audio, container, registration, sockets,
+  return { win, doc, root, manifest, ops, timers, gemini, audio, container, registration, sockets, policyCalls,
     get storage() { return win.localStorage?.map; } };
 }
 

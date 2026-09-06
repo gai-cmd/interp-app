@@ -12,7 +12,12 @@
 //   4. one createCapture and one createVoiceEngine shared by the sequential
 //      engine and diagnostics; mount the shell; diagnostics; settings; PWA.
 // P2: listening ownership and generation guards join the P1 lifecycle.
-// Teardown: settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
+// P3-07: the site policy (design-p3 §1.5-§1.6) gates every execution path
+// here, not only the buttons: sequential start/retry/replay, diagnostics,
+// direct Live and hub join call policy.assertAction() first, the router checks
+// the route again, and a restrictive policy change runs the existing
+// stopWork() cleanup. A wider policy only reopens the gate; nothing restarts.
+// Teardown: policy -> settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
 import fallbackDictionary from './i18n/boot-fallback.js';
 import { createI18n, loadI18n } from './i18n/index.js';
@@ -27,7 +32,10 @@ import { createSeqEngine } from './engine/seq.js';
 import { createDiagnostics } from './engine/diagnostics.js';
 import { mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
-import { resolveKey } from './ui/errors.js';
+import { errorCodeKey, resolveKey } from './ui/errors.js';
+import { createPolicyClient } from './policy/client.js';
+import { ACTIONS, PolicyError, createPolicyRuntime, isPolicyError } from './policy/runtime.js';
+import { createPreferences } from './preferences.js';
 import { withDeadline } from './engine/retry.js';
 import { TURN_PHASE, isAppBusy } from './state.js';
 import { ProviderError } from './providers/contract.js';
@@ -48,6 +56,10 @@ export const BOOT_TIMEOUT_MS = 10000;
 export const AUDIO_CONTEXT_OPTIONS = Object.freeze({ sampleRate: 24000 });
 export const PROVIDER_ID = 'gemini';
 const GESTURE_EVENTS = Object.freeze(['pointerdown', 'keydown']);
+// Notices for policy changes that keep or reopen work (§1.5 table); a change
+// that ends work is announced by the stop path itself, only when work ran.
+const POLICY_CHANGE_KEYS = Object.freeze({ reopened: 'policy.changed.reopened', display: 'policy.changed.display',
+  pricing: 'policy.changed.pricing', updated: 'policy.changed.updated' });
 const languagePattern = /^(ko|en|ja)$/;
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
@@ -98,19 +110,24 @@ export function captureSharedFragment({ location, history }) {
 }
 
 /**
- * startApp({ window, root?, fetch?, setTimeout?, clearTimeout? }) boots the
+ * startApp({ window, root?, fetch?, setTimeout?, clearTimeout?, now? }) boots the
  * application into root (default: #app) and resolves an app handle
  * { i18n, config, engine, shell, diagnostics, settingsView, pwa, getAudioContext,
- *   setLanguage, close }. A failed start renders the failure as dictionary
- * text inside root and resolves null; nothing is logged.
+ *   policy, policyClient, preferences, setLanguage, close }. A failed start
+ * renders the failure as dictionary text inside root and resolves null;
+ * nothing is logged. The shell mounts before the first policy reply; the
+ * handle resolves once that reply (or its failure) is in, so callers see a
+ * settled gate. `now` returns epoch milliseconds for policy dates.
  */
 // hubs is a trusted code registry, never a settings or QR value.
 async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs = REGISTERED_HUBS, fetch: fetcher = win?.fetch?.bind?.(win),
-  setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win) } = {}) {
+  setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win),
+  now = () => Date.now() } = {}) {
   const doc = win?.document;
   const nav = win?.navigator;
   const root = givenRoot ?? attempt(() => doc.getElementById(ROOT_ID));
-  if (!doc || !nav || !root || typeof fetcher !== 'function' || typeof schedule !== 'function' || typeof cancelTimer !== 'function') {
+  if (!doc || !nav || !root || typeof fetcher !== 'function' || typeof schedule !== 'function' || typeof cancelTimer !== 'function'
+    || typeof now !== 'function') {
     throw new Error('INVALID_REQUEST');
   }
   const timing = { setTimeout: schedule, clearTimeout: cancelTimer };
@@ -154,6 +171,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   let audioContext = null, closing = null;
   let simEngine = null, hubEngine = null, listenEngines = null;
+  let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null;
   const activity = createActivity(timing);
   let lifecycleGeneration = 0, transitions = 0, cleanupFailed = false;
   const listeningBusy = () => closed || doc.hidden || cleanupFailed || activity.occupied || transitions > 0
@@ -175,6 +193,33 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       pwa?.reloadIfPending();
     }
   }
+  // A restrictive policy change (§1.5): the gate is already closed by the
+  // runtime; active work ends through the same cleanup as a key change, and
+  // late results are dropped by the lifecycle generation. Never auto-resumes.
+  async function onPolicyStop() {
+    if (!busy()) { lifecycleGeneration++; return; }
+    notify?.('policy.changed.stopped');
+    await stopWork();
+  }
+  // Router boundary guard; before the runtime exists nothing may route.
+  const policyGuard = Object.freeze({ assertRoute(route) {
+    if (!policyRuntime) throw new PolicyError('POLICY_LOADING');
+    return policyRuntime.assertRoute(route);
+  } });
+  // Views map thrown errors with errorKey(), which cannot name PolicyError
+  // codes; the block reason is set after their synchronous handler ran so the
+  // notice the user sees is the policy reason (error.POLICY_* keys, P3-02).
+  function announceBlock(error) {
+    if (!isPolicyError(error)) return;
+    const key = errorCodeKey(error.code);
+    queueMicrotask(() => notify?.(key));
+  }
+  function gated(kind, fn) {
+    return (...args) => {
+      try { policyRuntime.assertAction(kind); } catch (error) { announceBlock(error); throw error; }
+      return fn(...args);
+    };
+  }
   function ownedListener(raw, kind) {
     let lease = null;
     const end = () => kind === 'sim' ? raw.stop() : raw.leave();
@@ -185,6 +230,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       if (closed || epoch !== lifecycleGeneration) throw new ProviderError('ABORTED');
     };
     function start(request) {
+      try { policyRuntime.assertAction(kind === 'sim' ? ACTIONS.simDirect : ACTIONS.hubJoin); }
+      catch (error) { announceBlock(error); throw error; }
       if (closed || doc.hidden || cleanupFailed || transitions || engine.snapshot().busy
         || diagnostics?.snapshot().running != null || pwa?.snapshot().applying) throw new ProviderError('SESSION_LIMIT');
       const owned = activity.acquire(kind, { cancel: end, close: async () => {
@@ -219,7 +266,15 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let getAudioContext, notify;
   try {
     // 3. Configuration; storage is offered only when it is actually usable.
-    config = createAppConfig({ fetch: fetcher, WebSocket: win.WebSocket, Blob: win.Blob, storage: storage ?? undefined, ...timing });
+    config = createAppConfig({ fetch: fetcher, WebSocket: win.WebSocket, Blob: win.Blob, storage: storage ?? undefined, ...timing,
+      policy: policyGuard });
+    // 3b. Site policy: one fixed policy.json at the deployed root (§1.3), the
+    // personal-choice store (P3-05) and the runtime that gates execution.
+    policyClient = createPolicyClient({ fetch: fetcher, location: win.location, now, ...timing,
+      registeredHubIds: hubs.map((hub) => hub.id) });
+    preferences = createPreferences({ storage, now });
+    policyRuntime = createPolicyRuntime({ client: policyClient, preferences, activity, sessionManager: config.sessionManager,
+      now, stopWork: onPolicyStop });
     const startupNotices = [];
     try { shared.deliver(config.keyStore); } catch (error) { startupNotices.push(`error.${redact(error).code}`); }
     if (storage) {
@@ -256,6 +311,10 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       isBusy: () => listeningBusy() || diagnostics?.snapshot().running != null || pwa?.snapshot().applying === true });
     store = engine.state;
     notify = (key) => { if (!store.closed) attempt(() => store.setNotice(resolveKey(i18n, key))); };
+    // Every sequential start path is gated; the raw engine stays internal.
+    gatedEngine = Object.freeze({ ...engine, startRecording: gated(ACTIONS.seqStart, engine.startRecording),
+      submitText: gated(ACTIONS.seqStart, engine.submitText), retry: gated(ACTIONS.seqRetry, engine.retry),
+      replay: gated(ACTIONS.seqReplay, engine.replay) });
 
     simEngine = createSimEngine({ router: config.router, sessionManager: config.sessionManager,
       platform: createPlatform(win), getAudioContext, ...timing,
@@ -268,16 +327,26 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     });
     hubEngine = createHubListenEngine({ client: createHubClient({ hubs, WebSocket: win.WebSocket, ...timing }), deviceTTS: hubTTS, ...timing });
     listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
-    shell = mount({ root, i18n, engine, listenEngines, hubs,
+    shell = mount({ root, i18n, engine: gatedEngine, listenEngines, hubs,
       beforeTabChange: stopWork, document: doc, window: win, ...timing });
     // P3-02c: caption board preferences share the UI storage; only this module reads localStorage.
     if (storage) shell.simView?.setStorage(storage);
     removers.push(config.keyStore.subscribe(() => {
       if (busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
       else lifecycleGeneration++;
+      // The joined shared-key event follows the shared metadata (eventId once
+      // P3-08's v2 payload carries it); the runtime resolves it against the policy.
+      const eventId = attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'shared')?.eventId);
+      attempt(() => policyRuntime.setEvent(typeof eventId === 'string' ? eventId : null));
     }));
     diagnostics = createDiagnostics({ config, voiceEngine, capture, getAudioContext, ...timing,
       isBusy: () => listeningBusy() || engine.snapshot().busy || pwa?.snapshot().applying === true });
+    gatedDiagnostics = Object.freeze({ ...diagnostics, run: gated(ACTIONS.diagnostics, diagnostics.run) });
+    // Policy changes that keep or reopen work are announced; a stop announces itself.
+    removers.push(policyRuntime.subscribe((snapshot, change) => {
+      const key = POLICY_CHANGE_KEYS[change.type];
+      if (key) notify(key);
+    }));
     pwa = createPwa({ window: win, navigator: nav, isBusy: busy, ...timing });
     removers.push(activity.subscribe(() => pwa.reloadIfPending()));
     removers.push(engine.subscribeWork(() => pwa.reloadIfPending()));
@@ -285,7 +354,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     removers.push(config.sessionManager.subscribe(() => pwa.reloadIfPending()));
     const version = await pwa.getVersion();
     const standalone = pwa.snapshot().standalone;
-    settingsView = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence: storage !== null,
+    settingsView = createSettingsView({ shell, i18n, config, engine: gatedEngine, diagnostics: gatedDiagnostics, document: doc, persistence: storage !== null,
       app: { ...(version ? { version } : {}), standalone }, getDeviceVoices, simEngine,
       metrics: { snapshot: () => simEngine.snapshot().metrics,
         subscribe: fn => simEngine.subscribe(() => fn()) },
@@ -318,20 +387,30 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   // The shell shows the offline badge; the notice says new turns need a connection (§13.2).
   listen(win, 'offline', () => notify('pwa.offline'));
   // Leaving the page ends active work; an unload (not bfcache) closes everything.
+  // The policy timer stops with the page and resumes on foreground return (§1.5).
   listen(win, 'pagehide', (event) => {
+    policyClient.stop();
     stopWork().catch(() => notify('error.SESSION_CLOSED'));
     if (event?.persisted !== true) close();
   });
   listen(doc, 'visibilitychange', () => {
-    if (doc.hidden) stopWork().catch(() => notify('error.SESSION_CLOSED'));
+    if (doc.hidden) {
+      policyClient.stop();
+      stopWork().catch(() => notify('error.SESSION_CLOSED'));
+    } else if (!closed) void policyClient.start();
   });
   // Registration happens last so it never delays the first paint.
   pwa.register();
+  // The shell is up; the handle waits for the first policy reply so the gate
+  // is settled (ready or blocked with a specific reason) when callers get it.
+  await policyClient.start();
 
   async function teardown() {
-    // Own listeners first, then the P1-16 order: settings -> diagnostics ->
-    // shell -> engine -> config; the PWA layer and audio context go last.
+    // Own listeners first, then the P1-16 order: policy -> settings ->
+    // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
+    policyRuntime?.close();
+    policyClient?.stop();
     controls?.destroy();
     settingsView?.destroy();
     await stopWork().catch(() => {});
@@ -352,8 +431,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   }
 
   return Object.freeze({
-    i18n, config, engine, capture, voiceEngine, shell, diagnostics, settingsView, controls, pwa, getAudioContext,
-    listenEngines, activity, stopWork,
+    i18n, config, engine: gatedEngine, capture, voiceEngine, shell, diagnostics: gatedDiagnostics, settingsView, controls, pwa, getAudioContext,
+    listenEngines, activity, stopWork, policy: policyRuntime, policyClient, preferences,
     get closed() { return closed; },
     // UI language only (the interpretation pair is engine state).
     setLanguage(language) {
