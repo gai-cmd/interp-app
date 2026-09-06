@@ -32,6 +32,23 @@ export const LOCAL_SETTINGS = deepFreeze({
   'audio.outputDeviceId': { kind: 'deviceId', default: null },
 });
 
+// P3-25: the preference name that keeps the choice for each MediaDeviceKind
+// the app lists. Video devices are never enumerated or stored.
+export const AUDIO_DEVICE_PREFERENCES = Object.freeze({
+  audioinput: 'audio.inputDeviceId', audiooutput: 'audio.outputDeviceId',
+});
+// Identifiers a browser uses for "the system's current device" rather than a
+// device: the empty ID enumerateDevices exposes before permission, and the
+// `default` / `communications` pseudo IDs Chromium lists. None is a device the
+// user can pick apart from the system default, so none is ever stored: the
+// stored value null already means "system default" and follows the OS choice.
+export const SYSTEM_DEFAULT_DEVICE_IDS = Object.freeze(['', 'default', 'communications']);
+
+/** True for null/undefined and every browser pseudo ID that means the system default. */
+export function isSystemDefaultDeviceId(value) {
+  return value === null || value === undefined || (typeof value === 'string' && SYSTEM_DEFAULT_DEVICE_IDS.includes(value));
+}
+
 // Registered policy settings first (resolve.js iterates the same order), then local ones.
 export const PREFERENCE_NAMES = Object.freeze([...Object.keys(REGISTERED_SETTINGS), ...Object.keys(LOCAL_SETTINGS)]);
 // Stored per provider (§1.13): the key carries the provider ID of the instance.
@@ -96,8 +113,10 @@ export function normalizePreference(name, value) {
     return Number.isFinite(number) && number >= spec.min && number <= spec.max && onGrid(number, spec.min, spec.step)
       ? number : null;
   }
-  // deviceId: opaque browser identifier; an empty string means the system default.
-  return typeof value === 'string' && value.length > 0 && Array.from(value).length <= DEVICE_ID_MAX_CHARS
+  // deviceId: opaque browser identifier, valid for this origin and browser
+  // profile only (it may change after site data is cleared or, in some
+  // browsers, per session). A pseudo ID for the system default is "no choice".
+  return typeof value === 'string' && !isSystemDefaultDeviceId(value) && Array.from(value).length <= DEVICE_ID_MAX_CHARS
     && !CONTROL_CHARS.test(value) ? value : null;
 }
 
