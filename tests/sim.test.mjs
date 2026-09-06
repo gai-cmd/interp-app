@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { simFixture, content, audioContent, deferred, tick } from './fixtures/sim.mjs';
 import { DelayedBlob } from './fixtures/live.mjs';
+import { NO_REPLACEMENT_CODES } from '../app/engine/sim.js';
 import { buildLiveSetup, DEFAULT_LIVE_MODEL, LIVE_MODELS } from '../app/providers/gemini/live-config.js';
 const FLASH = 'gemini-3.1-flash-live-preview';
 
@@ -253,6 +254,50 @@ test('remote close recovers; stop during retry wait cancels every future open', 
   f.sockets[1].finishClose(1006); await tick();
   await f.engine.stop(); f.audio.advance(10000); await tick();
   assert.equal(f.sockets.length, 2); assert.equal(f.audio.timers.size, 0);
+});
+
+// P3-02e: session replacement. Transport failures reopen without the user, at
+// most three times at 1/2/4 s; the 429 family and key rejections end at once.
+test('a dropped connection is replaced without user action three times (1/2/4 s), counted in the snapshot, then BUDGET_EXHAUSTED', async t => {
+  const f = simFixture(); t.after(() => f.close()); const h = await f.running();
+  for (const [index, delay] of [1125, 2250, 4500].entries()) {
+    f.sockets.at(-1).finishClose(1006); await tick();
+    assert.equal(f.engine.snapshot().status, 'reconnecting');
+    assert.equal(f.engine.snapshot().busy, true, 'the operation stays owned while a replacement is pending');
+    await advanceInput(f, delay - 500);
+    assert.equal(f.sockets.length, index + 1, 'no replacement before the backoff elapsed');
+    await advanceInput(f, 500); await f.open();
+    assert.equal(f.sockets.length, index + 2);
+    assert.equal(f.engine.snapshot().status, 'running');
+    assert.equal(f.engine.snapshot().retries, index + 1, 'the replacement count is visible');
+  }
+  f.sockets.at(-1).finishClose(1006);
+  const result = await h.done;
+  assert.equal(result.errorCode, 'BUDGET_EXHAUSTED');
+  assert.equal(f.engine.snapshot().status, 'failed');
+  assert.equal(f.sockets.length, 4); assert.equal(f.audio.timers.size, 0);
+  // An explicit restart is a new operation with a fresh budget.
+  f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
+  await f.running(); assert.equal(f.engine.snapshot().retries, 0); assert.equal(f.sockets.length, 5);
+});
+
+test('a per-minute 429 with a server delay ends the operation with RATE_LIMITED and never reopens automatically', async t => {
+  const f = simFixture(); t.after(() => f.close()); const h = await f.running();
+  f.sockets[0].json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'SECRET quota text', details: [
+    { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }] },
+    { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '9s' },
+  ] } });
+  const result = await h.done;
+  assert.equal(result.errorCode, 'RATE_LIMITED'); assert.equal(result.messageKey, 'error.RATE_LIMITED');
+  assert.equal(f.engine.snapshot().status, 'failed'); assert.equal(f.engine.snapshot().retries, 0);
+  assert.equal(f.audio.timers.size, 0, 'no reconnect timer, not even the server delay');
+  f.audio.advance(30000); await tick();
+  assert.equal(f.sockets.length, 1); assert.deepEqual(f.calls, ['live']); assert.equal(f.track.stops, 1);
+  assert.doesNotMatch(JSON.stringify([result, f.engine.snapshot()]), /SECRET/);
+  for (const code of ['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429', 'INVALID_KEY', 'PERMISSION_DENIED']) {
+    assert.ok(NO_REPLACEMENT_CODES.includes(code), code);
+  }
+  for (const code of ['NETWORK_ERROR', 'UNAVAILABLE', 'SESSION_CLOSED', 'TIMEOUT']) assert.equal(NO_REPLACEMENT_CODES.includes(code), false, code);
 });
 
 test('late Blob decoding after stop never schedules PCM or publishes captions', async t => {

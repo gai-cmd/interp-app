@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { scenario, holdClose, live, until, tick, caption } from './fixtures/p2-scenarios.mjs';
 import { fakeWorker } from './fixtures/scenarios.mjs';
+
+const ko = JSON.parse(await readFile(new URL('../app/i18n/ko.json', import.meta.url), 'utf8'));
 
 // Exercise main.js ownership callbacks with real P1/P2 engines and adapters.
 test('sequential voice → direct → hub TTS → sequential confirms every socket close and cancels old playback', async t => {
@@ -123,23 +126,26 @@ test('key deletion racing an update keeps cleanup busy until physical closure an
   assert.equal(b.sockets.length, 1);
 });
 
-test('classified minute quota honors server delay and cancellation removes the pending reconnect', async t => {
+// P3-02e: a per-minute 429 no longer schedules a server-delay reconnect. The
+// operation ends with its own code and text; only the user reopens the session.
+test('classified minute quota ends the session with RATE_LIMITED: no automatic reopen, no pending reconnect timer', async t => {
   const b = await scenario(t); const { handle, ws } = await b.direct();
   ws.json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', details: [
     { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [
       { quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }] },
     { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '9s' },
   ] } });
-  await until(() => b.clock.pending.includes(9000));
-  for (let i = 0; i < 8; i++) {
-    b.microphone.feed(new Float32Array(4096).fill(0.1)); b.clock.advance(1000); await tick();
-  }
-  assert.equal(b.sockets.length, 1, 'server delay overrides the shorter jitter wait');
-  await b.app.stopWork(); await handle.done;
+  const result = await handle.done;
+  assert.equal(result.errorCode, 'RATE_LIMITED');
+  assert.equal(b.app.listenEngines.direct.snapshot().status, 'failed');
+  assert.equal(b.clock.pending.includes(9000), false, 'the server delay is not turned into a reconnect');
+  assert.ok(b.microphone.streams.every(stream => stream.stopped), 'capture ended with the session');
   b.clock.advance(30000); await tick();
-  assert.equal(b.sockets.length, 1);
-  assert.equal(b.app.activity.occupied, false);
+  assert.equal(b.sockets.length, 1, 'quota errors never reopen automatically');
+  await until(() => !b.app.activity.occupied);
   assert.equal(b.audio.scheduled, 0);
+  assert.equal(b.el('sim-notice').textContent, ko['sim.error.RATE_LIMITED']);
+  assert.equal(b.el('sim-start').textContent, ko['sim.reopen'], 'the primary action offers a manual reopen');
 });
 
 test('hub reconnect restores captions silently and never rereads an already spoken revision', async t => {

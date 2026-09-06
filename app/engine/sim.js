@@ -23,6 +23,14 @@ const deferred = () => {
 };
 const attempt = fn => { try { return fn(); } catch { /* Observer-owned failure. */ } };
 const captureCodes = new Set(['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'TIMEOUT']);
+// P3-02e: a session is replaced automatically (live-recovery: at most three
+// reopenings, 1/2/4 s) only for transport failures. Every 429 family code and
+// every key/permission rejection ends the operation at once with its own code:
+// an automatic reopen would only spend the remaining quota faster.
+export const NO_REPLACEMENT_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429',
+  'INVALID_KEY', 'PERMISSION_DENIED', 'IP_DENIED', 'CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'CREDENTIAL_FORBIDDEN',
+  'SAFETY_BLOCKED']);
+const noReplacement = new Set(NO_REPLACEMENT_CODES);
 const MAX_SKIPPED = 100;
 // 24 kHz PCM16 mono: 48 bytes per millisecond.
 const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
@@ -183,6 +191,9 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         assertActive(op.controller.signal);
         // Credential/routing rejection can precede the router's first charge.
         if (!op.recovery.budget.used) throw outcome.error;
+        // Quota and key rejections are final for this operation; only the
+        // user's explicit reopen starts a new session with a fresh budget.
+        if (!outcome.goAway && noReplacement.has(outcome.error.code)) throw outcome.error;
         request = await op.recovery.wait(outcome.error, { signal: op.controller.signal,
           closed: true, goAway: outcome.goAway, request, resolveFallback });
         // Registered fallback only: the translation-only model stays first and a
