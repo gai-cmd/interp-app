@@ -460,9 +460,89 @@ textarea { width: 100%; resize: vertical; }
 .sim-captions { overflow-y: auto; overflow-anchor: none; max-height: 60vh; min-height: 8rem;
   border: 1px solid var(--border); border-radius: var(--radius); padding: var(--gap); }
 .sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--translation-bg); border-radius: var(--radius); }
+.sim-caption .turn-text { font-size: var(--caption-size, 1.25rem); }
 .sim-caption[data-status="partial"] { color: var(--text-muted); border-inline-start: 3px dashed var(--accent); }
 .sim-caption[data-status="interrupted"] { border-inline-start: 3px solid var(--danger); }
 .sim-level { width: 100%; min-height: 1rem; }
+
+/* P3-02c caption board: inline in the tab, or a captions-only full screen.
+   The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
+.caption-board { display: grid; gap: var(--gap); min-width: 0; --caption-size: 1.25rem; }
+.caption-board-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.caption-board-size { display: inline-flex; align-items: center; gap: 0.5rem; min-height: var(--touch); flex: 1 1 14rem; min-width: 0; }
+.caption-board-slider { flex: 1 1 6rem; min-width: 5rem; min-height: var(--touch); margin: 0; accent-color: var(--accent); }
+.caption-board-size-value { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+.caption-board-wake, .caption-board-status, .caption-board-notice, .caption-board-gap { margin: 0; }
+.caption-board-wake { flex-basis: 100%; font-size: 0.875rem; color: var(--text-muted); }
+.caption-board-notice { border-inline-start: 0.375rem solid var(--accent); padding-inline-start: 0.5rem; }
+.caption-board-primary { display: flex; align-items: center; justify-content: center; }
+.sim-fs-primary { min-height: 5rem; min-width: 12rem; font-size: 1.25rem; }
+.sim[data-caption-only="true"] > :not(.caption-board) { display: none; }
+.caption-board[data-caption-only="true"] {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 100vh;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+}
+.caption-board[data-caption-only="true"] .caption-board-bar {
+  padding: 0.5rem var(--gap);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.caption-board[data-caption-only="true"] .caption-board-status,
+.caption-board[data-caption-only="true"] .caption-board-notice,
+.caption-board[data-caption-only="true"] .caption-board-gap,
+.caption-board[data-caption-only="true"] .caption-board-empty { margin: 0 var(--gap); }
+.caption-board[data-caption-only="true"] .caption-board-primary { flex: 1 1 auto; }
+.caption-board[data-caption-only="true"] .sim-captions {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0 var(--gap) calc(var(--touch) + var(--gap));
+  overscroll-behavior: contain;
+}
+.caption-board[data-caption-only="true"] .sim-caption {
+  margin: 0;
+  padding: 0.5rem 0;
+  background: transparent;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+}
+.caption-board[data-caption-only="true"] .sim-caption[data-status="partial"] { padding-inline-start: 0.5rem; }
+.caption-board[data-caption-only="true"] .sim-caption[data-status="interrupted"] { padding-inline-start: 0.5rem; }
+.caption-board[data-caption-only="true"] .sim-latest {
+  position: absolute;
+  bottom: calc(var(--gap) + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+}
+/* Display modes reuse the DESIGN.md §2 light/dark tokens and the §10 mono tone
+   (black background, white text) scoped to the board only. */
+.caption-board[data-caption-only="true"][data-display="light"] {
+  color-scheme: light;
+  --bg: #f6f7f9; --surface: #ffffff; --surface-alt: #eef1f5; --text: #1a1d21; --text-muted: #4d5560;
+  --border: #c9d0d8; --accent: #1f5f8b; --accent-text: #ffffff; --danger: #a5282c; --translation-bg: #e8f1f8;
+}
+.caption-board[data-caption-only="true"][data-display="dark"] {
+  color-scheme: dark;
+  --bg: #14171b; --surface: #1e2329; --surface-alt: #262c34; --text: #edf0f3; --text-muted: #aab3bd;
+  --border: #3a434d; --accent: #7fb6dd; --accent-text: #0f1a22; --danger: #ff8a80; --translation-bg: #22313d;
+}
+.caption-board[data-caption-only="true"][data-display="mono"] {
+  color-scheme: dark;
+  --bg: #000000; --surface: #000000; --surface-alt: #1a1a1a; --text: #ffffff; --text-muted: #d4d4d4;
+  --border: #8a8a8a; --accent: #ffffff; --accent-text: #000000; --danger: #ffb4ab; --translation-bg: #000000;
+}
 
 /* Site sharing uses the shell's modal and touch target tokens. */
 .share-dialog {

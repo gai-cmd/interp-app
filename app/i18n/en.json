@@ -580,5 +580,17 @@
   "sim.route.fallback": "Interpreting with the auxiliary model — the translation-only model failed to connect",
   "sim.captions.skipped": "Reply detected · skipped",
   "sim.headphonesStart": "Please use headphones. Through a speaker, the interpreted voice re-enters the microphone and can be mistaken for conversation.",
-  "diagnostics.repliesSkipped": "Turns skipped as replies"
+  "diagnostics.repliesSkipped": "Turns skipped as replies",
+  "captionOnly.enter": "Captions only",
+  "captionOnly.exit": "Exit",
+  "captionOnly.title": "Captions-only screen",
+  "captionOnly.fontSize": "Text size",
+  "captionOnly.fontSizeValue": "{size}rem",
+  "captionOnly.display": "Display",
+  "captionOnly.display.light": "Light",
+  "captionOnly.display.dark": "Dark",
+  "captionOnly.display.mono": "High contrast",
+  "captionOnly.wakeLock.active": "Keeping the screen on",
+  "captionOnly.wakeLock.unsupported": "This browser cannot keep the screen on. Extend the screen timeout in your device settings.",
+  "captionOnly.wakeLock.failed": "Could not keep the screen on. Check the screen timeout in your device settings."
 }

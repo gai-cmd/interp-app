@@ -1,7 +1,10 @@
 // New implementation of design-p2 §7.3; no legacy code is ported.
+// P3-02c: the caption list moved into caption-board.js, which also owns the
+// captions-only full-screen frame. This view keeps session ownership: the
+// full-screen bar buttons are created here and reuse the same handlers.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
-import { MAX_CAPTIONS } from '../engine/caption-store.js';
 import { createBinder } from './seq-view.js';
+import { createCaptionBoard } from './caption-board.js';
 import { errorKey, levelPercent } from './errors.js';
 
 /** engines: {direct, hub?}, using their snapshot/subscribe/start or join/stop
@@ -9,14 +12,18 @@ import { errorKey, levelPercent } from './errors.js';
  * adapter that supplies the direct engine's context and activity ownership.
  * hubs contains code-registered {id, labelKey} entries only. The app owns
  * engine cleanup on tab/page exit; destroy only detaches this view.
+ * window (wake lock) and timers default to the document's view so the shell
+ * needs no new wiring; the app hands its usable storage over with
+ * setStorage(storage) after mount (only app/main.js reads localStorage).
  */
 export function createSimView({ root, i18n, engines, engine, hubs = [], startDirect,
-  targetLanguage = 'ja', onSequential, document: doc = root?.ownerDocument } = {}) {
+  targetLanguage = 'ja', onSequential, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
+  storage = null, setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   engines ??= { direct: engine };
   if (!root || !doc || !i18n?.t || !engines.direct?.subscribe) throw new Error('INVALID_REQUEST');
-  const bind = createBinder(i18n), rows = new Map(), listeners = [];
+  const bind = createBinder(i18n), listeners = [];
   let mode = 'direct', target = SUPPORTED_LANGUAGES.includes(targetLanguage) ? targetLanguage : 'ja';
-  let disposed = false, pending = false, following = true, snapshot, unsubscribe, headphonesHinted = false;
+  let disposed = false, pending = false, snapshot, unsubscribe, headphonesHinted = false;
   const current = () => engines[mode];
   const node = (tag, name, parent, key, attrs = {}) => {
     const el = doc.createElement(tag);
@@ -25,7 +32,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     if (key) bind.text(el, key);
     parent?.append(el); return el;
   };
-  const section = node('section', 'sim', root);
+  const section = node('section', 'sim', root, null, { 'data-caption-only': 'false' });
   const controls = node('div', 'sim-controls', section);
   const select = (name, key) => {
     const label = node('label', 'sim-field', controls);
@@ -45,11 +52,13 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   bind.attribute(room, 'placeholder', 'hub.roomCodePlaceholder');
   const language = select('sim-target', 'language.target');
   const options = SUPPORTED_LANGUAGES.map(value => node('option', '', language, `language.${value}`, { value }));
-  const button = (name, key) => node('button', `btn btn-secondary ${name}`, controls, key, { type: 'button' });
+  const button = (name, key, parent = controls) => node('button', `btn btn-secondary ${name}`, parent, key, { type: 'button' });
   const start = button('sim-start', 'common.start'), stop = button('sim-stop', 'common.stop');
   const sound = button('sim-sound', 'sim.enableSound');
   const source = button('sim-source', 'sim.captions.showSource');
   source.setAttribute('aria-pressed', 'false');
+  const captionOnly = button('sim-caption-only', 'captionOnly.enter');
+  captionOnly.setAttribute('aria-pressed', 'false');
   const fallback = button('sim-fallback', 'sim.sequentialFallback');
   const directHints = node('div', 'sim-hints', section);
   for (const key of ['sim.sourceAuto', 'sim.headphones', 'sim.seatAudio', 'sim.personalKey', 'sim.liveVoice']) node('p', '', directHints, key);
@@ -63,14 +72,21 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const notice = node('p', 'sim-notice', section, null, { role: 'status' });
   const meter = node('meter', 'sim-level', section, null, { min: '0', max: '100', value: '0' });
   bind.attribute(meter, 'aria-label', 'seq.inputLevel');
-  const gaps = Object.fromEntries(['input', 'audio', 'reception'].map(cause =>
-    [cause, node('p', `sim-gap-${cause}`, section, `sim.gap.${cause}`, { role: 'status' })]));
   const recent = node('p', 'sim-recent', section, 'sim.captions.recent');
-  const empty = node('p', 'sim-empty', section, 'sim.captions.empty');
-  const list = node('div', 'sim-captions', section, null, { tabindex: '0', 'aria-live': 'off' });
-  bind.attribute(list, 'aria-label', 'sim.captions.latest');
-  const announcement = node('p', 'sr-only sim-announcement', section, null, { 'aria-live': 'polite', 'aria-atomic': 'true' });
-  const latest = node('button', 'btn btn-secondary sim-latest', section, 'sim.captions.latest', { type: 'button' });
+  // Full-screen bar controls and the large start button share this view's handlers.
+  const fsStop = button('sim-fs-stop', 'common.stop', null);
+  const fsSound = button('sim-fs-sound', 'sim.enableSound', null);
+  const fsSource = button('sim-fs-source', 'sim.captions.showSource', null);
+  fsSource.setAttribute('aria-pressed', 'false');
+  const fsPrimary = node('button', 'btn btn-primary sim-fs-primary', null, 'common.start', { type: 'button' });
+  const board = createCaptionBoard({ parent: section, i18n, document: doc, window: win, storage,
+    controls: [fsStop, fsSound, fsSource], primary: fsPrimary,
+    setTimeout: schedule, clearTimeout: cancelTimer,
+    onToggle(on) {
+      section.setAttribute('data-caption-only', String(on));
+      captionOnly.setAttribute('aria-pressed', String(on));
+      if (snapshot) render();
+    } });
   const setText = (el, value) => { if (el.textContent !== value) el.textContent = value; };
   const listen = (el, event, fn) => { el.addEventListener(event, fn); listeners.push(() => el.removeEventListener(event, fn)); };
   function call(fn) {
@@ -94,64 +110,42 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     } catch { if (!disposed) setText(notice, i18n.t('error.unknown')); }
     finally { pending = false; if (!disposed) render(); }
   }
-  listen(modeSelect, 'change', () => { const next = modeSelect.value;
-    if (next !== mode && (next === 'direct' || (next === 'hub' && engines.hub && hubs.length))) void change(() => { mode = next; rows.clear(); list.textContent = ''; following = true; });
-  });
-  listen(language, 'change', () => { const next = language.value;
-    if (SUPPORTED_LANGUAGES.includes(next) && next !== target) void change(() => { target = next; });
-  });
-  listen(start, 'click', () => {
-    if (pending || snapshot.busy || !['idle', 'stopped', 'failed'].includes(snapshot.status)) return;
+  const canStart = () => !pending && !snapshot.busy && ['idle', 'stopped', 'failed'].includes(snapshot.status);
+  function startSession() {
+    if (!canStart()) return;
     setText(notice, '');
     // Speaker playback re-enters the microphone and can read as conversation; stress headphones once.
     if (mode === 'direct' && !headphonesHinted) { headphonesHinted = true; setText(notice, i18n.t('sim.headphonesStart')); }
     call(() => mode === 'hub' ? current().join({ hubId: venueSelect.value, roomCode: room.value, language: target })
       : (startDirect ?? (request => current().start(request)))({ targetLanguage: target }));
+  }
+  const stopSession = () => call(end);
+  const toggleSound = () => call(() => current().setMuted(!['muted', 'blocked', 'unavailable'].includes(snapshot.output)));
+  const sourceShown = () => source.getAttribute('aria-pressed') === 'true';
+  function toggleSource() {
+    const next = String(!sourceShown());
+    source.setAttribute('aria-pressed', next); fsSource.setAttribute('aria-pressed', next);
+    render();
+  }
+  listen(modeSelect, 'change', () => { const next = modeSelect.value;
+    if (next !== mode && (next === 'direct' || (next === 'hub' && engines.hub && hubs.length))) void change(() => { mode = next; board.clear(); });
   });
-  listen(stop, 'click', () => call(end));
-  listen(sound, 'click', () => call(() => current().setMuted(!['muted', 'blocked', 'unavailable'].includes(snapshot.output))));
-  listen(source, 'click', () => { source.setAttribute('aria-pressed', String(source.getAttribute('aria-pressed') !== 'true')); render(); });
+  listen(language, 'change', () => { const next = language.value;
+    if (SUPPORTED_LANGUAGES.includes(next) && next !== target) void change(() => { target = next; });
+  });
+  for (const el of [start, fsPrimary]) listen(el, 'click', startSession);
+  for (const el of [stop, fsStop]) listen(el, 'click', stopSession);
+  for (const el of [sound, fsSound]) listen(el, 'click', toggleSound);
+  for (const el of [source, fsSource]) listen(el, 'click', toggleSource);
+  listen(captionOnly, 'click', () => board.setCaptionOnly(!board.captionOnly));
   listen(fallback, 'click', () => call(async () => { await end(); if (!disposed) onSequential?.(); }));
-  listen(list, 'scroll', () => { following = list.scrollHeight - list.clientHeight - list.scrollTop <= 24; latest.hidden = following; });
-  listen(latest, 'click', () => { following = true; list.scrollTop = list.scrollHeight; latest.hidden = true; });
 
   function renderCaptions() {
     const data = snapshot.captions;
-    const visible = (data?.captions ?? []).filter(c => (c.role !== 'source' || source.getAttribute('aria-pressed') === 'true')
+    const visible = (data?.captions ?? []).filter(c => (c.role !== 'source' || sourceShown())
       && (mode !== 'hub' || c.role === 'source' || c.lang === target));
-    const settled = visible.filter(c => c.status !== 'partial').slice(-MAX_CAPTIONS);
-    const keep = new Set([...settled, ...visible.filter(c => c.status === 'partial')].map(c => c.id));
-    // Keep the first surviving visible row fixed even when the oldest row is
-    // evicted. CSS disables native anchoring to avoid applying compensation twice.
-    const top = list.getBoundingClientRect?.().top ?? 0;
-    const anchor = [...rows].find(([id, row]) => keep.has(id) && (row.el.getBoundingClientRect?.().bottom ?? 0) > top);
-    const before = anchor?.[1].el.getBoundingClientRect?.().top;
-    for (const [id, row] of rows) if (!keep.has(id)) { row.el.remove(); rows.delete(id); }
-    let finalText = '';
-    for (const c of visible.filter(c => keep.has(c.id))) {
-      let row = rows.get(c.id);
-      if (!row) {
-        const el = node('article', 'sim-caption', list);
-        row = { el, label: node('span', 'turn-label', el), text: node('p', 'turn-text', el), status: null };
-        rows.set(c.id, row);
-      }
-      const text = c.role === 'source' ? c.sourceText : c.translatedText;
-      if (c.status === 'final' && row.status === 'partial' && c.role === 'translation') finalText = text;
-      if (c.status === 'final' && row.status === null && c.role === 'translation' && mode === 'direct') finalText = text;
-      row.status = c.status;
-      row.el.setAttribute('data-status', c.status);
-      const skipped = c.role === 'translation' && snapshot.skippedSegments?.includes(c.segmentId) === true;
-      row.el.setAttribute('data-skipped', String(skipped));
-      setText(row.label, `${i18n.t(c.role === 'source' ? 'seq.original' : 'seq.translation')} · ${i18n.t(skipped ? 'sim.captions.skipped' : `sim.captions.${c.status}`)}`);
-      setText(row.text, text ?? '');
-      row.el.setAttribute('data-gap-before', String(c.gapBefore === true));
-      if (c.role === 'translation') row.text.setAttribute('lang', target);
-    }
-    if (finalText) setText(announcement, finalText);
-    if (following) list.scrollTop = list.scrollHeight;
-    else if (before !== undefined) list.scrollTop += anchor[1].el.getBoundingClientRect().top - before;
-    latest.hidden = following; empty.hidden = rows.size > 0;
-    for (const [cause, el] of Object.entries(gaps)) el.hidden = !data?.gaps?.[cause];
+    board.render({ captions: visible, skippedSegments: snapshot.skippedSegments, gaps: data?.gaps, lang: target,
+      announceFirstFinal: mode === 'direct', status: status.textContent, notice: notice.textContent });
   }
   function render(next = current().snapshot()) {
     if (disposed) return;
@@ -166,11 +160,16 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     const allowed = hub && (snapshot.allowedLangs?.length || snapshot.status === 'running') ? snapshot.allowedLangs : SUPPORTED_LANGUAGES;
     for (const option of options) option.disabled = !allowed.includes(option.getAttribute('value'));
     start.disabled = busy || pending || !allowed.includes(target);
-    stop.disabled = !busy || pending;
-    sound.disabled = pending || snapshot.status !== 'running';
-    setText(start, i18n.t(snapshot.status === 'failed' || snapshot.status === 'stopped' ? (hub ? 'hub.reconnect' : 'sim.restart') : (hub ? 'hub.join' : 'common.start')));
-    setText(stop, i18n.t(hub ? 'hub.leave' : 'common.stop'));
-    setText(sound, i18n.t(['muted', 'blocked', 'unavailable'].includes(snapshot.output) ? 'sim.enableSound' : 'sim.mute'));
+    stop.disabled = fsStop.disabled = !busy || pending;
+    sound.disabled = fsSound.disabled = pending || snapshot.status !== 'running';
+    const startKey = snapshot.status === 'failed' || snapshot.status === 'stopped' ? (hub ? 'hub.reconnect' : 'sim.restart') : (hub ? 'hub.join' : 'common.start');
+    for (const el of [start, fsPrimary]) setText(el, i18n.t(startKey));
+    for (const el of [stop, fsStop]) setText(el, i18n.t(hub ? 'hub.leave' : 'common.stop'));
+    const soundKey = ['muted', 'blocked', 'unavailable'].includes(snapshot.output) ? 'sim.enableSound' : 'sim.mute';
+    for (const el of [sound, fsSound]) setText(el, i18n.t(soundKey));
+    // Before a session the full screen shows one large start button; the bar shows stop while busy.
+    fsPrimary.hidden = start.disabled;
+    fsStop.hidden = !busy;
     setText(status, i18n.t(`sim.status.${snapshot.status}`));
     route.hidden = hub;
     const routeKey = snapshot.fallback === true ? 'sim.route.fallback' : snapshot.route === 'flash' ? 'sim.route.flash' : 'sim.route.translation';
@@ -184,10 +183,11 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   }
   function subscribe() { unsubscribe?.(); snapshot = current().snapshot(); unsubscribe = current().subscribe(render); render(snapshot); }
   subscribe();
-  return Object.freeze({ element: section, render,
-    refresh() { if (!disposed) { bind.refresh(); render(); } },
+  return Object.freeze({ element: section, board, render,
+    refresh() { if (!disposed) { bind.refresh(); board.refresh(); render(); } },
+    setStorage(next) { if (!disposed) board.setStorage(next); },
     onLevel(value) { if (!disposed && mode === 'direct' && snapshot.status === 'running') meter.setAttribute('value', String(levelPercent(value))); },
     focusInput() { (mode === 'hub' ? room : start).focus(); },
-    destroy() { if (disposed) return; disposed = true; unsubscribe?.(); for (const off of listeners) off(); bind.clear(); rows.clear(); room.value = ''; section.remove(); },
+    destroy() { if (disposed) return; disposed = true; unsubscribe?.(); for (const off of listeners) off(); board.destroy(); bind.clear(); room.value = ''; section.remove(); },
   });
 }

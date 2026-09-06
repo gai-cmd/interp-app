@@ -580,5 +580,17 @@
   "sim.route.fallback": "보조 모델로 통역 중 — 번역 전용 모델 연결에 실패했어요",
   "sim.captions.skipped": "대답 감지 · 건너뜀",
   "sim.headphonesStart": "이어폰을 꼭 사용하세요. 스피커로 들으면 통역 음성이 마이크로 되돌아가 대화로 오인될 수 있어요.",
-  "diagnostics.repliesSkipped": "대답으로 판단해 건너뛴 턴 수"
+  "diagnostics.repliesSkipped": "대답으로 판단해 건너뛴 턴 수",
+  "captionOnly.enter": "자막만 보기",
+  "captionOnly.exit": "나가기",
+  "captionOnly.title": "자막 전용 화면",
+  "captionOnly.fontSize": "글자 크기",
+  "captionOnly.fontSizeValue": "{size}rem",
+  "captionOnly.display": "표시",
+  "captionOnly.display.light": "라이트",
+  "captionOnly.display.dark": "다크",
+  "captionOnly.display.mono": "고대비",
+  "captionOnly.wakeLock.active": "화면 켜짐 유지 중",
+  "captionOnly.wakeLock.unsupported": "이 브라우저는 화면 켜짐 유지를 지원하지 않아요. 기기 설정에서 화면 자동 꺼짐 시간을 늘리세요.",
+  "captionOnly.wakeLock.failed": "화면 켜짐 유지를 켜지 못했어요. 기기 설정에서 화면 자동 꺼짐 시간을 확인하세요."
 }
