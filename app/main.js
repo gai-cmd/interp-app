@@ -24,7 +24,12 @@
 // it holds no activity lease, uses no key, microphone or speech, and
 // stopWork() never closes it, so a release notice still arrives after a stop.
 // It ends only with leaving the event, the event ending in the policy, or teardown.
-// Teardown: policy -> settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
+// P3-14: display settings (design-p3 §1.10). The boot script restored the
+// personal choice before the first paint; createAppearance() re-applies the
+// effective values from the policy runtime and follows policy changes, the
+// user's own changes and another tab's changes (the window's `storage` event
+// is forwarded to preferences.sync(), which makes the runtime recompute).
+// Teardown: appearance -> policy -> settings -> listening -> diagnostics -> shell -> engine -> config -> pwa.
 // No logging anywhere: errors become dictionary keys rendered as text.
 import fallbackDictionary from './i18n/boot-fallback.js';
 import { createI18n, loadI18n } from './i18n/index.js';
@@ -39,6 +44,7 @@ import { createSeqEngine } from './engine/seq.js';
 import { createDiagnostics } from './engine/diagnostics.js';
 import { DEFAULT_TAB, TABS, mount } from './ui/shell.js';
 import { createSettingsView } from './ui/settings-view.js';
+import { createAppearance } from './ui/appearance.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
 import { ACTIONS, PolicyError, createPolicyRuntime, isPolicyError } from './policy/runtime.js';
@@ -134,7 +140,7 @@ export function captureSharedFragment({ location, history }) {
  * startApp({ window, root?, fetch?, setTimeout?, clearTimeout?, now? }) boots the
  * application into root (default: #app) and resolves an app handle
  * { i18n, config, engine, shell, diagnostics, settingsView, pwa, getAudioContext,
- *   policy, policyClient, preferences, setLanguage, close }. A failed start
+ *   policy, policyClient, preferences, appearance, setLanguage, close }. A failed start
  * renders the failure as dictionary text inside root and resolves null;
  * nothing is logged. The shell mounts before the first policy reply; the
  * handle resolves once that reply (or its failure) is in, so callers see a
@@ -192,7 +198,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   let audioContext = null, closing = null;
   let simEngine = null, hubEngine = null, listenEngines = null;
-  let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null;
+  let policyClient = null, policyRuntime = null, preferences = null, gatedEngine = null, gatedDiagnostics = null, appearance = null;
   // P3-11: live-control state, the joined event and the control-only connection.
   let hubControl = null, eventLink = null, membership = null, controlOp = null, listenControlled = false;
   let controlClosing = Promise.resolve(), linkState = 'idle', linkError = null;
@@ -304,6 +310,10 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     preferences = createPreferences({ storage, now });
     policyRuntime = createPolicyRuntime({ client: policyClient, preferences, activity, sessionManager: config.sessionManager,
       now, stopWork: onPolicyStop });
+    // 3c. Display settings follow the runtime from here on (P3-14); another
+    // tab's change reaches the store through the window's storage event.
+    appearance = createAppearance({ document: doc, matchMedia: win.matchMedia?.bind?.(win), preferences, runtime: policyRuntime, now });
+    listen(win, 'storage', (event) => { attempt(() => preferences.sync(typeof event?.key === 'string' ? event.key : null)); });
     const startupNotices = [];
     try { shared.deliver(config.keyStore); } catch (error) { startupNotices.push(`error.${redact(error).code}`); }
     if (storage) {
@@ -594,6 +604,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Own listeners first, then the P1-16 order: policy -> settings ->
     // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
+    appearance?.destroy();
     policyRuntime?.close();
     policyClient?.stop();
     controls?.destroy();
@@ -625,6 +636,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     listenEngines, activity, stopWork, policy: policyRuntime, policyClient, preferences,
     // P3-11: live-control state and the event link the simultaneous screen uses.
     hubControl, eventLink,
+    // P3-14: the display-settings runtime (the display sheet and settings section drive it).
+    appearance,
     get closed() { return closed; },
     // UI language only (the interpretation pair is engine state).
     setLanguage(language) {
