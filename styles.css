@@ -871,6 +871,57 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 .settings-key-feedback { display: block; white-space: normal; overflow-wrap: anywhere; }
 .settings-key-feedback[hidden] { display: none; }
 
+/* 17b. Settings sections (design-p3 §1.12) and policy locks (§1.6, P3-19).
+   Every section has a title and a hint; a block is a sub-group inside a
+   section (personal key, shared key, key source, voice). A lock note sits
+   under its control: padlock + "value set by the administrator" + reason,
+   linked by aria-describedby, so the state is text, never colour alone. */
+.settings-section-hint { margin: 0; color: var(--text-muted); font-size: 0.875rem; }
+.settings-block { display: grid; gap: var(--gap); min-width: 0; padding-top: var(--space-2); }
+.settings-block-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.settings-lock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.settings-lock[data-locked="true"] { color: var(--text); }
+.settings-lock-icon::before { content: "🔒"; }
+.settings-lock-label { font-weight: 600; }
+.settings-lock-reason { flex-basis: 100%; }
+.settings-select:disabled { background: var(--surface-alt); color: var(--text-muted); cursor: not-allowed; }
+.policy { display: grid; gap: var(--gap); min-width: 0; padding-top: var(--space-2); }
+.policy-title { margin: 0; font-size: 1rem; font-weight: 600; }
+.policy-status { justify-self: start; }
+.policy-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--gap); margin: 0; }
+.policy-fact { display: contents; }
+.policy-fact-label { font-size: 0.8125rem; font-weight: 600; }
+.policy-fact-value { margin: 0; overflow-wrap: anywhere; }
+.policy-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.policy-blocked {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--gap);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+.policy-blocked-title { margin: 0; font-weight: 600; }
+.policy-blocked p { margin: 0; }
+.policy-emergency { display: grid; gap: var(--space-1); overflow-wrap: anywhere; }
+.policy-emergency-label { font-size: 0.8125rem; font-weight: 600; }
+.policy-locks, .policy-hub { display: grid; gap: var(--space-2); }
+.policy-locks-title, .policy-hub-title { margin: 0; font-size: 0.8125rem; font-weight: 600; }
+.policy-lock-list, .policy-feature-list { margin: 0; padding-inline-start: 1.25rem; }
+.policy-lock-list:empty, .policy-feature-list:empty { display: none; }
+.policy-lock-item { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.policy-lock-item-label { font-weight: 600; }
+.policy-lock-item-reason { flex-basis: 100%; color: var(--text-muted); }
+.policy-hub-state { justify-self: start; }
+.policy-hub-revision { margin: 0; }
+
 /* 18. Breakpoints (DESIGN.md §8): min-width only, 40rem and 64rem. */
 @media (min-width: 40rem) {
   .card, .shell-main, .settings-section { padding: 1.25rem; }
