@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGeminiLive } from '../app/providers/gemini/live.js';
-import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD } from '../app/providers/gemini/live-config.js';
+import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD, DEFAULT_LIVE_MODEL, LIVE_MODEL_CONFIG,
+  sanitizeLiveModel, liveRoute, detectReply } from '../app/providers/gemini/live-config.js';
 import { ProviderError } from '../app/providers/contract.js';
 import { createGeminiLiveClient } from '../app/providers/gemini/live-client.js';
 import { fakeClock, fakeLive, pcmContent, request } from './fixtures/gemini-live.mjs';
@@ -40,6 +41,70 @@ test('fixed models have isolated translation/flash setup for all supported langu
   assert.throws(() => buildLiveSetup({ model: 'arbitrary', targetLanguage: 'ko' }), { code: 'MODEL_UNSUPPORTED' });
   assert.throws(() => buildLiveSetup({ targetLanguage: 'xx' }), { code: 'INVALID_REQUEST' });
   assert.throws(() => buildLiveSetup({ targetLanguage: 'ko', voice: 'Kore' }), { code: 'SETTINGS_UNSUPPORTED' });
+});
+
+test('translation-only model is first; unknown selections and routes resolve to it', () => {
+  assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL);
+  assert.equal(LIVE_MODEL_CONFIG[DEFAULT_LIVE_MODEL].setup, 'translation');
+  assert.ok(LIVE_MODELS.slice(1).every((model) => LIVE_MODEL_CONFIG[model].setup === 'flash'));
+  for (const value of [undefined, null, '', 'gemini-3.1-flash-live-preview ', { model: LIVE_MODELS[1] }, 42, '__proto__']) {
+    assert.equal(sanitizeLiveModel(value), DEFAULT_LIVE_MODEL);
+    assert.equal(liveRoute(value), 'translation');
+  }
+  for (const model of LIVE_MODELS) assert.equal(sanitizeLiveModel(model), model);
+  assert.equal(liveRoute(LIVE_MODELS[1]), 'flash');
+});
+
+test('reply detection is conservative: assistant openers and finished foreign-script sentences only', () => {
+  const replies = {
+    ko: ['네, 도와드릴게요.', '네! 제가 알려드리겠습니다', '물론이죠, 도와 드릴게요', '무엇을 도와드릴까요?', '저는 AI 어시스턴트입니다.', '저는 언어 모델이라서'],
+    en: ['Sure, I can help you with that.', 'Yes! I\'ll explain it.', 'Of course, let me help you', 'I can help you with that', 'How can I help you today?', 'As an AI, I cannot'],
+    ja: ['はい、お手伝いします。', 'もちろん、ご説明します', '何かお手伝いできることはありますか', '私はAIアシスタントです'],
+  };
+  const interpretations = {
+    ko: ['몇 시예요?', '도와주실 수 있나요?', '네, 알겠습니다.', '네.', '제가 어제 도와드렸어요', '저는 서울에서 왔습니다', 'NASA는 오늘 발표했어요.', 'Michael Jackson'],
+    en: ['What time is it?', 'Can you help me?', 'Yes.', 'Yes, we can start now.', 'I can see the mountain.', 'Let me tell you a story.', 'How can we help the poor?'],
+    ja: ['何時ですか？', '手伝ってもらえますか？', 'はい、わかりました。', 'はい。', '私は東京から来ました', 'お手伝いが必要な方は'],
+  };
+  for (const language of ['ko', 'en', 'ja']) {
+    for (const text of replies[language]) assert.equal(detectReply(text, language), 'phrase', `${language}: ${text}`);
+    for (const text of interpretations[language]) {
+      assert.equal(detectReply(text, language), null, `${language}: ${text}`);
+      assert.equal(detectReply(text, language, { final: true }), null, `${language} final: ${text}`);
+    }
+  }
+  // Foreign script is judged only on finished sentences with enough letters.
+  assert.equal(detectReply('Thank you all for coming today', 'ko'), null);
+  assert.equal(detectReply('Thank you all for coming today', 'ko', { final: true }), 'language');
+  assert.equal(detectReply('오늘 여러분 모두 환영합니다', 'en', { final: true }), 'language');
+  assert.equal(detectReply('오늘 여러분 모두 환영합니다', 'ja', { final: true }), 'language');
+  assert.equal(detectReply('Welcome to the service, everyone', 'ja', { final: true }), 'language');
+  assert.equal(detectReply('今日は皆さんようこそ', 'ko', { final: true }), 'language');
+  assert.equal(detectReply('OK', 'ko', { final: true }), null);
+  assert.equal(detectReply('Amen.', 'ja', { final: true }), null);
+  assert.equal(detectReply('皆さん、ようこそ。', 'ja', { final: true }), null);
+  assert.equal(detectReply('   ', 'en', { final: true }), null);
+  for (const bad of [undefined, null, 42, {}]) assert.equal(detectReply(bad, 'en'), null);
+  assert.equal(detectReply('Sure, I can help you', 'xx'), null);
+});
+
+test('every open builds the flash interpreter rules fresh, so reopened sessions carry the current prompt', async () => {
+  const live = fakeLive(), controller = new AbortController();
+  const context = { signal: controller.signal, sessionId: 'sim', generation: 1, turnId: 'turn', onEvent() {} };
+  const adapter = createGeminiLive({ live });
+  const flash = { ...request, model: LIVE_MODELS[1], targetLanguage: 'ja' };
+  const first = await adapter.open(flash, context);
+  const closing = first.close(); live.confirm(); await closing;
+  const second = await adapter.open(flash, { ...context, generation: 2 });
+  const expected = buildLiveSetup(flash);
+  assert.notEqual(live.calls[0].setup, live.calls[1].setup);
+  assert.notEqual(live.calls[0].setup.systemInstruction, live.calls[1].setup.systemInstruction);
+  for (const call of live.calls) {
+    assert.deepEqual(call.setup, expected);
+    assert.match(call.setup.systemInstruction.parts[0].text, /INTERPRETER into Japanese[\s\S]*never answer questions/);
+    assert.equal(call.setup.generationConfig.translationConfig, undefined);
+  }
+  const done = second.close(); live.confirm(); await done;
 });
 
 test('sends exact byte views without Node Buffer; finish is idempotent and keeps output open', async () => {

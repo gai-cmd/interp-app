@@ -16,7 +16,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   if (!root || !doc || !i18n?.t || !engines.direct?.subscribe) throw new Error('INVALID_REQUEST');
   const bind = createBinder(i18n), rows = new Map(), listeners = [];
   let mode = 'direct', target = SUPPORTED_LANGUAGES.includes(targetLanguage) ? targetLanguage : 'ja';
-  let disposed = false, pending = false, following = true, snapshot, unsubscribe;
+  let disposed = false, pending = false, following = true, snapshot, unsubscribe, headphonesHinted = false;
   const current = () => engines[mode];
   const node = (tag, name, parent, key, attrs = {}) => {
     const el = doc.createElement(tag);
@@ -56,6 +56,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const hubHints = node('div', 'sim-hints', section);
   for (const key of ['hub.noKeyOrMicrophone', 'hub.deviceSpeech', 'hub.recentNotice']) node('p', '', hubHints, key);
   const status = node('p', 'badge sim-status', section, null, { role: 'status' });
+  // Active model and route (translation-only / auxiliary flash / fallback), always visible for direct listening.
+  const route = node('p', 'sim-route', section, null, { role: 'status' });
   const output = node('p', 'sim-output', section, null, { role: 'status' });
   const broadcast = node('p', 'sim-broadcast', section, null, { role: 'status' });
   const notice = node('p', 'sim-notice', section, null, { role: 'status' });
@@ -101,6 +103,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   listen(start, 'click', () => {
     if (pending || snapshot.busy || !['idle', 'stopped', 'failed'].includes(snapshot.status)) return;
     setText(notice, '');
+    // Speaker playback re-enters the microphone and can read as conversation; stress headphones once.
+    if (mode === 'direct' && !headphonesHinted) { headphonesHinted = true; setText(notice, i18n.t('sim.headphonesStart')); }
     call(() => mode === 'hub' ? current().join({ hubId: venueSelect.value, roomCode: room.value, language: target })
       : (startDirect ?? (request => current().start(request)))({ targetLanguage: target }));
   });
@@ -136,7 +140,9 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
       if (c.status === 'final' && row.status === null && c.role === 'translation' && mode === 'direct') finalText = text;
       row.status = c.status;
       row.el.setAttribute('data-status', c.status);
-      setText(row.label, `${i18n.t(c.role === 'source' ? 'seq.original' : 'seq.translation')} · ${i18n.t(`sim.captions.${c.status}`)}`);
+      const skipped = c.role === 'translation' && snapshot.skippedSegments?.includes(c.segmentId) === true;
+      row.el.setAttribute('data-skipped', String(skipped));
+      setText(row.label, `${i18n.t(c.role === 'source' ? 'seq.original' : 'seq.translation')} · ${i18n.t(skipped ? 'sim.captions.skipped' : `sim.captions.${c.status}`)}`);
       setText(row.text, text ?? '');
       row.el.setAttribute('data-gap-before', String(c.gapBefore === true));
       if (c.role === 'translation') row.text.setAttribute('lang', target);
@@ -166,6 +172,9 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     setText(stop, i18n.t(hub ? 'hub.leave' : 'common.stop'));
     setText(sound, i18n.t(['muted', 'blocked', 'unavailable'].includes(snapshot.output) ? 'sim.enableSound' : 'sim.mute'));
     setText(status, i18n.t(`sim.status.${snapshot.status}`));
+    route.hidden = hub;
+    const routeKey = snapshot.fallback === true ? 'sim.route.fallback' : snapshot.route === 'flash' ? 'sim.route.flash' : 'sim.route.translation';
+    setText(route, hub ? '' : `${i18n.t(routeKey)} · ${typeof snapshot.model === 'string' ? snapshot.model : ''}`);
     setText(output, i18n.t(`sim.output.${snapshot.output.replaceAll('-', '_')}`));
     setText(broadcast, hub ? i18n.t(`hub.broadcast.${snapshot.broadcast}`) : '');
     if (snapshot.errorCode) setText(notice, i18n.t(errorKey({ code: snapshot.errorCode })));

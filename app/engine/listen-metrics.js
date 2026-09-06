@@ -7,10 +7,10 @@ export const METRIC_NAMES = Object.freeze([
   'inputQueueMax', 'droppedInputMs', 'firstPartialMs', 'firstFinalMs', 'revisions',
   'duplicates', 'interrupted', 'possibleGaps', 'firstAudioReceivedMs', 'firstAudioScheduledMs',
   'queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs', 'droppedAudioMs',
-  'ttsFirstRequestMs', 'ttsFirstStartMs', 'ttsWaitMs', 'skippedSentences', 'speechFailures'
+  'ttsFirstRequestMs', 'ttsFirstStartMs', 'ttsWaitMs', 'skippedSentences', 'speechFailures', 'repliesSkipped'
 ]);
 const counters = new Set(['reconnects', 'closeFailures', 'sentFrames', 'droppedInputMs', 'revisions',
-  'duplicates', 'interrupted', 'possibleGaps', 'droppedAudioMs', 'skippedSentences', 'speechFailures']);
+  'duplicates', 'interrupted', 'possibleGaps', 'droppedAudioMs', 'skippedSentences', 'speechFailures', 'repliesSkipped']);
 const signed = new Set(['speechEndToFirstAudioMs']);
 const firsts = new Set(['setupMs', 'firstPartialMs', 'firstFinalMs', 'firstAudioReceivedMs',
   'firstAudioScheduledMs', 'ttsFirstRequestMs', 'ttsFirstStartMs']);
