@@ -764,6 +764,24 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 /* P3-02c caption board: inline in the tab, or a captions-only full screen.
    The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
+/* P3-24/28: the microphone permission and audio device section. The status is
+   a badge, the help appears only while the permission is denied, and every
+   control keeps the full touch target. */
+.audio-settings, .audio-devices { display: grid; gap: var(--space-2); min-width: 0; }
+.audio-permission-status[data-permission="denied"] { border-color: var(--warning); }
+.audio-permission-request, .audio-device-refresh { justify-self: start; min-width: var(--touch); min-height: var(--touch); }
+.audio-permission-help {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.audio-permission-help-title { margin: 0; font-size: 1rem; }
+.audio-device .settings-select { min-height: var(--touch); }
+.audio-output-status { font-weight: 600; }
+
 /* P3-21: the shared key guidance card. One rule set for all three placements
    so the settings section, the first-run greeting and the empty direct screen
    read identically. Long URLs and Japanese wrap instead of widening the page. */

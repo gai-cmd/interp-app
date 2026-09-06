@@ -55,6 +55,7 @@ import { createKeyGuide } from './ui/key-guide.js';
 import { discoverLiveModels } from './providers/gemini/model-discovery.js';
 import { createMicrophonePermission } from './audio/permissions.js';
 import { createAudioDevices } from './audio/devices.js';
+import { createOutputDevice } from './audio/output-device.js';
 import { createAudioSettings } from './ui/audio-settings.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
@@ -209,7 +210,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   const displayViews = [];
   const keyGuides = [];
-  let audioSettings = null, audioDevices = null;
+  let audioSettings = null, audioDevices = null, outputDevice = null;
   // Set once the key guide cards exist; the simultaneous card follows the tab.
   let onTabChanged = null;
   let audioContext = null, closing = null;
@@ -371,8 +372,15 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     getAudioContext = function () {
       const Context = win.AudioContext ?? win.webkitAudioContext;
       if (typeof Context !== 'function') return null;
+      let created = false;
       if (!audioContext || audioContext.state === 'closed') {
         audioContext = attempt(() => new Context({ ...AUDIO_CONTEXT_OPTIONS })) ?? attempt(() => new Context()) ?? null;
+        created = audioContext !== null;
+      }
+      if (created && outputDevice) {
+        // P3-27: a new context starts on the chosen sink before anything plays
+        // through it, so the first sentence is not on the wrong speaker.
+        attempt(() => outputDevice.apply(audioContext));
       }
       if (audioContext && audioContext.state !== 'running') attempt(() => Promise.resolve(audioContext.resume()).catch(() => {}));
       return audioContext;
@@ -407,8 +415,17 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       // next manual start; nothing restarts on its own.
       if (changed && busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
     };
+    // P3-27: PCM playback follows the chosen output device where the browser can
+    // route an AudioContext. Device speech has no sink and always plays on the
+    // system output, which the settings section states.
+    outputDevice = createOutputDevice({ getAudioContext, now });
+    const applyOutputDevice = () => {
+      const chosen = attempt(() => audioDevices.snapshot().selected?.audiooutput?.deviceId) ?? null;
+      if (chosen !== outputDevice.snapshot().deviceId) attempt(() => outputDevice.select(chosen));
+    };
     applyInputDevice();
-    removers.push(audioDevices.subscribe(() => applyInputDevice()));
+    applyOutputDevice();
+    removers.push(audioDevices.subscribe(() => { applyInputDevice(); applyOutputDevice(); }));
     void audioDevices.refresh({ reason: 'manual' }).catch(() => {});
     capture = createCapture({ platform,
       onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
@@ -648,7 +665,8 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // the one route that works without credentials.
     // P3-24: the microphone permission and device controls, in the audio section.
     audioSettings = createAudioSettings({ permission: micPermission, i18n, document: doc,
-      devices: audioDevices, onRequest: ({ purpose }) => micPermission.request({ purpose }) });
+      devices: audioDevices, output: outputDevice,
+      onRequest: ({ purpose }) => micPermission.request({ purpose }) });
     settingsView.elements.audioControls.append(audioSettings.element);
     removers.push(shell.onLanguageChange(() => audioSettings.refresh()));
 
@@ -770,6 +788,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     for (const remove of removers.splice(0)) remove();
     audioSettings?.destroy(); audioSettings = null;
     audioDevices?.destroy(); audioDevices = null;
+    outputDevice?.destroy(); outputDevice = null;
     micPermission?.destroy(); micPermission = null;
     for (const guide of keyGuides.splice(0)) attempt(() => guide.destroy());
     for (const view of displayViews.splice(0)) attempt(() => view.destroy());

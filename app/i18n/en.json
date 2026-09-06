@@ -274,6 +274,8 @@
   "device.localOnly": "Device IDs are stored only on this device and are never put in policies, logs, or diagnostics exports.",
   "device.none": "No devices",
   "device.output": "Output device",
+  "device.outputApplied": "Output device changed.",
+  "device.outputApplying": "Switching the output device…",
   "device.outputPcmOnly": "The output device selection applies to interpreted speech playback.",
   "device.outputPermission": "Choosing an output device may need browser permission. It is requested when you press the button.",
   "device.outputUnsupported": "This browser does not support choosing an output device. The system output is used.",

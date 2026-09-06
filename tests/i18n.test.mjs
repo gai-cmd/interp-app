@@ -537,7 +537,10 @@ test('P3-03 display, key guidance, permission, device, billing and section strin
       'noDeviceHint', 'notEvidence', 'help.title', 'help.menuVaries'].map(k => `permission.${k}`),
     ...['input', 'output', 'systemDefault', 'unlabeled', 'labelsAfterPermission', 'refresh', 'refreshed', 'disappeared',
       'inputAppliesNextStart', 'outputPcmOnly', 'outputUnsupported', 'outputPermission', 'deviceSpeechSystemOutput',
-      'localOnly', 'listIncomplete', 'none'].map(k => `device.${k}`),
+      'localOnly', 'listIncomplete', 'none',
+      // P3-28: what actually happened to an output choice, so the UI never
+      // shows a success line before the browser confirmed the switch.
+      'outputApplying', 'outputApplied'].map(k => `device.${k}`),
     ...['title', 'planLabel', 'displayOnly', 'mayDiffer', 'perProvider', 'keyChanged', 'freeShowsTime', 'paidShowsCost',
       'usageTime', 'usageMinutes', 'usageHint', 'byCapability', 'estimatedCost', 'estimateAlways', 'formula', 'scope',
       'rates', 'perMinute', 'rateSource', 'ratesRevision', 'verifiedAt', 'rateMissing', 'rateMissingHint', 'notZero',

@@ -274,6 +274,8 @@
   "device.localOnly": "機器IDはこの端末にのみ保存され、ポリシー・ログ・診断のエクスポートには含めません。",
   "device.none": "機器がありません",
   "device.output": "出力機器",
+  "device.outputApplied": "出力デバイスを変更しました。",
+  "device.outputApplying": "出力デバイスを切り替えています。",
   "device.outputPcmOnly": "出力機器の選択は通訳音声の再生に適用されます。",
   "device.outputPermission": "出力機器の選択にはブラウザーの権限が必要な場合があります。ボタンを押したときに要求します。",
   "device.outputUnsupported": "このブラウザーは出力機器の選択に対応していません。システムの出力を使用します。",

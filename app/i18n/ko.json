@@ -274,6 +274,8 @@
   "device.localOnly": "장치 ID는 이 기기에만 저장되고 정책·로그·진단 내보내기에 넣지 않아요.",
   "device.none": "장치 없음",
   "device.output": "출력 장치",
+  "device.outputApplied": "출력 장치를 바꿨어요.",
+  "device.outputApplying": "출력 장치를 바꾸는 중이에요.",
   "device.outputPcmOnly": "출력 장치 선택은 통역 음성 재생에 적용돼요.",
   "device.outputPermission": "출력 장치 선택에 브라우저 권한이 필요할 수 있어요. 버튼을 눌렀을 때 요청해요.",
   "device.outputUnsupported": "이 브라우저는 출력 장치 선택을 지원하지 않아요. 시스템 출력을 사용해요.",

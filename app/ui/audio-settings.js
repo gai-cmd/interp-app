@@ -30,14 +30,15 @@ export const PERMISSION_HELP_KEYS = Object.freeze(['permission.help.ios', 'permi
  * createAudioSettings({ permission, i18n, document, devices?, onRequest? })
  *
  * `permission` is createMicrophonePermission()'s result. `devices` is P3-25's
- * device service (optional; the lists simply stay empty without it).
+ * device service and `output` is P3-27's sink router (both optional; the lists
+ * stay empty and the output row is hidden without them).
  * `onRequest` lets the app run the gesture-scoped request itself (it owns the
  * activity lease); without it the service is asked directly.
  *
  * Returns frozen { element, render, refresh, destroy }.
  */
 export function createAudioSettings({ permission, i18n, document: doc, devices = null,
-  onRequest = null } = {}) {
+  output = null, onRequest = null } = {}) {
   if (!doc || typeof i18n?.t !== 'function' || typeof permission?.snapshot !== 'function') throw new Error('INVALID_REQUEST');
   const bind = createBinder(i18n);
   const removers = [];
@@ -106,10 +107,20 @@ export function createAudioSettings({ permission, i18n, document: doc, devices =
     removers.push(() => select.removeEventListener('change', change));
     row.append(label, select);
     deviceBlock.append(row);
-    selects[kind] = { row, select, options: '' };
+    selects[kind] = { row, select, options: '', count: 0 };
   }
   const deviceMessage = element(doc, 'p', { className: 'settings-note audio-device-message', attributes: { role: 'status' } });
   deviceBlock.append(deviceMessage);
+  // P3-28: what actually happened to an output choice — never a success line
+  // before the browser confirmed the switch (P3-27 reports 'applying' first).
+  const outputStatus = element(doc, 'p', { className: 'settings-note audio-output-status', attributes: { role: 'status' } });
+  outputStatus.hidden = true;
+  deviceBlock.append(outputStatus);
+  // Device speech has no sink of its own: say so rather than let the output
+  // choice look as though it covers every sound the app makes.
+  const speechNote = element(doc, 'p', { className: 'settings-note audio-output-speech' });
+  bind.text(speechNote, 'device.deviceSpeechSystemOutput');
+  deviceBlock.append(speechNote);
   const refresh = element(doc, 'button', { className: 'btn btn-secondary audio-device-refresh', attributes: { type: 'button' } });
   bind.text(refresh, 'device.refresh');
   const refreshHandler = () => { attempt(() => devices?.refresh({ reason: 'manual' })); render(); };
@@ -130,7 +141,9 @@ export function createAudioSettings({ permission, i18n, document: doc, devices =
     if (!snapshot) return;
     for (const [kind, entry] of Object.entries(selects)) {
       const list = attempt(() => devices.list(kind)) ?? [];
-      const wanted = list.map((item) => item.deviceId).join('\n');
+      // Joined with the count, because the system default's id is the empty
+      // string: an empty join must not read as "no devices at all".
+      const wanted = `${list.length}:${list.map((item) => item.deviceId).join('\n')}`;
       if (wanted !== entry.options) {
         entry.options = wanted;
         for (const option of Array.from(entry.select.childNodes)) option.remove();
@@ -142,6 +155,7 @@ export function createAudioSettings({ permission, i18n, document: doc, devices =
           entry.select.append(option);
         }
       }
+      entry.count = list.length;
       entry.select.value = snapshot.selected?.[kind]?.deviceId ?? '';
       entry.row.hidden = list.length === 0;
     }
@@ -149,6 +163,23 @@ export function createAudioSettings({ permission, i18n, document: doc, devices =
       : snapshot.incomplete ? 'device.listIncomplete' : null);
     deviceMessage.hidden = key === null;
     if (key) deviceMessage.textContent = i18n.t(key);
+    renderOutput();
+  }
+
+  function renderOutput() {
+    const state = output === null ? null : attempt(() => output.snapshot()) ?? null;
+    // The output row exists only where the browser can actually route the
+    // playback context; a browser that cannot is told once, in the status line.
+    const routable = state !== null && state.supported !== false;
+    selects.audiooutput.row.hidden = !routable || selects.audiooutput.count === 0;
+    speechNote.hidden = !routable;
+    if (state === null) { outputStatus.hidden = true; return; }
+    const key = state.state === 'applying' ? 'device.outputApplying'
+      : state.state === 'applied' ? 'device.outputApplied'
+      : state.state === 'unsupported' ? 'device.outputUnsupported'
+      : state.messageKey;
+    outputStatus.hidden = !key;
+    if (key) outputStatus.textContent = i18n.t(key);
   }
 
   function render() {
@@ -171,12 +202,14 @@ export function createAudioSettings({ permission, i18n, document: doc, devices =
 
   removers.push(permission.subscribe(() => render()));
   if (devices && typeof devices.subscribe === 'function') removers.push(devices.subscribe(() => render()));
+  if (output && typeof output.subscribe === 'function') removers.push(output.subscribe(() => render()));
   render();
 
   return Object.freeze({
     element: root,
     elements: Object.freeze({ status, hint, requestButton, help, deviceBlock, deviceMessage, refresh,
-      inputSelect: selects.audioinput.select, outputSelect: selects.audiooutput.select }),
+      inputSelect: selects.audioinput.select, outputSelect: selects.audiooutput.select,
+      outputStatus, speechNote }),
     render,
     refresh() { if (!destroyed) { bind.refresh(); render(); } },
     destroy() {

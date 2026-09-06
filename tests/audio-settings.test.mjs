@@ -263,3 +263,90 @@ test('main.js applies the choice in one place and ends the capture on a change',
   assert.match(source, /if \(changed && busy\(\)\) stopWork\(\)/);
   assert.equal(/setInputDevice[\s\S]{0,400}\.start\(/.test(source), false, 'no automatic restart after a change');
 });
+
+// --- P3-28: the device section shows what actually happened ---
+
+function outputDouble(initial = {}) {
+  const listeners = new Set();
+  let state = { state: 'system', deviceId: null, applied: null, supported: true, error: null, messageKey: null, ...initial };
+  return {
+    snapshot: () => Object.freeze({ ...state }),
+    subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    set(next) { state = { ...state, ...next }; for (const fn of [...listeners]) fn(Object.freeze({ ...state })); },
+  };
+}
+function devicesDouble(entries = {}) {
+  const listeners = new Set();
+  let snapshot = { selected: { audioinput: { deviceId: '' }, audiooutput: { deviceId: '' } },
+    labelsAvailable: true, incomplete: false, messageKey: null };
+  const lists = { audioinput: [], audiooutput: [], ...entries };
+  return {
+    snapshot: () => Object.freeze(snapshot),
+    list: (kind) => lists[kind] ?? [],
+    select() {}, refresh() {},
+    subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    set(next) { snapshot = { ...snapshot, ...next }; for (const fn of [...listeners]) fn(Object.freeze(snapshot)); },
+  };
+}
+function deviceFixture({ devices = devicesDouble(), output = outputDouble() } = {}) {
+  const doc = { activeElement: null, createElement: (tag) => new FakeElement(doc, tag) };
+  const nav = navigatorDouble();
+  const permission = createMicrophonePermission({ navigator: nav, now: () => 1 });
+  const i18n = createI18n({ dictionaries, language: 'ko' });
+  const view = createAudioSettings({ permission, i18n, document: doc, devices, output });
+  return { doc, view, devices, output, i18n, el: (name) => byClass(view.element, name) };
+}
+
+test('P3-28 the system default is always offered, and labels appear only after permission', () => {
+  const devices = devicesDouble({
+    audioinput: [{ kind: 'audioinput', deviceId: '', labelKey: 'device.systemDefault', isDefault: true },
+      { kind: 'audioinput', deviceId: 'mic-2', label: 'Headset' }],
+  });
+  const f = deviceFixture({ devices });
+  const input = f.view.elements.inputSelect;
+  assert.deepEqual(input.childNodes.map((n) => n.getAttribute('value')), ['', 'mic-2']);
+  assert.equal(input.childNodes[0].textContent, ko['device.systemDefault'], 'the system default is always there');
+  assert.equal(input.childNodes[1].textContent, 'Headset', 'a real label is device data, not a dictionary string');
+
+  // Before permission the app says why the names are missing; it never guesses.
+  devices.set({ labelsAvailable: false });
+  assert.equal(f.el('audio-device-message').hidden, false);
+  assert.equal(f.el('audio-device-message').textContent, ko['device.labelsAfterPermission']);
+  devices.set({ labelsAvailable: true, incomplete: true });
+  assert.equal(f.el('audio-device-message').textContent, ko['device.listIncomplete']);
+  devices.set({ incomplete: false, messageKey: 'device.disappeared' });
+  assert.equal(f.el('audio-device-message').textContent, ko['device.disappeared']);
+  f.view.destroy();
+});
+
+test('P3-28 the output row appears only where the context can be routed', () => {
+  const devices = devicesDouble({ audiooutput: [{ kind: 'audiooutput', deviceId: '', labelKey: 'device.systemDefault' }] });
+  const f = deviceFixture({ devices });
+  assert.equal(f.view.elements.outputSelect.parentNode.hidden, false);
+  assert.equal(f.view.elements.speechNote.hidden, false, 'device speech is stated where output can be chosen');
+  assert.equal(f.view.elements.speechNote.textContent, ko['device.deviceSpeechSystemOutput']);
+
+  // A browser that cannot route an AudioContext gets the explanation instead.
+  f.output.set({ supported: false, state: 'unsupported' });
+  assert.equal(f.view.elements.outputSelect.parentNode.hidden, true);
+  assert.equal(f.view.elements.speechNote.hidden, true);
+  assert.equal(f.el('audio-output-status').textContent, ko['device.outputUnsupported']);
+  f.view.destroy();
+});
+
+test('P3-28 an output change is never reported as done before it is', () => {
+  const devices = devicesDouble({ audiooutput: [{ kind: 'audiooutput', deviceId: '', labelKey: 'device.systemDefault' }] });
+  const f = deviceFixture({ devices });
+  f.output.set({ state: 'applying', deviceId: 'speaker-2' });
+  assert.equal(f.el('audio-output-status').textContent, ko['device.outputApplying']);
+  assert.notEqual(f.el('audio-output-status').textContent, ko['device.outputApplied']);
+
+  f.output.set({ state: 'applied', applied: 'speaker-2' });
+  assert.equal(f.el('audio-output-status').textContent, ko['device.outputApplied']);
+
+  // A refusal says why, and does not read as success.
+  f.output.set({ state: 'failed', applied: null, error: 'denied', messageKey: 'device.outputPermission' });
+  assert.equal(f.el('audio-output-status').textContent, ko['device.outputPermission']);
+  assert.notEqual(f.el('audio-output-status').textContent, ko['device.outputApplied']);
+  f.view.destroy();
+});
