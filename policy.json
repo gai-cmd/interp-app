@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "publishedAt": "2026-09-06T00:00:00Z",
+  "validUntil": null,
+  "minAppVersion": "0.7.0",
+  "emergency": {
+    "stopped": false,
+    "reason": null
+  },
+  "features": {
+    "sequential": true,
+    "simultaneousDirect": true,
+    "hubListen": true,
+    "diagnostics": true,
+    "sharedKeys": false,
+    "rememberPersonalKey": true
+  },
+  "settings": {
+    "ui.mode": {
+      "default": "system",
+      "allowed": ["system", "light", "dark"],
+      "locked": false
+    },
+    "ui.tone": {
+      "default": "navy",
+      "allowed": ["navy", "warm", "forest", "mono"],
+      "locked": false
+    },
+    "ui.text": {
+      "default": "m",
+      "allowed": ["s", "m", "l", "xl"],
+      "locked": false
+    },
+    "captions.size": {
+      "default": 1.5,
+      "min": 1,
+      "max": 2,
+      "step": 0.125,
+      "locked": false
+    },
+    "interpretation.sourceLanguage": {
+      "default": "ko",
+      "allowed": ["auto", "ko", "en", "ja"],
+      "locked": false
+    },
+    "interpretation.targetLanguage": {
+      "default": "ja",
+      "allowed": ["ko", "en", "ja"],
+      "locked": false
+    },
+    "voice.output": {
+      "default": "provider",
+      "allowed": ["provider", "device", "off"],
+      "locked": false
+    },
+    "billing.plan": {
+      "default": "free",
+      "allowed": ["free", "paid"],
+      "locked": false
+    }
+  },
+  "notices": [],
+  "sharedEvents": [],
+  "hubControl": {
+    "enabled": false,
+    "allowedHubIds": [],
+    "allowDirectSubscription": false
+  },
+  "pricing": {
+    "revision": 1,
+    "updatedAt": "2026-09-06T00:00:00Z",
+    "currency": "USD",
+    "allowLocalOverride": true,
+    "rates": []
+  }
+}
