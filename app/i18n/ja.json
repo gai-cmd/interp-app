@@ -790,6 +790,8 @@
   "voice.output": "音声出力",
   "voice.partialFailure": "音声が途中で停止しました。端末の音声で読み直すことができます。",
   "voice.preview": "試聴",
+  "voice.previewNotOutput": "音声出力が「{output}」なので、通訳ではこの声は使われません。試聴では再生します。",
+  "voice.previewRunning": "実行中の検査が終わると試聴できます。",
   "voice.provider": "プロバイダー音声",
   "voice.select": "音声を選択"
 }

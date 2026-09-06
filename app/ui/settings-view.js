@@ -271,6 +271,14 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   const previewButton = button(voiceField, 'voice.preview', 'btn-secondary settings-voice-preview', () => {
     call(() => diagnostics.run('voice', { ...checkOptions() }));
   });
+  // Why the preview cannot run, or that it plays a voice the interpretation
+  // will not use. Empty and hidden when the button simply works.
+  // Built without bind.text: its text is chosen per render (and carries the
+  // current output name), so a language refresh must not overwrite it.
+  const previewNote = element(doc, 'p', { className: 'settings-note settings-voice-preview-note',
+    attributes: { role: 'status' } });
+  previewNote.hidden = true;
+  voiceBlock.append(previewNote);
   const deviceSelect = element(doc, 'select', { className: 'settings-select' });
   deviceSelect.addEventListener('change', () => { call(() => engine.setVoice({ deviceVoiceURI: deviceSelect.value || null })); render(store.snapshot()); });
   const deviceField = field(voiceBlock, 'settings-device-voice', 'voice.device', deviceSelect);
@@ -729,7 +737,21 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     if (defaultOption) defaultOption.textContent = i18n.t('voice.provider');
     voiceSelect.value = voices.includes(settings.voice) ? settings.voice : '';
     voiceField.hidden = voices.length === 0;
-    previewButton.disabled = settings.output !== 'provider' || voices.length === 0 || diagnostics.snapshot().running !== null;
+    // Owner, 2026-09-06: the preview used to switch itself off whenever voice
+    // output was not "provider", so the button sat dead with nothing saying
+    // why. Previewing is about hearing the selected voice, which is exactly
+    // what someone choosing between 30 of them needs, so it now works whatever
+    // the output route is; only a running check (one at a time) still blocks
+    // it, and the reason is written next to the button either way.
+    const running = diagnostics.snapshot().running !== null;
+    previewButton.disabled = voices.length === 0 || running;
+    const outputElsewhere = settings.output !== 'provider';
+    previewNote.hidden = !(running || outputElsewhere) || voices.length === 0;
+    if (!previewNote.hidden) {
+      previewNote.textContent = running
+        ? i18n.t('voice.previewRunning')
+        : i18n.t('voice.previewNotOutput', { output: i18n.t(`voice.${settings.output}`) });
+    }
     if (typeof getDeviceVoices === 'function') {
       const list = attempt(() => {
         const raw = getDeviceVoices();

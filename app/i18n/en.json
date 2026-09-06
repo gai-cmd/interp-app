@@ -790,6 +790,8 @@
   "voice.output": "Speech output",
   "voice.partialFailure": "Speech stopped partway through. You can choose to read it again with device speech.",
   "voice.preview": "Preview voice",
+  "voice.previewNotOutput": "Voice output is set to “{output}”, so interpretation will not use this voice. The preview still plays it.",
+  "voice.previewRunning": "The preview is available once the running check finishes.",
   "voice.provider": "Provider voice",
   "voice.select": "Select voice"
 }

@@ -528,8 +528,15 @@ test('voice, device voice, interpretation pair and preview call the engine only 
   assert.equal(h.state.snapshot().voice.deviceVoiceURI, 'ja-1');
   choose(elements.outputSelect, 'device');
   assert.equal(h.state.snapshot().voice.output, 'device');
-  assert.equal(elements.previewButton.disabled, true, 'no provider preview without provider output');
+  // Owner, 2026-09-06: the preview is how someone picks between 30 voices, so
+  // it still plays when the interpretation output is routed elsewhere. What
+  // changes is that the screen says so instead of leaving a dead button.
+  assert.equal(elements.previewButton.disabled, false, 'the preview plays whatever the output route is');
+  assert.equal(h.el('settings-voice-preview-note').hidden, false);
+  assert.equal(h.el('settings-voice-preview-note').textContent,
+    ko['voice.previewNotOutput'].replace('{output}', ko['voice.device']));
   choose(elements.outputSelect, 'provider');
+  assert.equal(h.el('settings-voice-preview-note').hidden, true, 'nothing to say when the button just works');
   assert.equal(h.adapter.calls.length, 0, 'choosing a voice opens no session');
   assert.equal(h.config.sessionManager.occupied, false);
 
