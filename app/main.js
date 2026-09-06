@@ -57,6 +57,7 @@ import { createMicrophonePermission } from './audio/permissions.js';
 import { createAudioDevices } from './audio/devices.js';
 import { createOutputDevice } from './audio/output-device.js';
 import { createUsage } from './engine/usage.js';
+import { createBillingView } from './ui/billing-view.js';
 import { createAudioSettings } from './ui/audio-settings.js';
 import { errorCodeKey, resolveKey } from './ui/errors.js';
 import { createPolicyClient } from './policy/client.js';
@@ -211,7 +212,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
   let shell = null, settingsView = null, controls = null, diagnostics = null, pwa = null, closed = false;
   const displayViews = [];
   const keyGuides = [];
-  let audioSettings = null, audioDevices = null, outputDevice = null, usage = null;
+  let audioSettings = null, audioDevices = null, outputDevice = null, usage = null, billingView = null;
   // Set once the key guide cards exist; the simultaneous card follows the tab.
   let onTabChanged = null;
   let audioContext = null, closing = null;
@@ -668,6 +669,14 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Nothing mounts on the hub listening path: an audience member following a
     // venue broadcast needs no key, and a "create a key" card there would block
     // the one route that works without credentials.
+    // P3-31: the plan, usage and rate controls, in the billing section.
+    billingView = createBillingView({ usage, i18n, document: doc, preferences,
+      policy: policyRuntime, providerId: settingsView.providerId });
+    settingsView.elements.billingControls.append(billingView.element);
+    billingView.setProvider(settingsView.providerId);
+    removers.push(shell.onLanguageChange(() => billingView.refresh()));
+    removers.push(config.keyStore.subscribe((event) => billingView.noteKeyChange(event?.generation ?? null)));
+
     // P3-24: the microphone permission and device controls, in the audio section.
     audioSettings = createAudioSettings({ permission: micPermission, i18n, document: doc,
       devices: audioDevices, output: outputDevice,
@@ -791,6 +800,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Own listeners first, then the P1-16 order: policy -> settings ->
     // diagnostics -> shell -> engine -> config; PWA and audio context go last.
     for (const remove of removers.splice(0)) remove();
+    billingView?.destroy(); billingView = null;
     audioSettings?.destroy(); audioSettings = null;
     audioDevices?.destroy(); audioDevices = null;
     outputDevice?.destroy(); outputDevice = null;

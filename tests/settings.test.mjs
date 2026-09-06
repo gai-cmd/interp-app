@@ -865,7 +865,9 @@ test('sections follow the §1.12 order with titles and hints; P1 element names, 
   for (const name of ['sharedInput', 'sharedImport', 'sharedEnd', 'sharedEvent']) assert.equal(sections.shared.contains(elements[name]), true, name);
   assert.equal(sections.mode.contains(elements.modeInputs.personal), true);
   assert.equal(sections.mode.contains(elements.modeInputs.shared), true);
-  assert.equal(sections.billing.childNodes.length, 2, 'plan and usage controls belong to P3-31');
+  // P3-31 landed: title, hint and the mount its plan/usage controls fill.
+  assert.equal(sections.billing.childNodes.length, 3, 'title, hint and the P3-31 controls block');
+  assert.ok(sections.billing.contains(elements.billingControls));
   for (const name of ['noiseInput', 'filterInput', 'sensitivitySelect', 'appliedLine']) assert.equal(sections.audio.contains(elements[name]), true, name);
   assert.equal(sections.records.contains(elements.clearButton), true);
   assert.equal(sections.app.contains(elements.appActions), true);

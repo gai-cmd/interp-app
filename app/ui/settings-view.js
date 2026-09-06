@@ -558,8 +558,10 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   modeBlock.append(modeGroup);
   note(modeBlock, 'settings.modeExplicit');
 
-  // 5. Plan and usage: the hint only; P3-31 mounts the plan/usage controls here.
+  // 5. Plan and usage. P3-31 mounts the plan, usage and rate controls here.
   const billingSection = section('billing');
+  const billingControls = block('settings-billing-controls');
+  billingSection.append(billingControls);
 
   // 6. Microphone and audio devices: speech-only defaults (P3-02d). Changes
   // apply at the next capture start. P3-24/28 add permission and device controls.
@@ -888,7 +890,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
       checkButton, deleteButton, deleteConfirm, keyStatus, keyFeedback, modelSelect, sharedInput, sharedImport, sharedEnd, sharedEvent, modeInputs: Object.freeze(
         Object.fromEntries(KEY_SOURCES.map((source) => [source, modeInputs[source].input]))),
       outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions, displayControls, keyGuideHost,
-      noiseInput, filterInput, sensitivitySelect, appliedLine, audioControls,
+      noiseInput, filterInput, sensitivitySelect, appliedLine, audioControls, billingControls,
       locks: Object.freeze({ sourceSelect: sourceLock?.element ?? null, targetSelect: targetLock?.element ?? null, outputSelect: outputLock?.element ?? null }),
       policy: policyView?.elements ?? null,
       sections: Object.freeze({ ...sections,

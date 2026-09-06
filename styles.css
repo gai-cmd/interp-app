@@ -764,6 +764,18 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 
 /* P3-02c caption board: inline in the tab, or a captions-only full screen.
    The caption size is a rem value on top of the page zoom (design-p3 §1.10). */
+/* P3-31: plan, usage and rates. The cost block is absent on Free, so nothing
+   here should imply a hidden number rather than none. */
+.billing-view { display: grid; gap: var(--space-2); min-width: 0; }
+.billing-usage { margin: 0; font-weight: 700; }
+.billing-breakdown { margin: 0; padding-inline-start: 1.25rem; display: grid; gap: var(--space-1); }
+.billing-breakdown-title { margin: 0; }
+.billing-cost { display: grid; gap: var(--space-2); padding: var(--space-3);
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.billing-estimate { margin: 0; font-weight: 700; }
+.billing-rate-source, .billing-rate-verified { margin: 0; color: var(--text-muted); }
+.billing-local-input { min-height: var(--touch); }
+
 /* P3-24/28: the microphone permission and audio device section. The status is
    a badge, the help appears only while the permission is denied, and every
    control keeps the full touch target. */
