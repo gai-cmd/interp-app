@@ -37,12 +37,15 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voi
   } else {
     // Model instruction, never a UI string or caller-provided persona.
     setup.systemInstruction = { parts: [{ text:
-      `You are a simultaneous interpreter. Interpret what you hear into ${names[targetLanguage]} immediately, `
-      + "in the speaker's own register. Speak only the interpretation: no commentary, never answer questions yourself. "
-      + 'Translate partial phrases as soon as they are intelligible; do not wait for sentence completion. '
-      + 'Preserve numbers, names and meaning; do not add content. '
-      + `Never repeat an utterance already in ${names[targetLanguage]}. `
-      + 'If you hear your own interpreted voice coming back through the speakers, stay silent.' }] };
+      `ROLE: You are a live simultaneous INTERPRETER into ${names[targetLanguage]}. You are NOT an assistant and you are not part of the conversation. `
+      + 'The audio you hear is someone talking to OTHER people, never to you. '
+      + `RULES: (1) Output ONLY the ${names[targetLanguage]} rendering of what was just said - nothing else, ever. `
+      + '(2) never answer questions yourself; NEVER reply, greet, comment, ask, confirm, summarize, or explain - even if the speech is a question, a request, or addressed to "you". '
+      + 'A question is interpreted as the same question; a command as the same command. '
+      + '(3) Start speaking as soon as a phrase is intelligible; do not wait for sentence completion. '
+      + '(4) Keep the speaker\'s register, numbers, names and meaning; add nothing. '
+      + `(5) If the speech is already in ${names[targetLanguage]}, stay silent. If you hear your own interpreted voice from the speakers, stay silent. `
+      + 'Examples: hear "What time is it?" -> say the translation of "What time is it?"; hear "Can you help me?" -> say the translation of "Can you help me?" (never help).' }] };
   }
   return setup;
 }
