@@ -439,7 +439,23 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 .shell-title { margin: 0; font-size: 1.125rem; font-weight: 700; flex: 1 1 auto; min-width: 0; }
 .shell-badges { display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
 .shell-connection[data-connection="offline"] { border-style: dashed; }
-.shell-settings-button { margin-left: auto; }
+
+/* Header action row (P3-15, design-p3 §1.9): KO EN JA · display · share ·
+   settings. On mobile it is the header's second line (title and badges are
+   the first); it wraps freely so XL text, Japanese labels or 200% zoom never
+   push the language toggle into an overflow menu or clip it. */
+.shell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.shell-languages { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-width: 0; }
+.shell-language { padding-inline: var(--space-3); font-variant-numeric: tabular-nums; }
+.shell-language[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 
 .shell-notice, .shell-message { margin: var(--gap) var(--page-x) 0; }
 .shell-notice-text { flex: 1 1 auto; min-width: 0; }
@@ -950,6 +966,22 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 @media (min-width: 64rem) {
   .shell-main, .shell-tabs, .shell-notice, .shell-message { max-width: 60rem; }
   .shell-settings-header, .shell-settings-body { max-width: 60rem; }
+  /* Desktop header (P3-15, DESIGN.md §4): app name | tabs | badges | KO EN JA
+     | display | share | settings on one wrapping line. The in-header tab
+     rules key on the data-layout the shell sets after it has moved the tab
+     row, so the stylesheet and the DOM order always agree. The title and the
+     action row share the free space so the tabs sit near the centre. */
+  .shell[data-layout="desktop"] .shell-title { flex: 1 1 0; }
+  .shell[data-layout="desktop"] .shell-actions { flex: 1 1 0; justify-content: flex-end; }
+  .shell[data-layout="desktop"] .shell-header .shell-tabs {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: none;
+    margin: 0 var(--space-3);
+    padding: 0;
+    border-bottom: 0;
+  }
+  .shell[data-layout="desktop"] .shell-header .shell-tab { flex: 0 0 auto; }
   .seq-ptt { min-height: max(56px, 3.5rem); }
   /* Desktop sequential (DESIGN.md §5): 24rem control column + variable
      transcript. The grid only switches on once the view has moved the nodes

@@ -8,7 +8,7 @@ import { ProviderError } from '../app/providers/contract.js';
 import { describeTurn, errorKey, keySelectionKeys, levelPercent, NOTICE_DURATION_MS, replayOutput,
   resolveKey, statusKey, turnActions, turnKey, voiceKey } from '../app/ui/errors.js';
 import { createSeqView, DESKTOP_LAYOUT_QUERY, SEQ_LAYOUTS, SOURCE_OPTIONS } from '../app/ui/seq-view.js';
-import { mount, TABS } from '../app/ui/shell.js';
+import { HEADER_LAYOUT_QUERY, SETTINGS_TARGETS, SHELL_LAYOUTS, mount, TABS } from '../app/ui/shell.js';
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const dictionaries = Object.fromEntries(await Promise.all(SUPPORTED_LANGUAGES.map(async (language) =>
@@ -138,10 +138,13 @@ function fakeMedia(matches) {
     get listenerCount() { return listeners.size; },
   };
 }
-function harness({ language = 'ko', media = null, ...options } = {}) {
+// media drives the sequential view (document.defaultView); headerMedia drives
+// the shell header (the injected window), so each test sees one subscriber.
+function harness({ language = 'ko', media = null, headerMedia = null, ...options } = {}) {
   const doc = createDocument();
   const win = createWindow(doc);
   if (media) doc.defaultView = { matchMedia(query) { media.queries.push(query); media.media = query; return media; } };
+  if (headerMedia) win.matchMedia = (query) => { headerMedia.queries.push(query); headerMedia.media = query; return headerMedia; };
   const root = doc.createElement('div');
   const timers = fakeTimers();
   const engine = fakeEngine();
@@ -862,4 +865,316 @@ test('P3-17 styles: 40/64rem breakpoints, 24rem column + variable transcript, st
   }
   assert.equal(/[^-\w]order\s*:/.test(css), false, 'no CSS order property');
   assert.equal(/overflow-x:\s*(auto|scroll)/.test(css), false, 'no horizontal scroll regions');
+});
+
+// --- P3-15: header language toggle and share placement (design-p3 §1.9, §1.11, §4.4; DESIGN.md §4, §10) ---
+
+const flush = async () => { for (let index = 0; index < 6; index++) await Promise.resolve(); };
+const byId = (node, id) => all(node, (item) => item.getAttribute('id') === id)[0];
+
+test('P3-15 header: title, badges, then KO EN JA · display · share · settings in DOM order; the tab row sits under the header on mobile', () => {
+  const h = harness();
+  const app = h.root.childNodes[0];
+  assert.equal(h.shell.layout, SHELL_LAYOUTS.STACKED);
+  assert.equal(app.getAttribute('data-layout'), 'stacked');
+  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings', 'share-dialog']);
+  const header = h.shell.elements.header;
+  assert.deepEqual(classNames(header), ['shell-title', 'shell-badges', 'shell-actions']);
+  assert.deepEqual(classNames(h.shell.elements.actions),
+    ['shell-languages', 'btn btn-secondary shell-display-button', 'btn btn-secondary share-button', 'btn btn-secondary shell-settings-button']);
+  const languages = h.shell.elements.languages;
+  assert.equal(languages.getAttribute('role'), 'group');
+  assert.equal(languages.getAttribute('aria-label'), ko['language.ui']);
+  assert.deepEqual(languages.childNodes.map((button) => button.getAttribute('data-language')), [...SUPPORTED_LANGUAGES]);
+  assert.deepEqual(languages.childNodes.map((button) => button.textContent), ['KO', 'EN', 'JA']);
+  for (const code of SUPPORTED_LANGUAGES) {
+    const button = h.shell.elements.languageButtons[code];
+    assert.equal(button.tagName, 'BUTTON');
+    assert.equal(button.getAttribute('type'), 'button');
+    assert.equal(button.getAttribute('lang'), code);
+    assert.equal(button.getAttribute('aria-label'), ko[`language.${code}`]);
+    assert.equal(button.getAttribute('aria-pressed'), String(code === 'ko'));
+    assert.equal(visible(button), true, `${code} is always visible (no overflow menu)`);
+  }
+  assert.equal(h.shell.elements.displayButton.textContent, ko['display.open']);
+  assert.equal(h.shell.elements.displayButton.getAttribute('aria-haspopup'), 'dialog');
+  assert.equal(h.shell.elements.shareButton.textContent, ko['share.open']);
+  assert.equal(h.shell.elements.shareButton.getAttribute('aria-controls'), 'shell-share');
+  assert.equal(h.shell.elements.settingsButton.textContent, ko['common.settings']);
+  // Header focus order = DOM order = visual order: key badge, KO, EN, JA, display, share, settings.
+  assert.deepEqual(focusableIds(header),
+    ['shell-mode', 'shell-language', 'shell-language', 'shell-language', 'shell-display-button', 'share-button', 'shell-settings-button']);
+  // The display button opens the settings dialog on the display section until P3-20 mounts its sheet.
+  const targets = [];
+  h.shell.onSettingsOpen((target) => targets.push(target));
+  h.shell.elements.displayButton.focus();
+  h.shell.elements.displayButton.dispatch('click');
+  assert.equal(h.shell.settingsOpen, true);
+  assert.deepEqual(targets, ['display']);
+  assert.equal(h.shell.elements.displayButton.getAttribute('aria-expanded'), 'true');
+  assert.equal(h.shell.elements.settingsButton.getAttribute('aria-expanded'), 'true');
+  assert.equal(h.doc.activeElement, h.shell.elements.panels.settingsClose);
+  h.shell.openDisplay();
+  assert.deepEqual(targets, ['display', 'display'], 'an open dialog still forwards the target');
+  h.shell.closeSettings();
+  assert.equal(h.shell.elements.displayButton.getAttribute('aria-expanded'), 'false');
+  assert.equal(h.doc.activeElement, h.shell.elements.displayButton, 'focus returns to the display button');
+  assert.deepEqual(SETTINGS_TARGETS, ['key', 'display']);
+  assert.deepEqual(h.engine.calls, []);
+});
+
+test('P3-15 language toggle: one change path updates text, lang, title and listeners; the interpretation pair, an active turn and the live connection stay', () => {
+  const h = harness();
+  h.engine.voice.sessionOpen = true;
+  h.shell.render();
+  assert.equal(h.shell.elements.connectionBadge.textContent, ko['connection.connected']);
+  const { turnId } = h.engine.submitText('사과 12개');
+  assert.equal(h.state.snapshot().status, SEQ_STATUS.TRANSLATING);
+  const languages = [];
+  h.shell.onLanguageChange((language) => languages.push(language));
+  const en = h.shell.elements.languageButtons.en;
+  en.focus();
+  en.dispatch('click');
+  assert.equal(h.i18n.language, 'en');
+  assert.deepEqual(languages, ['en']);
+  assert.equal(h.doc.documentElement.getAttribute('lang'), 'en');
+  assert.equal(h.doc.title, dictionaries.en['app.name']);
+  assert.equal(en.getAttribute('aria-pressed'), 'true');
+  assert.equal(h.shell.elements.languageButtons.ko.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.shell.elements.languageButtons.ja.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.shell.elements.languages.getAttribute('aria-label'), dictionaries.en['language.ui']);
+  assert.equal(en.getAttribute('aria-label'), dictionaries.en['language.en']);
+  assert.equal(en.textContent, 'EN', 'the code is the visible label in every language');
+  assert.equal(h.shell.elements.displayButton.textContent, dictionaries.en['display.open']);
+  assert.equal(h.shell.elements.shareButton.textContent, dictionaries.en['share.open']);
+  assert.equal(h.shell.elements.settingsButton.textContent, dictionaries.en['common.settings']);
+  assert.equal(h.shell.elements.tabButtons.simultaneous.textContent, dictionaries.en['tabs.simultaneous']);
+  assert.equal(h.doc.activeElement, en, 'focus stays on the pressed button');
+  // Not the interpretation target, not a stop: the pair, the turn and the connection are untouched.
+  assert.deepEqual(h.state.snapshot().interpretation, { sourceLanguage: 'ko', targetLanguage: 'ja' });
+  assert.equal(h.state.snapshot().activeTurnId, turnId);
+  assert.equal(h.state.snapshot().status, SEQ_STATUS.TRANSLATING);
+  assert.equal(byClass(h.root, 'turn-status').textContent, dictionaries.en['seq.translating']);
+  assert.deepEqual(h.engine.calls, [['submitText', '사과 12개']], 'no setInterpretation, cancel or stop');
+  assert.equal(h.engine.voice.sessionOpen, true);
+  assert.equal(h.shell.elements.connectionBadge.textContent, dictionaries.en['connection.connected']);
+  assert.equal(h.shell.elements.connectionBadge.getAttribute('data-connection'), 'connected');
+  // The pressed button is a no-op; the other two and setLanguage() drive the same state.
+  en.dispatch('click');
+  assert.deepEqual(languages, ['en']);
+  h.shell.elements.languageButtons.ja.dispatch('click');
+  assert.equal(h.i18n.language, 'ja');
+  assert.equal(h.shell.elements.languageButtons.ja.getAttribute('aria-pressed'), 'true');
+  assert.equal(en.getAttribute('aria-pressed'), 'false');
+  assert.equal(byClass(h.root, 'seq-ptt').textContent, dictionaries.ja['seq.holdToTalk']);
+  assert.equal(h.shell.setLanguage('ko-KR'), 'ko');
+  assert.deepEqual(languages, ['en', 'ja', 'ko']);
+  assert.equal(h.shell.elements.languageButtons.ko.getAttribute('aria-pressed'), 'true');
+  assert.equal(h.shell.elements.languageButtons.ja.getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(h.state.snapshot().interpretation, { sourceLanguage: 'ko', targetLanguage: 'ja' });
+  assert.deepEqual(h.engine.calls, [['submitText', '사과 12개']]);
+  // Changing the language while a dialog is open keeps it open.
+  h.shell.openSettings();
+  h.shell.setLanguage('en');
+  assert.equal(h.shell.settingsOpen, true);
+  h.shell.closeSettings();
+  h.shell.destroy();
+  h.shell.elements.languageButtons.ja.dispatch('click');
+  assert.deepEqual(languages, ['en', 'ja', 'ko', 'en'], 'no listener runs after destroy');
+});
+
+test('P3-15 desktop header: the 64rem query moves the tab row between the title and the badges, and back, keeping focus', () => {
+  const headerMedia = fakeMedia(true);
+  const h = harness({ headerMedia });
+  assert.equal(HEADER_LAYOUT_QUERY, DESKTOP_LAYOUT_QUERY);
+  assert.deepEqual(headerMedia.queries, [HEADER_LAYOUT_QUERY]);
+  assert.equal(headerMedia.listenerCount, 1);
+  const app = h.root.childNodes[0];
+  const header = h.shell.elements.header;
+  const stacked = ['shell-header', 'shell-notice', 'shell-message', 'shell-tabs', 'shell-main', 'shell-settings', 'share-dialog'];
+  assert.equal(h.shell.layout, SHELL_LAYOUTS.DESKTOP);
+  assert.equal(app.getAttribute('data-layout'), 'desktop');
+  assert.deepEqual(classNames(header), ['shell-title', 'shell-tabs', 'shell-badges', 'shell-actions']);
+  assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-main', 'shell-settings', 'share-dialog']);
+  assert.deepEqual(focusableIds(header), ['tab-sequential', 'tab-simultaneous', 'shell-mode', 'shell-language', 'shell-language', 'shell-language',
+    'shell-display-button', 'share-button', 'shell-settings-button']);
+  assert.equal(h.view.layout, SEQ_LAYOUTS.STACKED, 'the window query is the header\'s; the sequential view keeps the document\'s');
+  assert.equal(h.doc.defaultView, undefined);
+  // Tabs keep working inside the header.
+  const tab = h.shell.elements.tabButtons.sequential;
+  tab.dispatch('click');
+  assert.equal(h.shell.selectedTab, 'sequential');
+  assert.equal(h.shell.elements.panels.sequential.hidden, false);
+  tab.dispatch('keydown', { key: 'ArrowRight' });
+  assert.equal(h.doc.activeElement, h.shell.elements.tabButtons.simultaneous);
+  // Narrowing: the tab row returns under the header and a focused tab keeps focus.
+  tab.focus();
+  headerMedia.set(false);
+  assert.equal(h.shell.layout, SHELL_LAYOUTS.STACKED);
+  assert.equal(app.getAttribute('data-layout'), 'stacked');
+  assert.deepEqual(classNames(header), ['shell-title', 'shell-badges', 'shell-actions']);
+  assert.deepEqual(classNames(app), stacked);
+  assert.equal(h.doc.activeElement, tab);
+  headerMedia.set(false);
+  assert.deepEqual(classNames(app), stacked, 'the same state again is a no-op');
+  h.shell.elements.languageButtons.en.focus();
+  headerMedia.set(true);
+  assert.deepEqual(classNames(header), ['shell-title', 'shell-tabs', 'shell-badges', 'shell-actions']);
+  assert.equal(h.doc.activeElement, h.shell.elements.languageButtons.en);
+  assert.equal(h.shell.selectedTab, 'sequential', 'the selection survives the moves');
+  // Dialog inert still covers the in-header tabs.
+  h.shell.openSettings();
+  assert.equal(h.shell.elements.tabs.hasAttribute('inert'), true);
+  assert.equal(header.hasAttribute('inert'), true);
+  h.shell.closeSettings();
+  assert.equal(h.shell.elements.tabs.hasAttribute('inert'), false);
+  assert.deepEqual(h.engine.calls, [], 'relayout never touches the engine');
+  h.shell.destroy();
+  assert.equal(headerMedia.listenerCount, 0, 'destroy removes the media listener');
+  assert.equal(h.root.childNodes.length, 0);
+});
+
+test('P2-25 share dialog (P3-15 regression): origin + path only, QR image, copy and fallback, focus trap, Escape with focus return, exclusive with settings', async () => {
+  const h = harness();
+  const copied = [];
+  h.win.navigator.clipboard = { writeText: async (text) => { copied.push(text); } };
+  h.win.location = { origin: 'https://example.test', hostname: 'example.test', protocol: 'https:',
+    pathname: '/interp-app/releases/v9/index.html', search: '?k=SECRET', hash: '#k=SECRET' };
+  const { shareButton } = h.shell.elements;
+  const { share, shareClose, shareURL, shareCopy, shareStatus, shareImage, shareDeployment } = h.shell.elements.panels;
+  assert.equal(share.hidden, true);
+  assert.equal(share.getAttribute('id'), 'shell-share');
+  assert.equal(share.getAttribute('role'), 'dialog');
+  assert.equal(share.getAttribute('aria-modal'), 'true');
+  assert.equal(share.getAttribute('aria-labelledby'), 'share-title');
+  assert.equal(byId(share, 'share-title').textContent, ko['share.title']);
+  assert.equal(byClass(share, 'share-image-host').childNodes.length, 0, 'the QR image is attached only while open');
+  // Settings and share are mutually exclusive in both directions.
+  h.shell.openSettings();
+  h.shell.openShare();
+  assert.equal(h.shell.settingsOpen, false);
+  assert.equal(h.shell.shareOpen, true);
+  h.shell.openSettings();
+  assert.equal(h.shell.shareOpen, false);
+  assert.equal(h.shell.settingsOpen, true);
+  h.shell.closeSettings();
+
+  shareButton.focus();
+  shareButton.dispatch('click');
+  assert.equal(h.shell.shareOpen, true);
+  assert.equal(shareButton.getAttribute('aria-expanded'), 'true');
+  assert.equal(h.doc.activeElement, shareClose);
+  assert.equal(shareClose.textContent, ko['share.close']);
+  assert.equal(byClass(h.root, 'shell-main').hasAttribute('inert'), true);
+  assert.equal(h.shell.elements.header.hasAttribute('inert'), true);
+  assert.equal(shareURL.value, 'https://example.test/interp-app/', 'release path, index.html, query and fragment are dropped');
+  assert.equal(shareURL.getAttribute('readonly'), '');
+  assert.equal(shareURL.getAttribute('aria-label'), ko['share.urlLabel']);
+  assert.equal(shareImage.getAttribute('src'), '/interp-app/icons/qr-site.png');
+  assert.equal(shareImage.getAttribute('alt'), ko['share.imageAlt']);
+  assert.equal(shareImage.parentNode, byClass(share, 'share-image-host'));
+  assert.equal(shareDeployment.hidden, false, 'off the deployed site the note says where the QR leads');
+  assert.equal(shareDeployment.textContent, ko['share.deployment']);
+  assert.equal(shareCopy.textContent, ko['share.copy']);
+  assert.equal(shareStatus.getAttribute('aria-live'), 'polite');
+  assert.equal(shareStatus.textContent, '');
+  assert.equal(JSON.stringify([shareURL.value, shareImage.getAttribute('src')]).includes('SECRET'), false);
+  // Copy: the clipboard gets exactly the URL; the status follows a language change.
+  shareCopy.dispatch('click');
+  await flush();
+  assert.deepEqual(copied, ['https://example.test/interp-app/']);
+  assert.equal(shareStatus.textContent, ko['share.copied']);
+  h.shell.setLanguage('en');
+  assert.equal(shareStatus.textContent, dictionaries.en['share.copied']);
+  assert.equal(shareCopy.textContent, dictionaries.en['share.copy']);
+  assert.equal(shareButton.textContent, dictionaries.en['share.open']);
+  h.shell.setLanguage('ko');
+  // Copy failure: the fallback text appears and the URL is selected for manual copying; nothing leaks.
+  let selected = false;
+  shareURL.select = () => { selected = true; };
+  h.win.navigator.clipboard = { writeText: async () => { throw new Error('SECRET-CLIPBOARD'); } };
+  shareCopy.dispatch('click');
+  await flush();
+  assert.equal(shareStatus.textContent, ko['share.copyFailed']);
+  assert.equal(h.doc.activeElement, shareURL);
+  assert.equal(selected, true);
+  assert.equal(JSON.stringify(h.state.snapshot()).includes('SECRET'), false);
+  // Focus trap: Tab from Copy wraps to Close; Shift+Tab from Close wraps to Copy.
+  shareCopy.focus();
+  assert.equal(share.dispatch('keydown', { key: 'Tab', shiftKey: false }).defaultPrevented, true);
+  assert.equal(h.doc.activeElement, shareClose);
+  assert.equal(share.dispatch('keydown', { key: 'Tab', shiftKey: true }).defaultPrevented, true);
+  assert.equal(h.doc.activeElement, shareCopy);
+  // Escape closes, focus returns to the share button, inert lifts and the image leaves the DOM.
+  share.dispatch('keydown', { key: 'Escape' });
+  assert.equal(h.shell.shareOpen, false);
+  assert.equal(share.hidden, true);
+  assert.equal(shareButton.getAttribute('aria-expanded'), 'false');
+  assert.equal(h.doc.activeElement, shareButton);
+  assert.equal(byClass(h.root, 'shell-main').hasAttribute('inert'), false);
+  assert.equal(h.shell.elements.header.hasAttribute('inert'), false);
+  assert.equal(shareImage.parentNode, null);
+  // A copy that settles after the dialog closed writes nothing.
+  h.win.navigator.clipboard = { writeText: async (text) => { copied.push(text); } };
+  shareButton.dispatch('click');
+  shareCopy.dispatch('click');
+  shareClose.dispatch('click');
+  await flush();
+  assert.equal(h.shell.shareOpen, false);
+  assert.equal(shareStatus.textContent, '');
+  // On the deployed site the deployment note is hidden and the URL is the site root.
+  h.win.location = { origin: 'https://gai-cmd.github.io', hostname: 'gai-cmd.github.io', protocol: 'https:', pathname: '/interp-app/' };
+  shareButton.dispatch('click');
+  assert.equal(shareURL.value, 'https://gai-cmd.github.io/interp-app/');
+  assert.equal(shareImage.getAttribute('src'), '/interp-app/icons/qr-site.png');
+  assert.equal(shareDeployment.hidden, true);
+  shareClose.dispatch('click');
+  assert.equal(h.shell.shareOpen, false);
+  assert.deepEqual(h.engine.calls, [], 'sharing never touches the engine');
+  h.shell.destroy();
+});
+
+test('P3-15 styles: the header and its action row wrap, the language toggle is never clipped, in-header tab rules only under data-layout="desktop"', async () => {
+  const raw = await read('styles.css');
+  const css = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+  const escape = (value) => value.replace(/[.*+?^$()|[\]\\]/g, '\\$&');
+  const rule = (selector, source = css) => {
+    const match = new RegExp(`(?:^|[\\n}])\\s*${escape(selector)}\\s*\\{([^}]*)\\}`, 's').exec(source);
+    assert.ok(match, `rule ${selector}`);
+    return Object.fromEntries(match[1].split(';').map((part) => part.split(':').map((value) => value.trim())).filter(([name]) => name));
+  };
+  const desktopStart = css.indexOf('@media (min-width: 64rem) ');
+  assert.ok(desktopStart >= 0);
+  let depth = 0, end = css.indexOf('{', desktopStart);
+  for (; end < css.length; end++) { if (css[end] === '{') depth++; else if (css[end] === '}' && --depth === 0) break; }
+  const desktop = css.slice(desktopStart, end + 1);
+  // Mobile: the header wraps; the action row is a full-width second line that wraps again; nothing clips.
+  assert.equal(rule('.shell-header').display, 'flex');
+  assert.equal(rule('.shell-header')['flex-wrap'], 'wrap');
+  const actions = rule('.shell-actions');
+  assert.equal(actions.display, 'flex');
+  assert.equal(actions['flex-wrap'], 'wrap');
+  assert.equal(actions.flex, '1 1 100%');
+  assert.equal(actions['min-width'], '0');
+  const languages = rule('.shell-languages');
+  assert.equal(languages.display, 'flex');
+  assert.equal(languages['flex-wrap'], 'wrap');
+  for (const selector of ['.shell-header', '.shell-actions', '.shell-languages']) {
+    const block = rule(selector);
+    assert.equal(block.overflow ?? block['overflow-x'], undefined, `${selector} never clips the language toggle`);
+  }
+  // The pressed language reads as text (aria-pressed) and as the accent fill with accent text.
+  const pressed = rule('.shell-language[aria-pressed="true"]');
+  assert.equal(pressed.background, 'var(--accent)');
+  assert.equal(pressed.color, 'var(--accent-text)');
+  assert.equal(/\.shell-settings-button\s*\{[^}]*margin-left:\s*auto/.test(css), false, 'the settings button stays grouped in the action row');
+  // Desktop: in-header tabs key on the data-layout the shell sets, inside the 64rem block only.
+  const tabs = rule('.shell[data-layout="desktop"] .shell-header .shell-tabs', desktop);
+  assert.equal(tabs['border-bottom'], '0');
+  assert.equal(tabs.padding, '0');
+  assert.equal(tabs['max-width'], 'none');
+  assert.equal(rule('.shell[data-layout="desktop"] .shell-header .shell-tab', desktop).flex, '0 0 auto');
+  assert.equal(rule('.shell[data-layout="desktop"] .shell-actions', desktop)['justify-content'], 'flex-end');
+  assert.equal(css.indexOf('[data-layout="desktop"] .shell'), css.indexOf('[data-layout="desktop"] .shell', desktopStart), 'no desktop header rule outside the 64rem block');
+  assert.equal(/[^-\w]order\s*:/.test(css), false, 'no CSS order property');
 });
