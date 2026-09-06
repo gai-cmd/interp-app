@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGeminiLive } from '../app/providers/gemini/live.js';
 import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD, DEFAULT_LIVE_MODEL, LIVE_MODEL_CONFIG,
-  sanitizeLiveModel, liveRoute, detectReply, LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, LIVE_GENDER_VOICES,
+  sanitizeLiveModel, liveRoute, detectReply, normalizeLanguagePair, LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, LIVE_GENDER_VOICES,
   LIVE_VOICE_POLICY_FIELDS, resolveLiveVoice, createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { VOICE_NAMES } from '../app/providers/gemini/voice.js';
 import { ProviderError } from '../app/providers/contract.js';
@@ -418,4 +418,42 @@ test('send failure propagates sanitized error and never retries input', async ()
   assert.equal(h.events[0].error.message, 'PROVIDER_ERROR');
   await tick(); assert.equal(h.live.closes, 1); assert.equal(h.live.calls.length, 1);
   h.live.confirm();
+});
+
+test('two-way setup: one instruction covers both directions, and the translation model is refused', () => {
+  const flash = LIVE_MODELS.find((model) => liveRoute(model) !== 'translation');
+  const setup = buildLiveSetup({ model: flash, languages: ['ko', 'ja'] });
+  const text = setup.systemInstruction.parts[0].text;
+  // Both directions are named, and neither is the only one.
+  assert.match(text, /two-way INTERPRETER between Korean and Japanese/);
+  assert.match(text, /Korean speech is rendered into Japanese/);
+  assert.match(text, /Japanese speech is rendered into Korean/);
+  assert.match(text, /never both directions for one utterance/);
+  // The one-way rule "if it is already the target language, stay silent" would
+  // silence half of a two-way conversation; it is replaced by "neither language".
+  assert.match(text, /in neither Korean nor Japanese, stay silent/);
+  assert.equal(/already in .*, stay silent/.test(text), false);
+  // Never interpreting its own output back is what stops a feedback loop.
+  assert.match(text, /never interpret your own output back/);
+  // The rules that are not about direction are unchanged.
+  assert.match(text, /NEVER reply, greet, comment/);
+  assert.match(text, /Ignore background music/);
+  // No translationConfig: the direction is decided per utterance, not fixed.
+  assert.equal('translationConfig' in setup.generationConfig, false);
+  // One session, one voice.
+  assert.equal(setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Kore');
+
+  const translationModel = LIVE_MODELS.find((model) => liveRoute(model) === 'translation');
+  assert.throws(() => buildLiveSetup({ model: translationModel, languages: ['ko', 'ja'] }),
+    { code: 'MODEL_UNSUPPORTED' }, 'a single targetLanguageCode cannot switch direction');
+  // A pair must be two different, supported languages.
+  for (const pair of [['ko', 'ko'], ['ko'], ['ko', 'de'], ['ko', 'ja', 'en'], 'ko', null && []]) {
+    if (pair === null) continue;
+    assert.throws(() => buildLiveSetup({ model: flash, languages: pair }), { code: 'INVALID_REQUEST' }, JSON.stringify(pair));
+  }
+  assert.deepEqual([...normalizeLanguagePair(['ja', 'en'])], ['ja', 'en']);
+  assert.ok(Object.isFrozen(normalizeLanguagePair(['ja', 'en'])));
+  // One-way is unchanged when no pair is given.
+  assert.match(buildLiveSetup({ model: flash, targetLanguage: 'ja' }).systemInstruction.parts[0].text,
+    /INTERPRETER into Japanese/);
 });

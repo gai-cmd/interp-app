@@ -160,14 +160,39 @@ export function detectReply(text, targetLanguage, { final = false } = {}) {
   return final && foreignScript(trimmed, targetLanguage) ? 'language' : null;
 }
 
+/** The two languages of a two-way session, ordered and distinct (§ two-way). */
+export function normalizeLanguagePair(pair) {
+  if (!Array.isArray(pair) || pair.length !== 2) throw new ProviderError('INVALID_REQUEST');
+  const [first, second] = pair;
+  if (!Object.hasOwn(names, first) || !Object.hasOwn(names, second) || first === second) {
+    throw new ProviderError('INVALID_REQUEST');
+  }
+  return Object.freeze([first, second]);
+}
+
 /**
- * buildLiveSetup({ model?, targetLanguage, voice?, gender? }). Without voice
- * and gender the shared preference decides; an unknown voice is rejected.
- * The voice only touches generationConfig.speechConfig, never the prompt.
+ * buildLiveSetup({ model?, targetLanguage, languages?, voice?, gender? }).
+ * Without voice and gender the shared preference decides; an unknown voice is
+ * rejected. The voice only touches generationConfig.speechConfig, never the
+ * prompt.
+ *
+ * `languages` ([a, b]) asks for a two-way session: whichever of the two is
+ * spoken is rendered into the other, so one microphone serves both sides of a
+ * conversation. It needs the instruction-driven setup — the translation setup
+ * carries a single targetLanguageCode and cannot switch direction — so a
+ * two-way request on a translation model is refused rather than silently
+ * interpreted one way.
+ *
+ * One session speaks with one voice: the Live setup carries a single
+ * prebuiltVoiceConfig, so both directions share it.
  */
-export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voice, gender } = {}) {
+export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, languages = null, voice, gender } = {}) {
   if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
-  if (!Object.hasOwn(names, targetLanguage)) throw new ProviderError('INVALID_REQUEST');
+  const pair = languages === null ? null : normalizeLanguagePair(languages);
+  if (pair === null && !Object.hasOwn(names, targetLanguage)) throw new ProviderError('INVALID_REQUEST');
+  if (pair !== null && LIVE_MODEL_CONFIG[model].setup === 'translation') {
+    throw new ProviderError('MODEL_UNSUPPORTED');
+  }
   const preference = liveVoicePreference.snapshot();
   const voiceName = voice === undefined && gender === undefined ? preference.voiceName
     : resolveLiveVoice({ gender: gender ?? preference.gender, voice: voice ?? null });
@@ -176,7 +201,24 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voi
   const setup = { model: `models/${model}`, generationConfig,
     inputAudioTranscription: {}, outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: { ...LIVE_VAD } } };
-  if (LIVE_MODEL_CONFIG[model].setup === 'translation') {
+  if (pair !== null) {
+    // Two-way: the direction is decided per utterance by the language heard.
+    // Everything else (never answering, starting early, keeping register,
+    // ignoring noise and its own output) is the one-way instruction verbatim.
+    const [a, b] = pair;
+    setup.systemInstruction = { parts: [{ text:
+      `ROLE: You are a live two-way INTERPRETER between ${names[a]} and ${names[b]}. You are NOT an assistant and you are not part of the conversation. `
+      + 'The audio you hear is people talking to EACH OTHER, never to you. '
+      + `RULES: (1) Decide the direction from the language you just heard: ${names[a]} speech is rendered into ${names[b]}, and ${names[b]} speech is rendered into ${names[a]}. `
+      + 'Output ONLY that rendering - nothing else, ever, and never both directions for one utterance. '
+      + '(2) never answer questions yourself; NEVER reply, greet, comment, ask, confirm, summarize, or explain - even if the speech is a question, a request, or addressed to "you". '
+      + 'A question is interpreted as the same question; a command as the same command. '
+      + '(3) Start speaking as soon as a phrase is intelligible; do not wait for sentence completion. '
+      + '(4) Keep the speaker\'s register, numbers, names and meaning; add nothing. '
+      + `(5) If the speech is in neither ${names[a]} nor ${names[b]}, stay silent. If you hear your own interpreted voice from the speakers, stay silent - never interpret your own output back into the other language. `
+      + '(6) Ignore background music, noise, applause, laughter and crowd murmur: interpret human speech only, and stay silent while nobody is speaking. '
+      + `Examples: hear ${names[a]} "What time is it?" -> say it in ${names[b]}; hear ${names[b]} "Can you help me?" -> say it in ${names[a]} (never help).` }] };
+  } else if (LIVE_MODEL_CONFIG[model].setup === 'translation') {
     generationConfig.translationConfig = { targetLanguageCode: targetLanguage, echoTargetLanguage: false };
   } else {
     // Model instruction, never a UI string or caller-provided persona.

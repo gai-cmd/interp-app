@@ -7,7 +7,8 @@
  */
 import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
 import { createListenMetrics } from './listen-metrics.js';
-import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply } from '../providers/gemini/live-config.js';
+import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply,
+  normalizeLanguagePair } from '../providers/gemini/live-config.js';
 import { createSessionManager } from './session-manager.js';
 import { createLiveRecovery } from './live-recovery.js';
 import { createListenState } from './listen-state.js';
@@ -125,7 +126,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         const translation = ev.role === 'translation';
         // The rest of a rejected turn never reaches captions or the player.
         if (translation && c.skipping) return;
-        const reply = translation && c.flash ? detectReply(ev.translatedText, op.targetLanguage, { final: ev.final }) : null;
+        // Two-way output may legitimately be in either language, so the
+        // foreign-script half of the heuristic cannot apply; only the explicit
+        // reply phrases still mark the model answering instead of interpreting.
+        const reply = translation && c.flash
+          ? (op.languages === null
+            ? detectReply(ev.translatedText, op.targetLanguage, { final: ev.final })
+            : op.languages.map((lang) => detectReply(ev.translatedText, lang, { final: false })).find(Boolean) ?? null)
+          : null;
         if (reply) {
           c.skipping = true;
           op.player?.interrupt();
@@ -225,18 +233,28 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   }
   function start(request = {}, context = {}) {
     if (disposed || active || sessionManager.occupied) throw new ProviderError('SESSION_LIMIT');
-    if (!['ko', 'en', 'ja'].includes(request.targetLanguage)
+    // Two-way: one microphone serves both sides, and the direction is decided
+    // per utterance by the language heard. `languages` replaces the single
+    // target; the pair is validated by the provider config.
+    const pair = request.languages === undefined || request.languages === null
+      ? null : normalizeLanguagePair(request.languages);
+    if ((pair === null && !['ko', 'en', 'ja'].includes(request.targetLanguage))
       || typeof context.sessionId !== 'string' || !context.sessionId || context.sessionId.length > 256
       || (context.transport !== undefined && context.transport !== 'direct')) throw new ProviderError('INVALID_REQUEST');
     assertActive(context.signal);
     const op = { controller: new AbortController(), prepared: deferred(), ready: deferred(), done: deferred(),
       sessionId: context.sessionId, turnId: context.turnId ?? context.sessionId,
       muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {},
-      targetLanguage: request.targetLanguage, fallback: false };
+      targetLanguage: request.targetLanguage, languages: pair, fallback: false };
     metrics = createListenMetrics({ now });
     // A corrupted stored selection never reaches the router: fall back to the
     // translation-only default rather than failing or steering to flash.
     op.model = request.model === undefined ? selectedModel : sanitizeLiveModel(request.model);
+    // The translation setup carries one target language and cannot change
+    // direction, so a two-way session uses the instruction-driven model.
+    if (pair !== null && liveRoute(op.model) === 'translation') {
+      op.model = LIVE_MODELS.find((model) => liveRoute(model) !== 'translation') ?? op.model;
+    }
     op.requestedModel = op.model; skipped = [];
     store?.close(); store = createCaptionStore({ sessionId: op.sessionId, now }); store.subscribe(notify);
     errorCode = null; active = op;
@@ -266,7 +284,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       });
     } catch { cancel(op, 'MICROPHONE_UNAVAILABLE'); }
     const input = { input: { format: 'pcm16' }, targetLanguage: request.targetLanguage,
-      model: op.model };
+      ...(pair === null ? {} : { languages: pair }), model: op.model };
     void run(op, input, { providerId: context.providerId, keySource: context.keySource });
     return Object.freeze({ ready: op.ready.promise, done: op.done.promise });
   }
