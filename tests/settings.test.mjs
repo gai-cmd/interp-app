@@ -15,6 +15,8 @@ import { mount } from '../app/ui/shell.js';
 import { acceptsDirectKey, createSettingsView, KEY_SOURCES, keyStoreErrorKey, sharedFragmentFrom } from '../app/ui/settings-view.js';
 import { checkState, createDiagnosticsView, STATE_KEYS } from '../app/ui/diagnostics-view.js';
 import { SecurityError } from '../app/security/redact.js';
+import { createAudioPreferences } from '../app/audio/capture.js';
+import { createLiveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { provider } from './fixtures/providers.mjs';
 import { goldenWav } from './fixtures/audio.mjs';
 import { createClock, deferred, tick } from './fixtures/live.mjs';
@@ -208,7 +210,7 @@ function fixtureConfig({ storage } = {}) {
 }
 
 function harness({ config = fixtureConfig(), language = 'ko', persistence = false, capture = fakeCapture(), app = null,
-  getDeviceVoices = null, simEngine = null } = {}) {
+  getDeviceVoices = null, simEngine = null, audioPreferences = undefined, voicePreference = undefined } = {}) {
   const doc = createDocument();
   const root = doc.createElement('div');
   const timers = fakeTimers();
@@ -221,6 +223,7 @@ function harness({ config = fixtureConfig(), language = 'ko', persistence = fals
   const diagnostics = createDiagnostics({ config, capture, getAudioContext: () => audio, ...clock, random: () => 0, now: () => 1000 });
   const uiLanguages = [];
   const view = createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc, persistence, app, getDeviceVoices, simEngine,
+    ...(audioPreferences ? { audio: audioPreferences } : {}), ...(voicePreference ? { voicePreference } : {}),
     onUiLanguageChange: (value) => uiLanguages.push(value) });
   const el = (name) => byClass(root, name);
   const diagRow = (kind) => all(root, (node) => node.classes.has('diag-check') && node.getAttribute('data-kind') === kind)[0];
@@ -680,4 +683,77 @@ test('settings exposes both Live models and applies selection without starting i
   choose(select, 'gemini-3.1-flash-live-preview'); await tick();
   assert.deepEqual(calls, ['gemini-3.1-flash-live-preview']);
   assert.equal(select.disabled, false);
+});
+
+// P3-02d: audio section (speech-only defaults) and the shared simultaneous voice.
+test('audio section: speech-only defaults on, toggles write the shared preferences, applied settings are shown', async t => {
+  const audio = createAudioPreferences();
+  const h = harness({ audioPreferences: audio }); t.after(() => teardown(h));
+  const { elements } = h.view;
+  const section = elements.sections.audio;
+  assert.equal(section.childNodes[0].textContent, ko['settings.audio']);
+  assert.ok(section.parentNode.childNodes.indexOf(section) < section.parentNode.childNodes.indexOf(elements.sections.diagnostics));
+  assert.equal(elements.noiseInput.checked, true); assert.equal(elements.filterInput.checked, true);
+  assert.equal(elements.sensitivitySelect.value, 'normal');
+  assert.deepEqual(options(elements.sensitivitySelect), ['low', 'normal', 'high']);
+  assert.equal(elements.sensitivitySelect.childNodes[1].textContent, ko['audio.sensitivity.normal']);
+  assert.equal(elements.appliedLine.hidden, true, 'nothing applied before a capture');
+  for (const key of ['audio.description', 'audio.noiseSuppressionHelp', 'audio.voiceFilterHelp', 'audio.sensitivityHelp']) {
+    assert.equal(all(section, (node) => node.textContent === ko[key]).length, 1, key);
+  }
+  elements.noiseInput.checked = false; elements.noiseInput.dispatch('change');
+  assert.equal(audio.snapshot().noiseSuppression, false);
+  elements.filterInput.checked = false; elements.filterInput.dispatch('change');
+  assert.equal(audio.snapshot().voiceFilter, false);
+  choose(elements.sensitivitySelect, 'high');
+  assert.equal(audio.snapshot().sensitivity, 'high');
+  assert.deepEqual(h.engine.calls, [], 'audio preferences never touch the sequential engine');
+  // A capture reports what the browser applied; the line renders on/off/unknown per constraint and follows the UI language.
+  audio.recordApplied({ echoCancellation: true, noiseSuppression: false, autoGainControl: true, deviceId: 'SECRET' });
+  assert.equal(elements.appliedLine.hidden, false);
+  const text = elements.appliedLine.textContent;
+  assert.ok(text.startsWith(`${ko['audio.applied']}: `));
+  assert.ok(text.includes(`${ko['audio.echoCancellation']} ${ko['audio.on']}`));
+  assert.ok(text.includes(`${ko['audio.noiseSuppression']} ${ko['audio.off']}`));
+  assert.ok(text.includes(`${ko['audio.voiceIsolation']} ${ko['audio.unknown']}`));
+  assert.doesNotMatch(domText(h.root), /SECRET/);
+  h.shell.setLanguage('en');
+  assert.ok(elements.appliedLine.textContent.startsWith(`${dictionaries.en['audio.applied']}: `));
+  assert.equal(elements.noiseInput.checked, false, 'a refresh keeps the store values');
+  // Another owner changing the store re-renders the controls.
+  audio.set({ noiseSuppression: true, sensitivity: 'low' });
+  assert.equal(elements.noiseInput.checked, true); assert.equal(elements.sensitivitySelect.value, 'low');
+  audio.recordApplied(null); assert.equal(elements.appliedLine.hidden, true);
+});
+
+test('the provider voice picker and the simultaneous female/male choice share one value; a live session gets a restart notice', async t => {
+  const voicePreference = createLiveVoicePreference();
+  const simEngine = { model: 'gemini-3.5-live-translate-preview', busy: false, snapshot() { return { busy: this.busy }; }, async setModel() {} };
+  const h = harness({ voicePreference, simEngine }); t.after(() => teardown(h));
+  const { elements } = h.view;
+  assert.deepEqual(options(elements.voiceSelect), ['', 'Kore', 'Orus']);
+  // Settings -> simultaneous: an explicit voice becomes the live voice.
+  choose(elements.voiceSelect, 'Orus');
+  assert.deepEqual(h.engine.calls.at(-1), ['setVoice', { voice: 'Orus' }]);
+  assert.deepEqual(voicePreference.snapshot(), { gender: 'male', voice: null, voiceName: 'Orus' });
+  assert.equal(h.notice(), null, 'no restart notice while nothing is running');
+  // Simultaneous -> settings: the gender choice lands as the matching provider voice.
+  voicePreference.set({ gender: 'female' });
+  assert.deepEqual(h.engine.calls.at(-1), ['setVoice', { voice: 'Kore' }]);
+  assert.equal(h.state.snapshot().voice.voice, 'Kore'); assert.equal(elements.voiceSelect.value, 'Kore');
+  const calls = h.engine.calls.length;
+  voicePreference.set({ voice: 'Zephyr' });
+  assert.equal(h.engine.calls.length, calls, 'a voice the provider does not list is not mirrored');
+  assert.equal(h.state.snapshot().voice.voice, 'Kore');
+  // Changing the voice during a live session keeps it running and asks for a restart.
+  simEngine.busy = true;
+  choose(elements.voiceSelect, 'Orus');
+  assert.equal(h.notice(), 'sim.voiceRestart');
+  assert.equal(voicePreference.snapshot().voiceName, 'Orus');
+  assert.equal(h.adapter.calls.length, 0, 'choosing a voice opens no session');
+  // Destroy unsubscribes: later preference changes no longer reach the engine.
+  h.view.destroy();
+  const after = h.engine.calls.length;
+  voicePreference.set({ gender: 'female' });
+  assert.equal(h.engine.calls.length, after);
 });

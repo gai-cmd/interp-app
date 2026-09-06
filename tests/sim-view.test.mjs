@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createSimView } from '../app/ui/sim-view.js';
+import { createSimView, VOICE_GENDER_STORAGE_KEY, readVoiceGender } from '../app/ui/sim-view.js';
+import { createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { BAR_HIDE_MS, CAPTION_ONLY_STORAGE_KEYS, CAPTION_SIZE, CAPTION_SIZE_STORAGE_KEY, clampCaptionSize,
   createCaptionBoard, readPreferences } from '../app/ui/caption-board.js';
 import { createListenState } from '../app/engine/listen-state.js';
@@ -65,7 +66,7 @@ function fake(mode) {
     setMuted(value) { calls.push(['mute', value]); state.setOutput(value ? 'muted' : 'ready'); },
   };
 }
-function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers() } = {}) {
+function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers(), voicePreference = createLiveVoicePreference() } = {}) {
   const doc = { createElement(tag) { return new BoardElement(doc, tag); }, activeElement: null, hidden: false,
     fullscreenElement: null, fullscreenRequests: [], exits: 0, listeners: new Map(),
     async exitFullscreen() { doc.exits++; doc.fullscreenElement = null; },
@@ -75,11 +76,11 @@ function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers 
   const win = { navigator: wakeLock.navigator };
   const root = doc.createElement('main'), direct = fake('direct'), hub = fake('hub');
   const i18n = createI18n({ dictionaries, language: 'en' });
-  const view = createSimView({ root, i18n, engines: { direct, hub }, document: doc, window: win, storage, ...timers,
+  const view = createSimView({ root, i18n, engines: { direct, hub }, document: doc, window: win, storage, ...timers, voicePreference,
     hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request) });
   const get = name => byClass(root, `sim-${name}`);
   const choose = (name, value) => { get(name).value = value; get(name).dispatch('change'); };
-  return { root, doc, win, direct, hub, i18n, view, get, choose, storage, wakeLock, timers,
+  return { root, doc, win, direct, hub, i18n, view, get, choose, storage, wakeLock, timers, voicePreference,
     board: byClass(root, 'caption-board'), bar: byClass(root, 'caption-board-bar'), b: name => byClass(root, `caption-board-${name}`) };
 }
 function caption(engine, sequence, status = 'final', text = `caption ${sequence}`, revision = 0, role = 'translation') {
@@ -192,6 +193,90 @@ test('status line always shows the active model and route; fallback and reply sk
   assert.equal(all(f.root, n => n.getAttribute('data-skipped') === 'true').length, 1);
   f.choose('mode', 'hub'); await tick();
   assert.equal(f.get('route').hidden, true);
+});
+
+test('voice choice: female default, male/female only, shared preference, restart notice, remembered gender', async () => {
+  const storage = fakeStorage();
+  const f = setup({ storage });
+  const voice = f.get('voice');
+  assert.deepEqual(voice.children.map(n => n.getAttribute('value')), ['female', 'male'], 'gender only: no role personas');
+  assert.equal(voice.children[0].textContent, dictionaries.en['sim.voice.female']);
+  assert.equal(voice.parentNode.children[0].textContent, dictionaries.en['sim.voice']);
+  assert.equal(voice.value, 'female');
+  assert.deepEqual(f.voicePreference.snapshot(), { gender: 'female', voice: null, voiceName: 'Kore' });
+  // Idle change: no notice, preference and storage updated, no engine call.
+  f.choose('voice', 'male');
+  assert.equal(f.voicePreference.snapshot().voiceName, 'Orus');
+  assert.equal(storage.map.get(VOICE_GENDER_STORAGE_KEY), 'male');
+  assert.equal(f.get('notice').textContent, '');
+  assert.deepEqual(f.direct.calls, []);
+  // Running change: the session keeps going; the restart notice appears.
+  f.get('start').dispatch('click');
+  f.choose('voice', 'female');
+  assert.equal(f.voicePreference.snapshot().voiceName, 'Kore');
+  assert.equal(f.get('notice').textContent, dictionaries.en['sim.voiceRestart']);
+  assert.equal(f.direct.calls.length, 1, 'no stop or restart on a voice change');
+  assert.equal(storage.map.has(VOICE_GENDER_STORAGE_KEY), false, 'the default gender is not stored');
+  // The settings picker (an explicit voice) is mirrored: Orus shows as male, another voice keeps the gender.
+  f.voicePreference.set({ voice: 'Orus' }); assert.equal(voice.value, 'male');
+  f.voicePreference.set({ voice: 'Zephyr' }); assert.equal(voice.value, 'male');
+  assert.equal(storage.map.get(VOICE_GENDER_STORAGE_KEY), 'male');
+  f.i18n.setLanguage('ja'); f.view.refresh();
+  assert.equal(voice.children[1].textContent, dictionaries.ja['sim.voice.male']);
+  assert.equal(voice.value, 'male');
+  f.choose('mode', 'hub'); await tick();
+  assert.equal(voice.parentNode.hidden, true, 'hub listening has no provider voice');
+  f.choose('mode', 'direct'); await tick();
+  assert.equal(voice.parentNode.hidden, false);
+  // A second launch restores the remembered gender; corrupt values fall back to female.
+  const g = setup({ storage: fakeStorage({ [VOICE_GENDER_STORAGE_KEY]: 'male' }) });
+  assert.equal(g.get('voice').value, 'male'); assert.equal(g.voicePreference.snapshot().voiceName, 'Orus');
+  const h = setup({ storage: fakeStorage({ [VOICE_GENDER_STORAGE_KEY]: 'robot' }) });
+  assert.equal(h.get('voice').value, 'female');
+  assert.equal(readVoiceGender(null), 'female'); assert.equal(readVoiceGender(fakeStorage({}, { failing: true })), 'female');
+  // Late storage (main.js hands it over after mount) restores too; a failing storage never breaks the choice.
+  const m = setup(); m.view.setStorage(fakeStorage({ [VOICE_GENDER_STORAGE_KEY]: 'male' }));
+  assert.equal(m.get('voice').value, 'male');
+  const k = setup({ storage: fakeStorage({}, { failing: true }) });
+  k.choose('voice', 'male'); assert.equal(k.voicePreference.snapshot().gender, 'male');
+  // The default view uses the module singleton and unsubscribes on destroy.
+  const before = liveVoicePreference.snapshot().gender;
+  const shared = setup({ voicePreference: liveVoicePreference });
+  try {
+    liveVoicePreference.set({ gender: 'male' }); assert.equal(shared.get('voice').value, 'male');
+    const el = shared.get('voice'); shared.view.destroy();
+    liveVoicePreference.set({ gender: 'female' }); assert.equal(el.value, 'male');
+  } finally { liveVoicePreference.set({ gender: before }); }
+  f.view.destroy(); assert.equal(f.get('voice'), undefined);
+});
+
+test('speech gate indicator: "no speech" while only music or silence reaches the microphone', () => {
+  const f = setup();
+  const speech = f.get('speech');
+  assert.equal(speech.hidden, true);
+  f.view.onLevel({ rms: 0.2, gate: 'open' });
+  assert.equal(speech.getAttribute('data-speech'), 'none', 'levels before a session are ignored');
+  f.get('start').dispatch('click');
+  assert.equal(speech.hidden, false);
+  assert.equal(speech.textContent, dictionaries.en['sim.speech.none']);
+  f.view.onLevel({ rms: 0.2, gate: 'open' });
+  assert.equal(speech.textContent, dictionaries.en['sim.speech.detected']);
+  assert.equal(speech.getAttribute('data-speech'), 'detected');
+  assert.equal(f.get('level').getAttribute('value'), '80');
+  // Explicit gate state from capture.js wins over the level; gated streaming frames arrive as exact silence.
+  f.view.onLevel({ rms: 0.2, gate: 'closed' });
+  assert.equal(speech.textContent, dictionaries.en['sim.speech.none']);
+  f.view.onLevel({ rms: 0 });
+  assert.equal(speech.textContent, dictionaries.en['sim.speech.none']);
+  assert.equal(f.get('level').getAttribute('value'), '0');
+  f.view.onLevel({ rms: 0.05 });
+  assert.equal(speech.textContent, dictionaries.en['sim.speech.detected']);
+  f.i18n.setLanguage('ko'); f.view.refresh();
+  assert.equal(speech.textContent, dictionaries.ko['sim.speech.detected'], 'a refresh keeps the last gate state in the new language');
+  f.view.onLevel({ rms: 0 }); assert.equal(speech.textContent, dictionaries.ko['sim.speech.none']);
+  f.get('stop').dispatch('click');
+  assert.equal(speech.hidden, true); assert.equal(speech.getAttribute('data-speech'), 'none');
+  assert.equal(f.get('level').getAttribute('value'), '0');
 });
 
 test('headphone warning is stressed once at the first direct start', () => {

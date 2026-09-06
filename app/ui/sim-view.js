@@ -2,10 +2,22 @@
 // P3-02c: the caption list moved into caption-board.js, which also owns the
 // captions-only full-screen frame. This view keeps session ownership: the
 // full-screen bar buttons are created here and reuse the same handlers.
+// P3-02d: a female/male voice choice (shared with the settings voice picker
+// through liveVoicePreference, gender remembered in UI storage) and a speech
+// gate indicator beside the level meter.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
+import { LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder } from './seq-view.js';
 import { createCaptionBoard } from './caption-board.js';
 import { errorKey, levelPercent } from './errors.js';
+
+export const VOICE_GENDER_STORAGE_KEY = 'interp-app.ui.v1.voiceGender';
+/** The remembered gender, or the default for a missing/corrupt value. */
+export function readVoiceGender(storage) {
+  let value;
+  try { value = storage?.getItem(VOICE_GENDER_STORAGE_KEY); } catch { value = null; }
+  return LIVE_VOICE_GENDERS.includes(value) ? value : DEFAULT_LIVE_VOICE_GENDER;
+}
 
 /** engines: {direct, hub?}, using their snapshot/subscribe/start or join/stop
  * or leave/setMuted APIs. startDirect(request) is a gesture-synchronous app
@@ -18,12 +30,13 @@ import { errorKey, levelPercent } from './errors.js';
  */
 export function createSimView({ root, i18n, engines, engine, hubs = [], startDirect,
   targetLanguage = 'ja', onSequential, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
-  storage = null, setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
+  storage = null, voicePreference = liveVoicePreference,
+  setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   engines ??= { direct: engine };
   if (!root || !doc || !i18n?.t || !engines.direct?.subscribe) throw new Error('INVALID_REQUEST');
   const bind = createBinder(i18n), listeners = [];
   let mode = 'direct', target = SUPPORTED_LANGUAGES.includes(targetLanguage) ? targetLanguage : 'ja';
-  let disposed = false, pending = false, snapshot, unsubscribe, headphonesHinted = false;
+  let disposed = false, pending = false, snapshot, unsubscribe, headphonesHinted = false, store = storage, speaking = false;
   const current = () => engines[mode];
   const node = (tag, name, parent, key, attrs = {}) => {
     const el = doc.createElement(tag);
@@ -52,6 +65,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   bind.attribute(room, 'placeholder', 'hub.roomCodePlaceholder');
   const language = select('sim-target', 'language.target');
   const options = SUPPORTED_LANGUAGES.map(value => node('option', '', language, `language.${value}`, { value }));
+  // Voice: gender only in this scope; the effective voice is resolved by live-config.
+  const voice = select('sim-voice', 'sim.voice');
+  for (const value of LIVE_VOICE_GENDERS) node('option', '', voice, `sim.voice.${value}`, { value });
+  const voiceLabel = voice.parentNode;
   const button = (name, key, parent = controls) => node('button', `btn btn-secondary ${name}`, parent, key, { type: 'button' });
   const start = button('sim-start', 'common.start'), stop = button('sim-stop', 'common.stop');
   const sound = button('sim-sound', 'sim.enableSound');
@@ -72,6 +89,9 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const notice = node('p', 'sim-notice', section, null, { role: 'status' });
   const meter = node('meter', 'sim-level', section, null, { min: '0', max: '100', value: '0' });
   bind.attribute(meter, 'aria-label', 'seq.inputLevel');
+  // Gate state: "no speech" while only music/noise (or nothing) reaches the microphone.
+  const speech = node('p', 'badge sim-speech', section, null, { role: 'status', 'data-speech': 'none' });
+  speech.hidden = true;
   const recent = node('p', 'sim-recent', section, 'sim.captions.recent');
   // Full-screen bar controls and the large start button share this view's handlers.
   const fsStop = button('sim-fs-stop', 'common.stop', null);
@@ -133,6 +153,25 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   listen(language, 'change', () => { const next = language.value;
     if (SUPPORTED_LANGUAGES.includes(next) && next !== target) void change(() => { target = next; });
   });
+  const running = () => Boolean(snapshot?.busy) || !['idle', 'stopped', 'failed'].includes(snapshot?.status);
+  // A voice change never stops the session: it applies at the next start (restart notice).
+  listen(voice, 'change', () => {
+    const next = voice.value;
+    if (!LIVE_VOICE_GENDERS.includes(next) || next === voicePreference.snapshot().gender) return;
+    call(() => voicePreference.set({ gender: next }));
+    if (mode === 'direct' && running()) setText(notice, i18n.t('sim.voiceRestart'));
+  });
+  function rememberVoice(value) {
+    try { if (value === DEFAULT_LIVE_VOICE_GENDER) store?.removeItem(VOICE_GENDER_STORAGE_KEY); else store?.setItem(VOICE_GENDER_STORAGE_KEY, value); }
+    catch { /* Storage refusal keeps the in-memory choice. */ }
+  }
+  const unsubscribeVoice = voicePreference.subscribe(value => { if (!disposed) { voice.value = value.gender; rememberVoice(value.gender); } });
+  function restoreVoice() {
+    const remembered = readVoiceGender(store);
+    if (remembered !== voicePreference.snapshot().gender) call(() => voicePreference.set({ gender: remembered }));
+    voice.value = voicePreference.snapshot().gender;
+  }
+  restoreVoice();
   for (const el of [start, fsPrimary]) listen(el, 'click', startSession);
   for (const el of [stop, fsStop]) listen(el, 'click', stopSession);
   for (const el of [sound, fsSound]) listen(el, 'click', toggleSound);
@@ -155,7 +194,10 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     modeSelect.disabled = language.disabled = pending;
     venueSelect.parentNode.hidden = roomLabel.hidden = !hub;
     venueSelect.disabled = room.disabled = busy || pending;
+    // Hub listening uses device speech, so the provider voice choice is hidden there.
+    voiceLabel.hidden = hub; voice.disabled = pending;
     directHints.hidden = hub; hubHints.hidden = !hub; meter.hidden = hub;
+    speech.hidden = hub || snapshot.status !== 'running';
     broadcast.hidden = !hub; recent.hidden = !hub || !snapshot.recentPossible;
     const allowed = hub && (snapshot.allowedLangs?.length || snapshot.status === 'running') ? snapshot.allowedLangs : SUPPORTED_LANGUAGES;
     for (const option of options) option.disabled = !allowed.includes(option.getAttribute('value'));
@@ -178,16 +220,28 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     setText(broadcast, hub ? i18n.t(`hub.broadcast.${snapshot.broadcast}`) : '');
     if (snapshot.errorCode) setText(notice, i18n.t(errorKey({ code: snapshot.errorCode })));
     fallback.hidden = hub || snapshot.status !== 'failed' || !onSequential;
-    if (snapshot.status !== 'running') meter.setAttribute('value', '0');
+    if (snapshot.status !== 'running') { meter.setAttribute('value', '0'); speaking = false; }
+    renderSpeech();
     renderCaptions();
+  }
+  function renderSpeech() {
+    speech.setAttribute('data-speech', speaking ? 'detected' : 'none');
+    setText(speech, i18n.t(speaking ? 'sim.speech.detected' : 'sim.speech.none'));
   }
   function subscribe() { unsubscribe?.(); snapshot = current().snapshot(); unsubscribe = current().subscribe(render); render(snapshot); }
   subscribe();
   return Object.freeze({ element: section, board, render,
     refresh() { if (!disposed) { bind.refresh(); board.refresh(); render(); } },
-    setStorage(next) { if (!disposed) board.setStorage(next); },
-    onLevel(value) { if (!disposed && mode === 'direct' && snapshot.status === 'running') meter.setAttribute('value', String(levelPercent(value))); },
+    setStorage(next) { if (!disposed) { store = next; board.setStorage(next); restoreVoice(); } },
+    // Level events carry gate: 'open' | 'closed' from capture.js; the streaming
+    // capture reports gated frames as exact silence, so rms 0 also reads "no speech".
+    onLevel(value) {
+      if (disposed || mode !== 'direct' || snapshot.status !== 'running') return;
+      meter.setAttribute('value', String(levelPercent(value)));
+      speaking = value?.gate !== undefined ? value.gate === 'open' : Number(value?.rms) > 0;
+      renderSpeech();
+    },
     focusInput() { (mode === 'hub' ? room : start).focus(); },
-    destroy() { if (disposed) return; disposed = true; unsubscribe?.(); for (const off of listeners) off(); board.destroy(); bind.clear(); room.value = ''; section.remove(); },
+    destroy() { if (disposed) return; disposed = true; unsubscribe?.(); unsubscribeVoice(); for (const off of listeners) off(); board.destroy(); bind.clear(); room.value = ''; section.remove(); },
   });
 }

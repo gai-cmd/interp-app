@@ -4,8 +4,12 @@
  * Ported on: 2026-09-05
  * Source SHA-256: 8afc7818740a45bb69e349450f4290b9574adcd24cb8ee294060ec08056febfe
  * Changes: Fixed model/language validation, separate model policies, no cycling.
+ * P3-02d: the interpreter voice (female Kore / male Orus, or an explicit Live
+ * voice) is applied through speechConfig.voiceConfig on both routes, and the
+ * flash prompt gains one rule: interpret human speech only.
  */
 import { ProviderError } from '../contract.js';
+import { VOICE_NAMES } from './voice.js';
 
 export const DEFAULT_LIVE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_MODELS = Object.freeze([DEFAULT_LIVE_MODEL,
@@ -23,6 +27,73 @@ export const LIVE_VAD = Object.freeze({ disabled: false, silenceDurationMs: 400,
 export const SIM_LIMITS = Object.freeze({ inputSampleRate: 16000, outputSampleRate: 24000,
   maxInputBytes: 1024, maxContentBytes: 1048576, maxAudioBytes: 786432, maxTranscriptChars: 16000 });
 const names = Object.freeze({ ko: 'Korean', en: 'English', ja: 'Japanese' });
+
+// Voice persona, first scope (owner 2026-09-06): gender only. Role personas,
+// register or "sound human" directions are deliberately absent.
+export const LIVE_VOICE_GENDERS = Object.freeze(['female', 'male']);
+export const DEFAULT_LIVE_VOICE_GENDER = 'female';
+export const LIVE_GENDER_VOICES = Object.freeze({ female: 'Kore', male: 'Orus' });
+// Administrator policy contract (design-p3 §1.4 setting shape): the default
+// gender and the voices a policy may allow. Registration in app/policy/schema.js
+// is a P3-04 change and is not performed here.
+export const LIVE_VOICE_POLICY_FIELDS = Object.freeze({
+  'voice.gender': Object.freeze({ kind: 'enum', values: LIVE_VOICE_GENDERS, default: DEFAULT_LIVE_VOICE_GENDER }),
+  'voice.allowedVoices': Object.freeze({ kind: 'list', values: VOICE_NAMES, default: VOICE_NAMES }),
+});
+
+/** The prebuilt voice for a gender and an optional explicit voice name. */
+export function resolveLiveVoice({ gender = DEFAULT_LIVE_VOICE_GENDER, voice = null } = {}) {
+  if (voice !== null && voice !== undefined) {
+    if (!VOICE_NAMES.includes(voice)) throw new ProviderError('INVALID_REQUEST');
+    return voice;
+  }
+  if (!LIVE_VOICE_GENDERS.includes(gender)) throw new ProviderError('INVALID_REQUEST');
+  return LIVE_GENDER_VOICES[gender];
+}
+
+/**
+ * Run-scoped voice preference shared by the simultaneous screen (gender) and
+ * the settings voice picker (explicit voice). Minimal interface for P3-02d:
+ * the sim engine builds its live request without a voice field, so the setup
+ * reads this store when the request names no voice. Choosing a gender clears
+ * an explicit voice; choosing a gender's default voice selects that gender.
+ * Invalid values throw; unknown persisted values must be sanitized by callers.
+ */
+export function createLiveVoicePreference(initial = {}) {
+  const listeners = new Set();
+  let state;
+  const commit = (gender, voice) => {
+    state = Object.freeze({ gender, voice, voiceName: resolveLiveVoice({ gender, voice }) });
+  };
+  commit(DEFAULT_LIVE_VOICE_GENDER, null);
+  const store = Object.freeze({
+    snapshot: () => state,
+    set({ gender, voice } = {}) {
+      let nextGender = state.gender, nextVoice = state.voice;
+      if (gender !== undefined) {
+        if (!LIVE_VOICE_GENDERS.includes(gender)) throw new ProviderError('INVALID_REQUEST');
+        nextGender = gender; nextVoice = null;
+      }
+      if (voice !== undefined) {
+        if (voice !== null && !VOICE_NAMES.includes(voice)) throw new ProviderError('INVALID_REQUEST');
+        nextVoice = voice;
+        const owner = LIVE_VOICE_GENDERS.find((g) => LIVE_GENDER_VOICES[g] === voice);
+        if (owner) { nextGender = owner; nextVoice = null; }
+      }
+      if (nextGender === state.gender && nextVoice === state.voice) return state;
+      commit(nextGender, nextVoice);
+      for (const fn of [...listeners]) { try { fn(state); } catch { /* Observer-owned failure. */ } }
+      return state;
+    },
+    subscribe(fn) {
+      if (typeof fn !== 'function') throw new ProviderError('INVALID_REQUEST');
+      listeners.add(fn); return () => listeners.delete(fn);
+    },
+  });
+  store.set(initial);
+  return store;
+}
+export const liveVoicePreference = createLiveVoicePreference();
 
 /** Route of a model: 'translation' (translationConfig, structurally cannot
  * reply) or 'flash' (general Live model steered by the interpreter prompt).
@@ -73,11 +144,19 @@ export function detectReply(text, targetLanguage, { final = false } = {}) {
   return final && foreignScript(trimmed, targetLanguage) ? 'language' : null;
 }
 
-export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voice } = {}) {
+/**
+ * buildLiveSetup({ model?, targetLanguage, voice?, gender? }). Without voice
+ * and gender the shared preference decides; an unknown voice is rejected.
+ * The voice only touches generationConfig.speechConfig, never the prompt.
+ */
+export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voice, gender } = {}) {
   if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
   if (!Object.hasOwn(names, targetLanguage)) throw new ProviderError('INVALID_REQUEST');
-  if (voice !== undefined) throw new ProviderError('SETTINGS_UNSUPPORTED');
-  const generationConfig = { responseModalities: ['AUDIO'] };
+  const preference = liveVoicePreference.snapshot();
+  const voiceName = voice === undefined && gender === undefined ? preference.voiceName
+    : resolveLiveVoice({ gender: gender ?? preference.gender, voice: voice ?? null });
+  const generationConfig = { responseModalities: ['AUDIO'],
+    speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } } };
   const setup = { model: `models/${model}`, generationConfig,
     inputAudioTranscription: {}, outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: { ...LIVE_VAD } } };
@@ -94,6 +173,7 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, voi
       + '(3) Start speaking as soon as a phrase is intelligible; do not wait for sentence completion. '
       + '(4) Keep the speaker\'s register, numbers, names and meaning; add nothing. '
       + `(5) If the speech is already in ${names[targetLanguage]}, stay silent. If you hear your own interpreted voice from the speakers, stay silent. `
+      + '(6) Ignore background music, noise, applause, laughter and crowd murmur: interpret human speech only, and stay silent while nobody is speaking. '
       + 'Examples: hear "What time is it?" -> say the translation of "What time is it?"; hear "Can you help me?" -> say the translation of "Can you help me?" (never help).' }] };
   }
   return setup;

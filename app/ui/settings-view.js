@@ -6,8 +6,13 @@
 // shown as temporary event credentials; hub-only providers get no key input.
 // Saving a key never starts a check, and mode changes are explicit. Key values
 // never reach the DOM, notices or logs; the input is cleared on save.
+// P3-02d: an audio section (noise suppression, voice-band filter, gate
+// sensitivity, last applied microphone settings) and one shared voice choice:
+// the provider voice picked here also drives the simultaneous voice, and the
+// simultaneous screen's female/male choice is mirrored into this picker.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
-import { LIVE_MODELS, DEFAULT_LIVE_MODEL } from '../providers/gemini/live-config.js';
+import { LIVE_MODELS, DEFAULT_LIVE_MODEL, liveVoicePreference } from '../providers/gemini/live-config.js';
+import { AUDIO_SENSITIVITIES, APPLIED_SETTING_NAMES, audioPreferences } from '../audio/capture.js';
 import { VOICE_OUTPUTS } from '../state.js';
 import { redact } from '../security/redact.js';
 import { createBinder, SOURCE_OPTIONS } from './seq-view.js';
@@ -58,7 +63,8 @@ export function sharedFragmentFrom(value) {
  * diagnosticsView, destroy }.
  */
 export function createSettingsView({ shell, i18n, config, engine, diagnostics, document: doc = shell?.root?.ownerDocument,
-  persistence = false, app = null, simEngine = null, metrics = null, hub = null, getDeviceVoices = null, onUiLanguageChange = null } = {}) {
+  persistence = false, app = null, simEngine = null, metrics = null, hub = null, getDeviceVoices = null, onUiLanguageChange = null,
+  audio = audioPreferences, voicePreference = liveVoicePreference } = {}) {
   const root = shell?.elements?.panels?.settingsBody;
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof shell.onLanguageChange !== 'function'
     || typeof config?.keyStore?.subscribe !== 'function' || typeof config.registry?.get !== 'function'
@@ -308,7 +314,14 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   outputSelect.addEventListener('change', () => { call(() => engine.setVoice({ output: outputSelect.value })); render(store.snapshot()); });
   field(voiceSection, 'settings-voice-output', 'voice.output', outputSelect);
   const voiceSelect = element(doc, 'select', { className: 'settings-select' });
-  voiceSelect.addEventListener('change', () => { call(() => engine.setVoice({ voice: voiceSelect.value || null })); render(store.snapshot()); });
+  voiceSelect.addEventListener('change', () => {
+    const chosen = voiceSelect.value || null;
+    call(() => engine.setVoice({ voice: chosen }));
+    // The same choice drives the simultaneous voice; a live session keeps its voice until restarted.
+    call(() => voicePreference.set({ voice: chosen }));
+    if (simEngine?.snapshot?.().busy) notify('sim.voiceRestart');
+    render(store.snapshot());
+  });
   const voiceField = field(voiceSection, 'settings-voice-name', 'voice.select', voiceSelect);
   const previewButton = button(voiceField, 'voice.preview', 'btn-secondary settings-voice-preview', () => {
     call(() => diagnostics.run('voice', { ...checkOptions() }));
@@ -334,6 +347,48 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     catch (error) { notify(errorKey(error)); }
     finally { modelSelect.value = simEngine?.model ?? DEFAULT_LIVE_MODEL; modelSelect.disabled = false; }
   });
+
+  // Audio: speech-only defaults (P3-02d). Changes apply at the next capture start.
+  const audioSection = section('settings-audio', 'settings.audio');
+  note(audioSection, 'audio.description');
+  function toggle(id, labelKey, helpKey, onChange) {
+    const row = element(doc, 'div', { className: 'settings-field settings-audio-toggle' });
+    const input = element(doc, 'input', { className: 'settings-checkbox', attributes: { type: 'checkbox', id } });
+    const label = element(doc, 'label', { className: 'settings-label', attributes: { for: id } });
+    bind.text(label, labelKey);
+    input.addEventListener('change', () => { onChange(input.checked === true); renderAudio(); });
+    row.append(input, label);
+    audioSection.append(row);
+    note(audioSection, helpKey);
+    return input;
+  }
+  const noiseInput = toggle('settings-audio-noise', 'audio.noiseSuppression', 'audio.noiseSuppressionHelp',
+    (checked) => call(() => audio.set({ noiseSuppression: checked })));
+  const filterInput = toggle('settings-audio-filter', 'audio.voiceFilter', 'audio.voiceFilterHelp',
+    (checked) => call(() => audio.set({ voiceFilter: checked })));
+  const sensitivitySelect = element(doc, 'select', { className: 'settings-select' });
+  for (const value of AUDIO_SENSITIVITIES) {
+    const option = element(doc, 'option', { attributes: { value } });
+    bind.text(option, `audio.sensitivity.${value}`);
+    sensitivitySelect.append(option);
+  }
+  sensitivitySelect.addEventListener('change', () => { call(() => audio.set({ sensitivity: sensitivitySelect.value })); renderAudio(); });
+  field(audioSection, 'settings-audio-sensitivity', 'audio.sensitivity', sensitivitySelect);
+  note(audioSection, 'audio.sensitivityHelp');
+  // What the browser actually applied at the last capture (track.getSettings()).
+  const appliedLine = element(doc, 'p', { className: 'settings-audio-applied', attributes: { role: 'status' } });
+  audioSection.append(appliedLine);
+  function renderAudio() {
+    const current = attempt(() => audio.snapshot()) ?? {};
+    noiseInput.checked = current.noiseSuppression !== false;
+    filterInput.checked = current.voiceFilter !== false;
+    sensitivitySelect.value = AUDIO_SENSITIVITIES.includes(current.sensitivity) ? current.sensitivity : 'normal';
+    const applied = current.applied ?? null;
+    appliedLine.hidden = applied === null;
+    appliedLine.textContent = applied === null ? '' : `${i18n.t('audio.applied')}: ${APPLIED_SETTING_NAMES.map((name) =>
+      `${i18n.t(`audio.${name}`)} ${i18n.t(applied[name] === true ? 'audio.on' : applied[name] === false ? 'audio.off' : 'audio.unknown')}`).join(' · ')}`;
+  }
+  renderAudio();
 
   // Diagnostics: per-capability checks against the selected provider and key source.
   const diagnosticsSection = section('settings-diagnostics', 'diagnostics.title');
@@ -389,7 +444,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   const quotaScope = note(noticeSection, 'quota.project', 'settings-note settings-quota-scope');
 
   container.append(languageSection, providerSection, keySection, sharedSection, modeSection, voiceSection,
-    diagnosticsSection, recordsSection, appSection, noticeSection);
+    audioSection, diagnosticsSection, recordsSection, appSection, noticeSection);
 
   function selectProvider(id) {
     if (!config.providers.some((item) => item.id === id) || id === providerId) return providerId;
@@ -516,13 +571,24 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   function refresh() {
     bind.refresh();
     diagnosticsView.refresh();
+    renderAudio();
     render(snapshot);
+  }
+  // The simultaneous screen's gender choice lands here as the matching provider voice.
+  function mirrorVoice(preference) {
+    const cap = descriptor()?.capabilities?.voice;
+    const name = preference?.voiceName;
+    if (!Array.isArray(cap?.voices) || !cap.voices.includes(name) || snapshot.voice.voice === name) return;
+    call(() => engine.setVoice({ voice: name }));
+    render(store.snapshot());
   }
 
   removers.push(store.subscribe(render));
   removers.push(attempt(() => keyStore.subscribe(() => { keyFeedbackKey = null; render(); })) ?? (() => {}));
   removers.push(diagnostics.subscribe(() => render()));
   removers.push(shell.onLanguageChange(refresh));
+  removers.push(attempt(() => audio.subscribe(() => renderAudio())) ?? (() => {}));
+  removers.push(attempt(() => voicePreference.subscribe(mirrorVoice)) ?? (() => {}));
   render(snapshot);
 
   return Object.freeze({
@@ -530,9 +596,10 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     elements: Object.freeze({ uiSelect, sourceSelect, targetSelect, providerSelect, providerTitle, keyInput, rememberInput, saveButton,
       checkButton, deleteButton, deleteConfirm, keyStatus, keyFeedback, modelSelect, sharedInput, sharedImport, sharedEnd, sharedEvent, modeInputs: Object.freeze(
         Object.fromEntries(KEY_SOURCES.map((source) => [source, modeInputs[source].input]))),
-      outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions, sections: Object.freeze({
+      outputSelect, voiceSelect, previewButton, deviceSelect, clearButton, clearConfirm, appActions,
+      noiseInput, filterInput, sensitivitySelect, appliedLine, sections: Object.freeze({
         language: languageSection, provider: providerSection, key: keySection, shared: sharedSection, mode: modeSection,
-        voice: voiceSection, diagnostics: diagnosticsSection, records: recordsSection, app: appSection, notices: noticeSection }) }),
+        voice: voiceSection, audio: audioSection, diagnostics: diagnosticsSection, records: recordsSection, app: appSection, notices: noticeSection }) }),
     get providerId() { return providerId; },
     selectProvider,
     diagnosticsView,
