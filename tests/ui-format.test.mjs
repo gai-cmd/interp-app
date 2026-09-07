@@ -881,7 +881,8 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   const header = h.shell.elements.header;
   assert.deepEqual(classNames(header), ['shell-title', 'shell-badges', 'shell-actions']);
   assert.deepEqual(classNames(h.shell.elements.actions),
-    ['shell-languages', 'btn btn-secondary shell-display-button', 'btn btn-secondary share-button', 'btn btn-secondary shell-settings-button']);
+    ['btn btn-secondary shell-home-button', 'shell-languages', 'btn btn-secondary shell-display-button',
+      'btn btn-secondary share-button', 'btn btn-secondary shell-settings-button']);
   const languages = h.shell.elements.languages;
   assert.equal(languages.getAttribute('role'), 'group');
   assert.equal(languages.getAttribute('aria-label'), ko['language.ui']);
@@ -901,9 +902,12 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   assert.equal(h.shell.elements.shareButton.textContent, ko['share.open']);
   assert.equal(h.shell.elements.shareButton.getAttribute('aria-controls'), 'shell-share');
   assert.equal(h.shell.elements.settingsButton.textContent, ko['common.settings']);
-  // Header focus order = DOM order = visual order: key badge, KO, EN, JA, display, share, settings.
+  // Header focus order = DOM order = visual order: key badge, home, KO, EN, JA, display, share, settings.
+  assert.equal(h.shell.elements.homeButton.textContent, ko['common.home']);
+  assert.equal(h.shell.elements.homeButton.getAttribute('aria-label'), ko['common.homeHint']);
   assert.deepEqual(focusableIds(header),
-    ['shell-mode', 'shell-language', 'shell-language', 'shell-language', 'shell-display-button', 'share-button', 'shell-settings-button']);
+    ['shell-mode', 'shell-home-button', 'shell-language', 'shell-language', 'shell-language', 'shell-display-button',
+      'share-button', 'shell-settings-button']);
   // P3-20: the display button now opens its own sheet, not the settings dialog.
   const targets = [];
   h.shell.onSettingsOpen((target) => targets.push(target));
@@ -1002,7 +1006,8 @@ test('P3-15 desktop header: the 64rem query moves the tab row between the title 
   assert.equal(app.getAttribute('data-layout'), 'desktop');
   assert.deepEqual(classNames(header), ['shell-title', 'shell-tabs', 'shell-badges', 'shell-actions']);
   assert.deepEqual(classNames(app), ['shell-header', 'shell-notice', 'shell-message', 'shell-first-run', 'shell-main', 'shell-settings sheet', 'shell-display sheet', 'share-dialog sheet']);
-  assert.deepEqual(focusableIds(header), ['tab-sequential', 'tab-simultaneous', 'shell-mode', 'shell-language', 'shell-language', 'shell-language',
+  assert.deepEqual(focusableIds(header), ['tab-sequential', 'tab-simultaneous', 'shell-mode', 'shell-home-button',
+    'shell-language', 'shell-language', 'shell-language',
     'shell-display-button', 'share-button', 'shell-settings-button']);
   assert.equal(h.view.layout, SEQ_LAYOUTS.STACKED, 'the window query is the header\'s; the sequential view keeps the document\'s');
   assert.equal(h.doc.defaultView, undefined);

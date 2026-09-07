@@ -155,7 +155,7 @@ test('stages only the allowlist into a versioned directory and rewrites the entr
     assert.ok((await readFile(join(out, file))).equals(await readFile(join(root, file))), `${file} copied verbatim`);
   }
   const result = await checkRelease({ dir: out });
-  assert.deepEqual(result, { ok: true, issues: [], releases: ['r1'], current: 'r1', files: files.length });
+  assert.deepEqual(result, { ok: true, issues: [], notices: [], releases: ['r1'], current: 'r1', files: files.length });
 });
 
 test('never overwrites a release and rejects bad ids and output locations', async (t) => {
@@ -501,7 +501,9 @@ test('CLI stages and checks with fixed codes and never echoes argument contents'
   await stageRelease({ id: 'cli-2', out: join(directory, 'good'), root });
   const ok = run('check-release.mjs', [join(directory, 'good')]);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /^RELEASE_OK current=cli-2 releases=1 files=\d+\n$/);
+  // The repository ships a built-in provider key (owner decision, 2026-09-07),
+  // so a passing check announces it on the line before RELEASE_OK.
+  assert.match(ok.stdout, /^RELEASE_BUILTIN_KEY releases\/cli-2\/app\/security\/builtin-key\.js\nRELEASE_OK current=cli-2 releases=1 files=\d+\n$/);
   await write(join(directory, 'good'), 'docs/notes.md', fakeKey());
   const bad = run('check-release.mjs', [join(directory, 'good')]);
   assert.equal(bad.status, 1);

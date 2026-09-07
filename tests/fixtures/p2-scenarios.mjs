@@ -30,7 +30,7 @@ export async function scenario(t, { personal = true, ...options } = {}) {
       return source;
     }
   };
-  b.app = await startApp({ window: b.win, hubs });
+  b.app = await startApp({ window: b.win, hubs, builtinKey: () => null });
   assert.ok(b.app);
   b.el = name => byClass(b.root, name);
   b.text = () => domText(b.root);

@@ -40,9 +40,13 @@ export function readPreferences(storage) {
 
 /**
  * createCaptionBoard({ parent, i18n, document?, window?, storage?, controls?,
- * primary?, onToggle?, setTimeout?, clearTimeout? }) appends the board to
+ * primary?, home?, onToggle?, setTimeout?, clearTimeout? }) appends the board to
  * parent. controls are caller-owned buttons placed in the full-screen bar;
- * primary is the caller-owned large start button shown above the list. The
+ * primary is the caller-owned large start button shown above the list.
+ * home (owner, 2026-09-07) is a caller-owned button that sits OUTSIDE the bar:
+ * the bar hides itself after BAR_HIDE_MS, so the one way back to the main
+ * screen must not hide with it. It is shown only while the board is
+ * captions-only and clicking it never toggles the bar. The
  * caller keeps ownership of their state; this board only owns captions,
  * preferences, the bar and the full-screen lifecycle. storage is the app's
  * usable localStorage (only app/main.js touches it, P1-20 privacy contract);
@@ -52,7 +56,7 @@ export function readPreferences(storage) {
  * destroy }.
  */
 export function createCaptionBoard({ parent, i18n, document: doc = parent?.ownerDocument, window: win = doc?.defaultView ?? null,
-  storage = null, controls = [], primary = null, onToggle,
+  storage = null, controls = [], primary = null, home = null, onToggle,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   if (!parent || !doc || typeof i18n?.t !== 'function') throw new Error('INVALID_REQUEST');
   const bind = createBinder(i18n), rows = new Map(), listeners = [];
@@ -92,6 +96,9 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
   const notice = node('p', 'caption-board-notice', board, null, { role: 'status' });
   const primaryHost = node('div', 'caption-board-primary', board);
   if (primary) primaryHost.append(primary);
+  // Always-visible home slot: outside the bar, so BAR_HIDE_MS never takes it away.
+  const homeHost = node('div', 'caption-board-home', board);
+  if (home) homeHost.append(home);
   const gaps = Object.fromEntries(['input', 'audio', 'reception'].map(cause =>
     [cause, node('p', `caption-board-gap sim-gap-${cause}`, board, `sim.gap.${cause}`, { role: 'status' })]));
   const empty = node('p', 'caption-board-empty sim-empty', board, 'sim.captions.empty');
@@ -120,7 +127,7 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
   }
   function applyFrame() {
     board.setAttribute('data-caption-only', String(captionOnly));
-    for (const el of [status, notice, primaryHost]) el.hidden = !captionOnly;
+    for (const el of [status, notice, primaryHost, homeHost]) el.hidden = !captionOnly;
     if (!captionOnly) { bar.hidden = true; cancelTimer(barTimer); barTimer = null; }
   }
 
@@ -224,6 +231,7 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
   listen(board, 'click', (event) => {
     if (!captionOnly) return;
     const target = event?.target;
+    if (target && target !== board && homeHost.contains(target)) return;
     if (target && target !== board && (bar.contains(target) || primaryHost.contains(target) || latest.contains(target))) { showBar(); return; }
     if (wantFullscreen) requestFullscreen();
     if (bar.hidden) showBar(); else hideBar();
@@ -297,7 +305,7 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
   if (storage) setStorage(storage);
 
   return Object.freeze({
-    element: board, list, bar, exit,
+    element: board, list, bar, exit, homeHost,
     get captionOnly() { return captionOnly; },
     get size() { return size; },
     get display() { return display; },

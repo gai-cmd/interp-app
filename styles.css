@@ -901,6 +901,22 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 .caption-board-notice { border-inline-start: 0.375rem solid var(--accent); padding-inline-start: var(--space-2); }
 .caption-board-primary { display: flex; align-items: center; justify-content: center; }
 .sim-fs-primary { min-height: max(64px, 4rem); min-width: 12rem; font-size: 1.25rem; }
+/* Owner (2026-09-07): the way back to the main screen from the captions-only
+   frame. The top bar hides itself after three seconds, so this button sits
+   outside the bar and never goes with it. Visibility is the `hidden` attribute
+   the board sets; these rules only place it. */
+.caption-board[data-caption-only="true"] .caption-board-home {
+  position: absolute;
+  right: calc(var(--gap) + env(safe-area-inset-right));
+  bottom: calc(var(--gap) + env(safe-area-inset-bottom));
+  z-index: 1;
+}
+.caption-board[data-caption-only="true"] .sim-fs-home {
+  min-height: var(--touch);
+  border-color: var(--border);
+  background: var(--surface);
+  box-shadow: 0 0.0625rem 0.25rem rgb(0 0 0 / 0.35);
+}
 .sim[data-caption-only="true"] > :not(.caption-board) { display: none; }
 .caption-board[data-caption-only="true"] {
   position: fixed;

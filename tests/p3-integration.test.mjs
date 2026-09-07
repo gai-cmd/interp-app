@@ -33,6 +33,49 @@ test('sheets stay mutually exclusive across the P3 surfaces, and none survives a
   assert.equal(b.inertCount(), false, 'no inert survives a teardown');
 });
 
+test('home is one path: it closes the open sheet, leaves the captions-only frame and lands on the default tab', async (t) => {
+  const b = await bootP3();
+  t.after(() => b.app.close());
+  const shell = b.app.shell;
+  const home = shell.elements.homeButton;
+  assert.equal(shell.selectedTab, 'simultaneous');
+  assert.equal(shell.elements.actions.childNodes[0], home, 'home leads the action row');
+
+  // From another tab. Tab changes run the app's beforeTabChange cleanup, so
+  // both the move away and the move home settle asynchronously.
+  await shell.switchTab('sequential');
+  assert.equal(shell.selectedTab, 'sequential');
+  home.dispatch('click');
+  await until(() => shell.selectedTab === 'simultaneous');
+
+  // From an open sheet: the header is inert while one is open, so the shell's
+  // own path is what a caller reaches, and it takes the sheet down with it.
+  b.openSheet('display');
+  assert.equal(b.openSheetId(), 'display');
+  shell.goHome();
+  await until(() => shell.selectedTab === 'simultaneous');
+  assert.equal(b.openSheetId(), null);
+  assert.equal(b.inertCount(), false, 'no inert survives going home');
+  assert.equal(shell.selectedTab, 'simultaneous');
+
+  // From the captions-only frame, through the button that lives inside it.
+  const calls = b.gemini.calls.length;
+  byClass(b.root, 'sim-caption-only').dispatch('click');
+  assert.equal(shell.simView.board.captionOnly, true);
+  byClass(b.root, 'sim-fs-home').dispatch('click');
+  assert.equal(shell.simView.board.captionOnly, false, 'the frame is down');
+  assert.equal(shell.selectedTab, 'simultaneous');
+  assert.equal(b.openSheetId(), null);
+  assert.equal(b.gemini.calls.length, calls, 'going home is navigation, not a stop');
+  assert.equal(b.microphone.streams.length, 0);
+
+  // Home from home changes nothing.
+  home.dispatch('click');
+  assert.equal(shell.selectedTab, 'simultaneous');
+  assert.equal(shell.simView.board.captionOnly, false);
+  assert.equal(b.gemini.calls.length, calls);
+});
+
 test('a language change carries every P3 surface with it and starts nothing', async (t) => {
   const b = await bootP3();
   t.after(() => b.app.close());

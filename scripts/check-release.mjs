@@ -39,6 +39,21 @@ export const SECRET_PATTERNS = Object.freeze([
   /\b(?:api[_-]?key|secret|token|password)\s*[:=]\s*["'][A-Za-z0-9_-]{16,}["']/i,
 ]);
 
+// Owner decision (2026-09-07): this build ships a built-in provider key so a
+// device that has never been set up can start without typing one. Exactly one
+// file may carry it. The scan above stays on for every other file, so an
+// accidental key anywhere else is still refused, and a match inside this file
+// is reported as a NOTICE rather than passing silently: a release that carries
+// a key has to say so out loud. Removing the key from the file removes the
+// notice; this list must never grow to cover a file that merely happens to
+// contain one.
+export const SECRET_EXEMPT_FILES = Object.freeze(['app/security/builtin-key.js']);
+/** True for the one versioned file allowed to carry the built-in key. */
+export function isSecretExempt(path) {
+  const kind = classifyPath(path);
+  return kind?.kind === 'versioned' && SECRET_EXEMPT_FILES.includes(kind.file);
+}
+
 // Content-Security-Policy directives the release must carry (§11.2).
 const REQUIRED_CSP = Object.freeze({
   'default-src': ["'self'"],
@@ -264,11 +279,16 @@ export async function checkRelease({ dir, endpointOrigins } = {}) {
   for (const file of ROOT_FILES) if (!files.includes(file)) issues.push({ code: 'RELEASE_MISSING_FILE', path: file });
 
   const contents = new Map();
+  const notices = [];
   for (const path of files) {
     const bytes = await readFile(join(root, path));
     contents.set(path, bytes);
     const text = bytes.toString('latin1');
-    if (SECRET_PATTERNS.some((pattern) => pattern.test(text))) issues.push({ code: 'RELEASE_SECRET_PATTERN', path });
+    if (!SECRET_PATTERNS.some((pattern) => pattern.test(text))) continue;
+    // The built-in key file is the one reviewed exception; it is announced,
+    // not accepted in silence. Everything else is still a release blocker.
+    if (isSecretExempt(path)) notices.push({ code: 'RELEASE_BUILTIN_KEY', path });
+    else issues.push({ code: 'RELEASE_SECRET_PATTERN', path });
   }
 
   // Every release directory must be complete and byte-identical to its manifest.
@@ -324,7 +344,7 @@ export async function checkRelease({ dir, endpointOrigins } = {}) {
     }
   }
   const unique = [...new Map(issues.map((issue) => [`${issue.code}:${issue.path ?? ''}`, issue])).values()];
-  return { ok: unique.length === 0, issues: unique, releases: [...releases].sort(), current, files: files.length };
+  return { ok: unique.length === 0, issues: unique, notices, releases: [...releases].sort(), current, files: files.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -335,7 +355,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     try { result = await checkRelease({ dir: args[0] }); }
     catch { result = { ok: false, issues: [{ code: 'RELEASE_CHECK_FAILED' }] }; }
   }
-  if (result.ok) console.log(`RELEASE_OK current=${result.current} releases=${result.releases.length} files=${result.files}`);
+  if (result.ok) {
+    // Notices never fail the run, but a passing release that ships the
+    // built-in key says so before it says OK. A failing run stays silent on
+    // stdout: there the issues are the whole story.
+    for (const notice of result.notices ?? []) console.log(notice.path ? `${notice.code} ${notice.path}` : notice.code);
+    console.log(`RELEASE_OK current=${result.current} releases=${result.releases.length} files=${result.files}`);
+  }
   else {
     for (const issue of result.issues) console.error(issue.path ? `${issue.code} ${issue.path}` : issue.code);
     process.exitCode = 1;

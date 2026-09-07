@@ -76,6 +76,11 @@ export function readVoiceGender(storage) {
  * needs no new wiring; the app hands its usable storage over with
  * setStorage(storage) after mount (only app/main.js reads localStorage).
  * onOpenSettings() is offered as an action when the failure is a key problem.
+ * onHome() (owner, 2026-09-07) is what the always-visible home button of the
+ * captions-only frame calls. This view only reports the press; the shell owns
+ * what "main screen" means (leave captions-only, close every sheet, select the
+ * default tab), so there is one definition of home and no recursion between
+ * the two. Pressing it never stops an interpretation that is running.
  * setHubControl(link) (P3-11) receives the app's event link: { snapshot(),
  * subscribe(fn), join({ eventId, hubId, roomCode }), leave() } whose snapshot is
  * { enabled, controlOnlyAllowed, allowedHubIds, events: [{ id, label, eventName,
@@ -83,7 +88,7 @@ export function readVoiceGender(storage) {
  * Event labels are policy text shown as text; every other string is a key.
  */
 export function createSimView({ root, i18n, engines, engine, hubs = [], startDirect,
-  targetLanguage = 'ja', onSequential, onOpenSettings, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
+  targetLanguage = 'ja', onSequential, onOpenSettings, onHome, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
   storage = null, voicePreference = liveVoicePreference,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   engines ??= { direct: engine };
@@ -224,8 +229,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   fsSource.setAttribute('aria-pressed', 'false');
   const fsReopen = button('sim-fs-reopen', 'sim.reopen', null);
   const fsPrimary = node('button', 'btn btn-primary sim-fs-primary', null, 'common.start', { type: 'button' });
+  // The way back to the main screen from the captions-only frame. It lives in
+  // the board's home slot rather than the bar, which hides after three seconds.
+  const fsHome = node('button', 'btn btn-secondary sim-fs-home', null, 'common.home', { type: 'button' });
+  bind.attribute(fsHome, 'aria-label', 'common.homeHint');
   const board = createCaptionBoard({ parent: section, i18n, document: doc, window: win, storage,
-    controls: [fsStop, fsSound, fsSource, fsReopen], primary: fsPrimary,
+    controls: [fsStop, fsSound, fsSource, fsReopen], primary: fsPrimary, home: fsHome,
     setTimeout: schedule, clearTimeout: cancelTimer,
     onToggle(on) {
       section.setAttribute('data-caption-only', String(on));
@@ -443,6 +452,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   for (const el of [reopen, fsReopen]) listen(el, 'click', reopenSession);
   listen(openSettings, 'click', () => { if (typeof onOpenSettings === 'function') call(onOpenSettings); });
   listen(captionOnly, 'click', () => board.setCaptionOnly(!board.captionOnly));
+  // Report only: the shell leaves captions-only itself, so this never re-enters here.
+  listen(fsHome, 'click', () => { if (typeof onHome === 'function') call(onHome); });
   // The buttons report the value they produced, so a press at either end is
   // visibly a no-op instead of silently doing nothing.
   function renderCaptionControls() {
@@ -611,6 +622,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   function subscribe() { unsubscribe?.(); snapshot = current().snapshot(); unsubscribe = current().subscribe(render); render(snapshot); }
   subscribe();
   return Object.freeze({ element: section, board, render,
+    /** Leaves the captions-only frame if it is on; the shell's home path uses this. */
+    exitCaptionOnly() { if (!disposed && board.captionOnly) board.setCaptionOnly(false); return board.captionOnly; },
     refresh() { if (!disposed) { bind.refresh(); board.refresh(); renderCaptionControls(); render(); } },
     setStorage(next) { if (!disposed) { store = next; board.setStorage(next); renderCaptionControls(); restoreVoice(); restoreLanguages(); restoreTwoWay(); render(); } },
     // P3-11: the app's event link (null detaches); the section re-renders on its changes.

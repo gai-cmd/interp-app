@@ -259,3 +259,24 @@ N/L/T·언어/경로 분포·좌석/AP·회선·기기·모델·서버·릴리�
   CSP·`no-store`·`no-cache`가 실제로 붙는지는 배포 후 `curl -I`로 확인해야 하고,
   그 증거가 없는 한 [p3-verification.md](p3-verification.md) V22·V27은 미검증으로 남는다.
 - 정책 `no-store`는 요청 측 구현으로 보완하고 있으나, 그것이 헤더 적용의 증거는 아니다.
+
+## 내장 키 (2026-09-07, 오너 결정)
+
+이 빌드는 `app/security/builtin-key.js`에 Gemini 키를 **하나 담아 배포**한다. 설정한 적 없는 기기가 사이트를 열자마자 통역을 시작할 수 있게 해달라는 오너 요청이며, 오너가 아래 조건을 확인한 뒤 선택한 예외다.
+
+- 키는 사이트를 여는 누구나 읽을 수 있다. 구글 공식 문서(<https://ai.google.dev/gemini-api/docs/api-key>)는 클라이언트 코드에 키를 넣지 말라고 권고하며, Generative Language API는 HTTP 리퍼러 제한이 확실하지 않아 사이트 도메인으로 키를 묶을 수 없다.
+- 그 키로 나가는 모든 호출은 오너의 구글 계정에 과금된다. **Google Cloud 프로젝트에 예산 상한을 걸어두고**, 이상 사용이 보이면 즉시 회전한다.
+
+검사와 배포에서의 취급:
+
+- `scripts/check-release.mjs`의 비밀 스캔은 그대로 살아 있다. `SECRET_EXEMPT_FILES`에 적힌 이 파일 **하나만** 예외이고, 다른 파일에서 키가 나오면 여전히 `RELEASE_SECRET_PATTERN`으로 배포가 거부된다.
+- 예외는 조용히 통과하지 않는다. 키를 담은 릴리스는 `check-release`가 `RELEASE_OK` 앞줄에 `RELEASE_BUILTIN_KEY releases/<id>/app/security/builtin-key.js`를 찍는다. **§3 게이트 6번의 기대 출력에 이 줄이 포함된다.** 이 줄이 없으면 키 없는 빌드를 배포하는 것이므로 의도한 상태인지 확인한다.
+- `tests/privacy.test.mjs`는 이 파일만 예외로 두고 나머지 소스·릴리스 산출물의 키 스캔을 그대로 유지한다.
+
+키 회전 절차:
+
+1. <https://aistudio.google.com/apikey>에서 새 키를 발급하고 이전 키를 삭제한다.
+2. `app/security/builtin-key.js`의 `BUILTIN_KEY` 값을 새 키로 바꾼다.
+3. `node --test tests/*.test.mjs` → `node scripts/check-i18n.mjs` → 새 `--id`로 `stage-release` → `check-release`(`RELEASE_BUILTIN_KEY` 줄 확인) → §5 배포.
+
+키 없이 배포하려면 `BUILTIN_KEY`를 `''`로 두면 된다. 그러면 앱은 이 파일이 없던 때와 똑같이 동작한다(키 입력 화면이 유일한 입구). 앱 안에서의 우선순위는 **이 기기에 저장된 개인 키 > 공용 이벤트 키 > 내장 키** 순이고, 내장 키는 localStorage에 절대 기록되지 않는다.

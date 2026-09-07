@@ -449,7 +449,11 @@ export function createBrowser({ hash = '', storage: storageInit = {}, withStorag
  */
 export async function boot(options = {}) {
   const browser = createBrowser(options);
-  const app = await startApp({ window: browser.win, setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout });
+  // The shipped build carries a built-in key (app/security/builtin-key.js).
+  // Scenarios boot without one by default so every "this device has no key"
+  // screen stays under test; pass builtinKey to exercise the shipped path.
+  const app = await startApp({ window: browser.win, setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout,
+    builtinKey: options.builtinKey ?? (() => null) });
   assert.ok(app, 'the app started');
   const store = app.engine.state;
   const el = (name) => byClass(browser.root, name);

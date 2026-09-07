@@ -250,6 +250,8 @@
   "common.close": "Close",
   "common.confirm": "Confirm",
   "common.delete": "Delete",
+  "common.home": "Home",
+  "common.homeHint": "Back to the main screen",
   "common.loading": "Loading",
   "common.off": "Off",
   "common.on": "On",

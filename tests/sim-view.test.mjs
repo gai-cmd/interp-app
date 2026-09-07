@@ -71,7 +71,7 @@ function fake(mode) {
   };
 }
 function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers(), voicePreference = createLiveVoicePreference(),
-  onOpenSettings } = {}) {
+  onOpenSettings, onHome } = {}) {
   const doc = { createElement(tag) { return new BoardElement(doc, tag); }, activeElement: null, hidden: false,
     fullscreenElement: null, fullscreenRequests: [], exits: 0, listeners: new Map(),
     async exitFullscreen() { doc.exits++; doc.fullscreenElement = null; },
@@ -82,7 +82,7 @@ function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers 
   const root = doc.createElement('main'), direct = fake('direct'), hub = fake('hub');
   const i18n = createI18n({ dictionaries, language: 'en' });
   const view = createSimView({ root, i18n, engines: { direct, hub }, document: doc, window: win, storage, ...timers, voicePreference,
-    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings });
+    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings, onHome });
   const get = name => byClass(root, `sim-${name}`);
   const choose = (name, value) => { get(name).value = value; get(name).dispatch('change'); };
   return { root, doc, win, direct, hub, i18n, view, get, choose, storage, wakeLock, timers, voicePreference,
@@ -417,6 +417,42 @@ test('reopen session: offered while a direct session exists, closes it and start
   assert.equal(f.get('reopen').hidden, true);
   f.hub.patch({ status: 'reconnecting', retries: 1 });
   assert.equal(f.get('status').textContent, dictionaries.ko['sim.status.reconnecting']);
+  f.view.destroy();
+});
+
+test('the captions-only home button outlives the auto-hiding bar, only reports the press, and never stops the session', () => {
+  const presses = [];
+  const f = setup({ onHome: () => presses.push('home') });
+  const home = f.get('fs-home');
+  const host = byClass(f.root, 'caption-board-home');
+  assert.equal(home.textContent, dictionaries.en['common.home']);
+  assert.equal(home.getAttribute('aria-label'), dictionaries.en['common.homeHint']);
+  assert.equal(host.contains(home), true, 'the home button sits outside the bar');
+  assert.equal(f.bar.contains(home), false);
+  assert.equal(host.hidden, true, 'nothing to go home from until the frame is on');
+
+  f.get('start').dispatch('click');
+  const calls = f.direct.calls.length;
+  f.get('caption-only').dispatch('click');
+  assert.equal(f.view.board.captionOnly, true);
+  assert.equal(host.hidden, false);
+  // The bar hides itself after BAR_HIDE_MS; the home button must not go with it.
+  f.doc.activeElement = null; f.timers.run();
+  assert.equal(f.bar.hidden, true);
+  assert.equal(host.hidden, false, 'the way back survives the bar hiding');
+
+  home.dispatch('click');
+  assert.deepEqual(presses, ['home']);
+  assert.equal(f.view.board.captionOnly, true, 'the view reports the press; the shell decides what home means');
+  assert.equal(f.bar.hidden, true, 'pressing home does not toggle the bar back on');
+  assert.equal(f.direct.calls.length, calls, 'going home starts and stops nothing');
+
+  // exitCaptionOnly is the shell's half of the same path, and is idempotent.
+  assert.equal(f.view.exitCaptionOnly(), false);
+  assert.equal(f.view.board.captionOnly, false);
+  assert.equal(host.hidden, true);
+  assert.equal(f.view.exitCaptionOnly(), false);
+  assert.equal(f.direct.calls.length, calls);
   f.view.destroy();
 });
 

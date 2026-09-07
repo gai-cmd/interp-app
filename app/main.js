@@ -39,6 +39,7 @@
 import fallbackDictionary from './i18n/boot-fallback.js';
 import { createI18n, loadI18n } from './i18n/index.js';
 import { bootstrapSharedKey } from './security/bootstrap.js';
+import { builtinKeyFor } from './security/builtin-key.js';
 import { redact } from './security/redact.js';
 import { createAppConfig } from './config.js';
 import { createPlatform } from './platform.js';
@@ -161,9 +162,12 @@ export function captureSharedFragment({ location, history }) {
  * settled gate. `now` returns epoch milliseconds for policy dates.
  */
 // hubs is a trusted code registry, never a settings or QR value.
+// builtinKey(providerId) -> key | null is the build's own key lookup. It is an
+// option so the no-key path stays testable: the suite boots without one and
+// still exercises every "this device has no key" screen.
 async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs = REGISTERED_HUBS, fetch: fetcher = win?.fetch?.bind?.(win),
   setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win),
-  now = () => Date.now() } = {}) {
+  builtinKey = builtinKeyFor, now = () => Date.now() } = {}) {
   const doc = win?.document;
   const nav = win?.navigator;
   const root = givenRoot ?? attempt(() => doc.getElementById(ROOT_ID));
@@ -373,6 +377,22 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
         // A corrupt stored value is removed; the user re-enters the key.
         attempt(() => config.keyStore.deleteKey(PROVIDER_ID, 'personal'));
         startupNotices.push(`error.${redact(error).code}`);
+      }
+    }
+    // Owner decision (2026-09-07): a device that has none of its own falls
+    // back to the key this build ships (app/security/builtin-key.js), so a
+    // phone opening the site for the first time can start straight away.
+    // It goes in through the ordinary personal path — same key store, same
+    // router, same credential boundary — and is never written to storage, so
+    // a key the person types replaces it and a reload restores this one.
+    // Only an empty slot is filled: a stored personal key (loaded just above)
+    // and a shared event key both win over it.
+    if (attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'personal')) == null
+      && attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'shared')) == null) {
+      const builtin = typeof builtinKey === 'function' ? builtinKey(PROVIDER_ID) : null;
+      if (builtin) {
+        try { config.keyStore.setPersonal(PROVIDER_ID, builtin, { remember: false }); }
+        catch (error) { startupNotices.push(`error.${redact(error).code}`); }
       }
     }
 

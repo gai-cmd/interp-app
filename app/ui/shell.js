@@ -4,8 +4,11 @@
 // simultaneous view and asynchronous cleanup; the notice region that shows
 // store notices and clears them; and the settings container P1-16 fills.
 // P3-15 (design-p3 §1.9, §1.11; DESIGN.md §4 header): the header order is
-// app name | tabs (desktop only) | badges | KO EN JA | display | share |
-// settings. The three UI languages are always visible (never an overflow
+// app name | tabs (desktop only) | badges | home | KO EN JA | display | share |
+// settings. The home button (owner, 2026-09-07) is the one definition of
+// "back to the main screen": it closes whatever sheet is open, leaves the
+// captions-only frame and selects the default tab. It never stops an
+// interpretation that is running — going home is navigation, not a stop. The three UI languages are always visible (never an overflow
 // menu); pressing one calls the same setLanguage() path the settings dialog
 // uses, which changes text, document lang and title only — the interpretation
 // pair and any open connection are untouched. On desktop (the 64rem query the
@@ -96,6 +99,10 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const connectionBadge = element(doc, 'span', { className: 'badge shell-connection', attributes: { role: 'status', 'aria-live': 'polite' } });
   badges.append(providerBadge, modeBadge, connectionBadge);
   const actions = element(doc, 'div', { className: 'shell-actions' });
+  // First in the action row so the way back is the first thing reached by Tab.
+  const homeButton = element(doc, 'button', { className: 'btn btn-secondary shell-home-button', attributes: { type: 'button' } });
+  bind.text(homeButton, 'common.home');
+  bind.attribute(homeButton, 'aria-label', 'common.homeHint');
   // UI language toggle: one always-visible pressed button per supported
   // language. The visible text is the language code itself (KO EN JA, the
   // same in every language); the accessible name is the dictionary's language
@@ -122,7 +129,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const settingsButton = element(doc, 'button', { className: 'btn btn-secondary shell-settings-button',
     attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-settings' } });
   bind.text(settingsButton, 'common.settings');
-  actions.append(languages, displayButton, shareButton, settingsButton);
+  actions.append(homeButton, languages, displayButton, shareButton, settingsButton);
   header.append(title, badges, actions);
 
   // Live regions: store notices (dismissable) and short shell messages.
@@ -430,9 +437,23 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     renderNotice();
   }
 
+  // The single "back to the main screen" path, shared by the header button and
+  // the home button of the captions-only frame. Order matters: the sheet and
+  // the full-screen frame come down first, so the tab that is selected last is
+  // the one actually on screen. The simultaneous view reports its own press
+  // and never leaves captions-only itself, so this cannot recurse.
+  function goHome() {
+    if (destroyed) return selected;
+    attempt(() => sheetGroup.closeAll());
+    attempt(() => simView?.exitCaptionOnly());
+    return selectTab(DEFAULT_TAB);
+  }
+
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });
   const simView = listenEngines ? createSimView({ root: panels.simultaneous, i18n, engines: listenEngines, hubs,
-    document: doc, onSequential: () => switchTab('sequential'), onOpenSettings: () => openSettings('key') }) : null;
+    document: doc, onSequential: () => switchTab('sequential'), onOpenSettings: () => openSettings('key'),
+    onHome: () => goHome() }) : null;
+  listen(homeButton, 'click', () => goHome());
   const unsubscribe = store.subscribe(render);
   removers.push(engine.subscribeVoice?.(renderConnection) ?? (() => {}));
   listen(win, 'online', renderConnection);
@@ -473,7 +494,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     elements: Object.freeze({ header, providerBadge, modeBadge, connectionBadge, settingsButton, notice, noticeClose, message, firstRun,
       tabs, tabButtons: Object.freeze({ ...tabButtons }),
       // P3-15: the action row, the language toggle and the display/share entry points.
-      actions, languages, languageButtons: Object.freeze({ ...languageButtons }), displayButton, shareButton,
+      actions, languages, languageButtons: Object.freeze({ ...languageButtons }), homeButton, displayButton, shareButton,
       panels: Object.freeze({ sequential: panels.sequential, simultaneous: panels.simultaneous, settings, settingsBody, settingsClose,
         display, displayBody, displayClose,
         share, shareClose, shareURL, shareCopy, shareStatus, shareImage, shareDeployment }) }),
@@ -489,6 +510,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
       return () => languageListeners.delete(listener);
     },
     selectTab, switchTab,
+    goHome,
     showMessage,
     openSettings,
     closeSettings,

@@ -513,7 +513,7 @@ test('P2 settings first load survives empty, malformed and throwing voice lists'
   for (const getVoices of [() => [], () => null, () => ({}), () => { throw new Error('SECRET'); },
     () => [{ get voiceURI() { throw new Error('SECRET'); } }]]) {
     const b = createBrowser(); b.win.speechSynthesis.getVoices = getVoices;
-    const app = await startApp({ window: b.win, setTimeout: b.clock.setTimeout, clearTimeout: b.clock.clearTimeout });
+    const app = await startApp({ builtinKey: () => null, window: b.win, setTimeout: b.clock.setTimeout, clearTimeout: b.clock.clearTimeout });
     assert.ok(app); assert.ok(app.settingsView);
     assert.equal(b.root.textContent.includes('SECRET'), false);
     await app.close();

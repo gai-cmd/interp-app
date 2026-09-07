@@ -250,6 +250,8 @@
   "common.close": "닫기",
   "common.confirm": "확인",
   "common.delete": "삭제",
+  "common.home": "홈",
+  "common.homeHint": "메인 화면으로",
   "common.loading": "불러오는 중",
   "common.off": "끄기",
   "common.on": "켜기",

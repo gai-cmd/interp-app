@@ -16,7 +16,7 @@ import { parseSharedFragment } from '../app/security/shared-key.js';
 import { TURN_PHASE } from '../app/state.js';
 import { UI_LANGUAGE_STORAGE_KEY } from '../app/main.js';
 import { collectVersionedFiles, stageRelease } from '../scripts/stage-release.mjs';
-import { SECRET_PATTERNS, checkCsp, checkRelease, classifyPath, entryReferences, parseHeaders } from '../scripts/check-release.mjs';
+import { SECRET_EXEMPT_FILES, SECRET_PATTERNS, checkCsp, checkRelease, classifyPath, entryReferences, isSecretExempt, parseHeaders } from '../scripts/check-release.mjs';
 import {
   SECRET_MARK, boot, byClass, captureConsole, domText, leaks, live, rest, secrets, sharedFragment, until,
 } from './fixtures/scenarios.mjs';
@@ -171,6 +171,43 @@ test('personal key: memory only unless the user opts in; the remembered copy liv
   assert.deepEqual(console_.calls, []);
 });
 
+test('built-in key: a device with none of its own starts on the shipped key, never stores it, and a stored key still wins', async (t) => {
+  const console_ = captureConsole();
+  t.after(console_.restore);
+  const builtin = `${secrets.personal}-BUILT-IN`;
+  const builtinKey = (providerId) => (providerId === 'gemini' ? builtin : null);
+
+  // A first run with no stored key: the shipped key is selected and usable,
+  // and it is a session value — nothing about it reaches localStorage.
+  const shipped = await boot({ builtinKey });
+  assert.deepEqual(shipped.app.config.keyStore.getSelection(), { providerId: 'gemini', keySource: 'personal' });
+  assert.equal(shipped.app.config.keyStore.getMetadata('gemini', 'personal').remembered, false);
+  assert.equal(shipped.storage.has(KEY_SLOT), false, 'the built-in key is never written to storage');
+  assert.deepEqual([...shipped.storage.keys()].filter((name) => name.includes('personal-key')), []);
+  shipped.gemini.script.push(rest.translation());
+  shipped.setVoiceOutput('off');
+  assert.equal((await shipped.submitText('사과 12개').done).phase, TURN_PHASE.COMPLETED);
+  assert.equal(shipped.gemini.calls[0].headers['x-goog-api-key'], builtin);
+  assert.equal(shipped.text().includes(builtin), false, 'the built-in key never reaches the DOM');
+  await shipped.close();
+
+  // A key the person stored on this device outranks the shipped one.
+  const own = await boot({ builtinKey, storage: { [KEY_SLOT]: secrets.personal } });
+  own.gemini.script.push(rest.translation());
+  own.setVoiceOutput('off');
+  assert.equal((await own.submitText('사과 12개').done).phase, TURN_PHASE.COMPLETED);
+  assert.equal(own.gemini.calls[0].headers['x-goog-api-key'], secrets.personal);
+  assert.equal(own.el('settings-key-status').getAttribute('data-key'), 'remembered');
+  await own.close();
+
+  // A build that ships no key behaves exactly as before this file existed.
+  const none = await boot({ builtinKey: () => null });
+  assert.equal(none.app.config.keyStore.getMetadata('gemini', 'personal'), null);
+  assert.equal(none.el('settings-key-status').getAttribute('data-key'), 'none');
+  await none.close();
+  assert.deepEqual(console_.calls, []);
+});
+
 test('errors carry codes only: provider messages, fragments, socket close reasons and thrown values never keep a key', () => {
   const marker = `${secrets.shared} ${SECRET_MARK}`;
   const remote = normalizeGeminiError({ status: 429, headers: new Headers({ 'retry-after': '5' }),
@@ -221,7 +258,10 @@ test('no logging and no dynamic code: shipped sources never touch console, eval,
         assert.ok(documentationFiles.has(file), `${file} hard-codes the documentation link ${match[0]}`);
       }
     }
-    assert.equal(SECRET_PATTERNS.some((pattern) => pattern.test(code)), false, `${file} is key-shaped clean`);
+    // Owner decision (2026-09-07): the built-in key file is the single
+    // reviewed place a credential may appear (scripts/check-release.mjs
+    // SECRET_EXEMPT_FILES). Every other source stays key-shaped clean.
+    assert.equal(SECRET_PATTERNS.some((pattern) => pattern.test(code)), SECRET_EXEMPT_FILES.includes(file), `${file} is key-shaped clean`);
     assert.equal(code.includes(SECRET_MARK), false, `${file} carries no test marker`);
   }
   const html = await readFile(join(repoRoot, 'index.html'), 'utf8');
@@ -282,8 +322,11 @@ test('release: staging the repository ships only the allowlist, passes check-rel
     const text = (await readFile(join(out, file))).toString('latin1');
     assert.equal(text.includes(SECRET_MARK), false, `${file} carries no test marker`);
     assert.equal(text.includes(secrets.personal) || text.includes(secrets.shared), false, file);
-    assert.equal(SECRET_PATTERNS.some((pattern) => pattern.test(text)), false, `${file} is key-shaped clean`);
+    assert.equal(SECRET_PATTERNS.some((pattern) => pattern.test(text)), isSecretExempt(file), `${file} is key-shaped clean`);
   }
+  // The staged release announces the built-in key instead of hiding it.
+  assert.deepEqual(result.notices.map((notice) => notice.code), ['RELEASE_BUILTIN_KEY']);
+  assert.ok(isSecretExempt(result.notices[0].path));
   assert.equal(files.filter((file) => file.startsWith('releases/p1-20/')).length, (await collectVersionedFiles(repoRoot)).length + 1);
 });
 
