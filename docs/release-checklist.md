@@ -297,4 +297,4 @@ cd "$ROOT" && vercel deploy --prod --yes     # 승인 뒤. 프로젝트 interp-a
 
 업로드 사본에서 `.git`·`.nojekyll`은 빼고, `vercel.json`은 check-release **뒤에** 만든다(허용 목록 밖 파일이라 앞에 두면 `RELEASE_UNEXPECTED_FILE`). 배포 후 §6 확인은 Vercel 주소로 하고, 2번(CSP 헤더)은 이제 실제로 통과해야 한다.
 
-GitHub Pages(`gai-cmd.github.io/interp-app`)는 **키 없는 빌드**만 둔다(개인 키 입력 안내가 뜨는 상태). 거기에 키가 든 릴리스를 올리면 위 스캐닝이 다시 키를 죽인다.
+GitHub Pages(`gai-cmd.github.io/interp-app`)는 **2026-09-07 12:30 폐쇄**했다(`gh-pages` `201bd43`): `index.html`은 새 주소로 즉시 이동하고, `sw.js`는 설치된 옛 앱의 worker를 대체해 캐시를 지우고 모든 내비게이션을 `https://interp-app.vercel.app/`로 302 리다이렉트한다(옛 홈 화면 아이콘도 새 앱에 도착). `releases/*`는 열린 탭을 위해 남긴다. 그 호스트에 다시 릴리스를 올리지 않는다 — 키가 든 릴리스는 스캐닝이 키를 죽이고, 키 없는 릴리스는 사람들에게 '키 없음' 화면을 보여 혼란만 준다.
