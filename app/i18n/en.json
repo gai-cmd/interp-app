@@ -604,6 +604,8 @@
   "pwa.standalone": "Running from home screen",
   "pwa.update": "Update",
   "pwa.updateAvailable": "An update is available. Finish the active interpretation before updating.",
+  "pwa.updateChecking": "Checking for a new version…",
+  "pwa.updateHint": "Refresh to the latest version",
   "pwa.version": "Version {version}",
   "pwa.web": "Running in browser",
   "quota.noPaidSwitch": "The app does not switch to paid use automatically.",

@@ -604,6 +604,8 @@
   "pwa.standalone": "홈 화면에서 실행",
   "pwa.update": "업데이트",
   "pwa.updateAvailable": "새 버전이 있어요. 진행 중인 통역을 마친 뒤 업데이트하세요.",
+  "pwa.updateChecking": "새 버전을 확인하고 있어요…",
+  "pwa.updateHint": "최신 버전으로 새로 고침",
   "pwa.version": "버전 {version}",
   "pwa.web": "웹 브라우저 실행",
   "quota.noPaidSwitch": "유료 이용으로 자동 전환하지 않아요.",

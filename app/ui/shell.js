@@ -67,7 +67,7 @@ function element(doc, tag, { className, attributes = {} } = {}) {
  * injected window offers it; otherwise the stacked order stands.
  */
 export function mount({ root, i18n, engine, document: doc = root?.ownerDocument, window: win = null,
-  listenEngines, hubs = [], getKeyMetadata = null, beforeTabChange, initialTab = DEFAULT_TAB, onTabChange = null,
+  listenEngines, hubs = [], getKeyMetadata = null, onUpdate = null, beforeTabChange, initialTab = DEFAULT_TAB, onTabChange = null,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof engine?.state?.subscribe !== 'function') {
     throw new Error('INVALID_REQUEST');
@@ -129,7 +129,15 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const settingsButton = element(doc, 'button', { className: 'btn btn-secondary shell-settings-button',
     attributes: { type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-controls': 'shell-settings' } });
   bind.text(settingsButton, 'common.settings');
-  actions.append(homeButton, languages, displayButton, shareButton, settingsButton);
+  // Owner (2026-09-07): an always-visible way to get the current version — a
+  // stale installed shell must never need a reinstall. The app decides what
+  // it does (pwa.forceUpdate); the shell only offers the button.
+  const updateButton = element(doc, 'button', { className: 'btn btn-secondary shell-update-button', attributes: { type: 'button' } });
+  bind.text(updateButton, 'pwa.update');
+  bind.attribute(updateButton, 'aria-label', 'pwa.updateHint');
+  updateButton.hidden = typeof onUpdate !== 'function';
+  listen(updateButton, 'click', () => { if (typeof onUpdate === 'function') attempt(() => onUpdate()); });
+  actions.append(homeButton, languages, displayButton, shareButton, settingsButton, updateButton);
   header.append(title, badges, actions);
 
   // Live regions: store notices (dismissable) and short shell messages.
@@ -525,7 +533,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     elements: Object.freeze({ header, providerBadge, modeBadge, connectionBadge, settingsButton, notice, noticeClose, message, firstRun,
       tabs, tabButtons: Object.freeze({ ...tabButtons }),
       // P3-15: the action row, the language toggle and the display/share entry points.
-      actions, languages, languageButtons: Object.freeze({ ...languageButtons }), homeButton, displayButton, shareButton,
+      actions, languages, languageButtons: Object.freeze({ ...languageButtons }), homeButton, displayButton, shareButton, updateButton,
       panels: Object.freeze({ sequential: panels.sequential, simultaneous: panels.simultaneous, settings, settingsBody, settingsClose,
         display, displayBody, displayClose,
         share, shareClose, shareURL, shareCopy, shareStatus, shareImage, shareDeployment }) }),

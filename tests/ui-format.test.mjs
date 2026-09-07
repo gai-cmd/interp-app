@@ -882,7 +882,9 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   assert.deepEqual(classNames(header), ['shell-title', 'shell-badges', 'shell-actions']);
   assert.deepEqual(classNames(h.shell.elements.actions),
     ['btn btn-secondary shell-home-button', 'shell-languages', 'btn btn-secondary shell-display-button',
-      'btn btn-secondary share-button', 'btn btn-secondary shell-settings-button']);
+      'btn btn-secondary share-button', 'btn btn-secondary shell-settings-button', 'btn btn-secondary shell-update-button']);
+  // The update button exists only when the app wires it (owner, 2026-09-07); this harness does not.
+  assert.equal(h.shell.elements.updateButton.hidden, true);
   const languages = h.shell.elements.languages;
   assert.equal(languages.getAttribute('role'), 'group');
   assert.equal(languages.getAttribute('aria-label'), ko['language.ui']);
@@ -931,6 +933,21 @@ test('P3-15 header: title, badges, then KO EN JA · display · share · settings
   assert.equal(h.doc.activeElement, h.shell.elements.displayButton);
   assert.deepEqual(SETTINGS_TARGETS, ['key', 'display']);
   assert.deepEqual(h.engine.calls, []);
+});
+
+test('the header update button appears only when the app wires it, reads "update", and reports the press', () => {
+  let presses = 0;
+  const h = harness({ onUpdate: () => { presses++; } });
+  const button = h.shell.elements.updateButton;
+  assert.equal(button.hidden, false);
+  assert.equal(button.textContent, ko['pwa.update']);
+  assert.equal(button.getAttribute('aria-label'), ko['pwa.updateHint']);
+  assert.equal(h.shell.elements.actions.childNodes.at(-1), button, 'last in the action row');
+  button.dispatch('click');
+  assert.equal(presses, 1);
+  assert.deepEqual(h.engine.calls, [], 'pressing update starts no interpretation');
+  h.shell.setLanguage('ja');
+  assert.equal(button.textContent, dictionaries.ja['pwa.update']);
 });
 
 test('P3-15 language toggle: one change path updates text, lang, title and listeners; the interpretation pair, an active turn and the live connection stay', () => {

@@ -74,7 +74,7 @@ import { createHubListenEngine } from './engine/hub-listen.js';
 import { createHubClient, createHubControl } from './hub/client.js';
 import { REGISTERED_HUBS, validateRoomCode } from './hub/protocol.js';
 import { resolveEffective } from './policy/resolve.js';
-import { createPwa, createPwaControls, UPDATE_KEYS } from './pwa.js';
+import { createPwa, createPwaControls, UPDATE_KEYS, UPDATE_RESULT } from './pwa.js';
 
 // UI settings live in localStorage per device (§11.1); keys are ours alone.
 export const UI_LANGUAGE_STORAGE_KEY = 'interp-app.ui.v1.language';
@@ -627,6 +627,16 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
     shell = mount({ root, i18n, engine: gatedEngine, listenEngines, hubs,
       getKeyMetadata: ({ providerId, keySource }) => config.keyStore.getMetadata(providerId, keySource),
+      // Header update button (owner, 2026-09-07): check, apply or reload; a
+      // running interpretation is told to finish first, like the settings button.
+      onUpdate: () => {
+        if (busy()) { notify(UPDATE_KEYS.active); return; }
+        notify('pwa.updateChecking');
+        pwa.forceUpdate().then((outcome) => {
+          if (outcome.result === UPDATE_RESULT.ACTIVE) notify(UPDATE_KEYS.active);
+          else if (outcome.result === UPDATE_RESULT.OTHER_TABS) notify(UPDATE_KEYS.otherTabs);
+        }, () => {});
+      },
       beforeTabChange: stopWork, document: doc, window: win, ...timing,
       // The last tab is remembered per device; the first visit opens simultaneous interpretation.
       // Owner, 2026-09-06: every launch opens on simultaneous interpretation.

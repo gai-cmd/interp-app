@@ -73,7 +73,7 @@ export function versionOf(reply) {
 /**
  * createPwa({ window, navigator?, document?, isBusy?, setTimeout?, clearTimeout?,
  *   replyTimeoutMs?, autoApply? }) returns { supported, register(), getVersion(),
- * countClients(), applyUpdate(), reloadIfPending(), promptInstall(),
+ * countClients(), applyUpdate(), forceUpdate(), reloadIfPending(), promptInstall(),
  * snapshot(), subscribe(listener), close() }. isBusy() reports whether an
  * interpretation turn or a diagnostic check is running; while it is true no
  * update applies and no unrequested controller change reloads the page.
@@ -258,6 +258,26 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
         state.applying = false;
         notify();
       }
+    },
+    /**
+     * Owner (2026-09-07): the header's "update" button. Asks the browser for a
+     * fresh worker now, applies it when one is waiting (same refusals as the
+     * button in settings), and otherwise reloads the page so a stale shell
+     * cannot outlive a deploy. Resolves { result } from UPDATE_RESULT plus
+     * 'reloaded' when nothing was waiting and the page reloads itself.
+     */
+    async forceUpdate() {
+      if (isBusy()) return Object.freeze({ result: UPDATE_RESULT.ACTIVE });
+      if (registration && typeof registration.update === 'function') {
+        try { await Promise.race([Promise.resolve(registration.update()), new Promise((r) => schedule(r, replyTimeoutMs))]); } catch { /* A failed check is not an error to show. */ }
+        if (!waiting && registration.waiting) setWaiting(registration.waiting);
+        // The new worker may still be installing: give it the reply window to reach 'installed'.
+        if (!waiting && registration.installing) await new Promise((r) => schedule(r, replyTimeoutMs));
+      }
+      if (waiting) return api.applyUpdate();
+      if (!supported) { reload(); return Object.freeze({ result: 'reloaded' }); }
+      reload();
+      return Object.freeze({ result: 'reloaded' });
     },
     // Called by the app when interpretation ends; reloads a deferred controller change.
     reloadIfPending() {

@@ -301,6 +301,43 @@ test('autoApply: a waiting worker applies itself when idle and alone, waits for 
   off.pwa.close();
 });
 
+// Owner (2026-09-07): the header update button. Check, apply when something
+// waits, otherwise reload; never while interpreting.
+test('forceUpdate: asks the browser for a fresh worker, applies a waiting one, reloads when nothing waits, and refuses while busy', async () => {
+  const controller = createWorker({ id: 'r-1' });
+  // Nothing waiting: the check runs and the page reloads itself.
+  const plain = createRegistration({ active: controller });
+  let updates = 0; plain.update = async () => { updates += 1; };
+  const env = createEnvironment({ controller, registration: plain });
+  await env.pwa.register();
+  const pending = env.pwa.forceUpdate();
+  env.timers.run();
+  assert.deepEqual(await pending, { result: 'reloaded' });
+  assert.equal(updates, 1);
+  assert.equal(env.win.location.reloads, 1);
+  env.pwa.close();
+  // A worker waiting: the ordinary apply path, then the controller change reloads.
+  const waiting = createWorker({ id: 'r-2', state: 'installed', clients: 1 });
+  const ready = createRegistration({ waiting, active: controller });
+  ready.update = async () => {};
+  const again = createEnvironment({ controller, registration: ready });
+  await again.pwa.register();
+  const applied = again.pwa.forceUpdate();
+  again.timers.run();
+  assert.deepEqual(await applied, { result: UPDATE_RESULT.APPLIED, release: 'r-2' });
+  assert.equal(waiting.calls.skipWaiting, 1);
+  assert.equal(again.win.location.reloads, 0, 'the reload waits for controllerchange');
+  again.container.dispatch('controllerchange');
+  assert.equal(again.win.location.reloads, 1);
+  again.pwa.close();
+  // Busy: nothing is checked, nothing reloads.
+  const busy = createEnvironment({ controller, registration: createRegistration({ active: controller }), busy: true });
+  await busy.pwa.register();
+  assert.deepEqual(await busy.pwa.forceUpdate(), { result: UPDATE_RESULT.ACTIVE });
+  assert.equal(busy.win.location.reloads, 0);
+  busy.pwa.close();
+});
+
 test('a controller change this page did not request reloads only when idle; reloadIfPending completes it later', async () => {
   const controller = createWorker({ id: 'r-1' });
   const env = createEnvironment({ controller, registration: createRegistration({ active: controller }), busy: true });

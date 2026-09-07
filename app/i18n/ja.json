@@ -604,6 +604,8 @@
   "pwa.standalone": "ホーム画面から実行中",
   "pwa.update": "更新",
   "pwa.updateAvailable": "新しいバージョンがあります。実行中の通訳を終えてから更新してください。",
+  "pwa.updateChecking": "新しいバージョンを確認しています…",
+  "pwa.updateHint": "最新バージョンに更新",
   "pwa.version": "バージョン{version}",
   "pwa.web": "ブラウザーで実行中",
   "quota.noPaidSwitch": "有料利用には自動で切り替えません。",
