@@ -535,3 +535,64 @@ test('P3-34 the policy export carries no key, and the generator is the only plac
     assert.equal(source.includes('key-store'), false, `${file} does not read the app's keys`);
   }
 });
+
+test('P3-44 first visit starts Live from the UI with a protected site default and no persistence permission', async t => {
+  const captured = captureConsole(); t.after(captured.restore);
+  const { scenarioPolicy } = await import('./fixtures/scenarios.mjs');
+  const b = await boot({ builtinKey: () => secrets.personal,
+    policy: scenarioPolicy(policy => {
+      policy.features.sharedKeys = false;
+      policy.features.rememberPersonalKey = false;
+    }) });
+  t.after(() => b.close());
+  const keys = b.app.config.keyStore;
+  assert.equal(b.el('settings-key-status').getAttribute('data-key'), 'builtin');
+  assert.equal(b.app.shell.elements.modeBadge.textContent, b.app.i18n.t('mode.builtin'));
+  assert.equal(b.el('settings-key-input').value, '');
+  assert.equal(b.el('settings-key-toggle').hidden, true);
+  assert.equal(b.el('settings-key-delete').disabled, true);
+  assert.equal(b.el('billing-builtin').hidden, false);
+  assert.equal(keys.revealPersonal('gemini'), null);
+  b.el('settings-key-toggle').dispatch('click');
+  keys.deleteKey('gemini', 'personal');
+  assert.equal(keys.getMetadata('gemini', 'personal').builtin, true);
+  assert.equal(leaks(observable(b)), false);
+  assert.equal(b.gemini.discoveryCalls.length, 1);
+  assert.equal(b.gemini.discoveryCalls[0].headers['x-goog-api-key'], secrets.personal);
+  assert.equal(leaks(b.gemini.discoveryCalls.map(c => c.url)), false);
+  assert.equal(b.app.shell.elements.firstRun.hidden, true);
+  assert.equal(b.el('sim-open-settings')?.hidden ?? true, true);
+  b.el('sim-start').dispatch('click');
+  await until(() => b.audio.nodes.at(-1)?.port.onmessage);
+  assert.equal(b.microphone.streams.length, 1);
+  b.microphone.feed(new Float32Array(4096).fill(0.1));
+  await until(() => b.sockets.length === 1);
+  live.ready(b.sockets[0]);
+  await until(() => b.app.listenEngines.direct.snapshot().status === 'running');
+  // Browser WebSocket authentication is the pre-existing, reviewed URL carrier.
+  assert.equal(b.socketURLs[0], `${LIVE_ENDPOINT}?key=${encodeURIComponent(secrets.personal)}`);
+  b.el('sim-caption-only').dispatch('click');
+  b.el('sim-fs-home').dispatch('click');
+  assert.equal(b.sockets[0].closeCalls, 0);
+  assert.equal(b.app.listenEngines.direct.snapshot().status, 'running');
+  assert.equal(b.doc.activeElement, b.app.shell.elements.tabButtons.simultaneous);
+  for (const open of ['openSettings', 'openDisplay', 'openShare']) {
+    b.app.shell[open]();
+    const sheet = allElements(b.root).find(n => n.getAttribute('role') === 'dialog' && !n.hidden);
+    byClass(sheet, 'sheet-home').dispatch('click');
+    assert.equal(sheet.hidden, true);
+    assert.equal(b.sockets[0].closeCalls, 0);
+  }
+  b.sockets[0].json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: secrets.personal } });
+  await until(() => !b.app.listenEngines.direct.snapshot().busy);
+  assert.equal(leaks({ observed: observable(b), usage: b.app.usage.snapshot(), logs: captured.calls }), false);
+  assert.equal(leaks([...b.storage]), false);
+  b.enterPersonalKey({ key: secrets.shared, remember: true });
+  assert.equal(b.storage.has(KEY_SLOT), false, 'policy forbids remembering even a checked input');
+  assert.equal(keys.getMetadata('gemini', 'personal').builtin, undefined);
+  b.el('settings-key-delete').dispatch('click');
+  b.el('settings-key-delete-confirm').dispatch('click');
+  assert.equal(keys.getMetadata('gemini', 'personal').builtin, true);
+  assert.equal(b.el('billing-builtin').hidden, false);
+  assert.equal(leaks(observable(b)), false);
+});

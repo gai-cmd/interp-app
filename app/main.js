@@ -379,21 +379,12 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
         startupNotices.push(`error.${redact(error).code}`);
       }
     }
-    // Owner decision (2026-09-07): a device that has none of its own falls
-    // back to the key this build ships (app/security/builtin-key.js), so a
-    // phone opening the site for the first time can start straight away.
-    // It goes in through the ordinary personal path — same key store, same
-    // router, same credential boundary — and is never written to storage, so
-    // a key the person types replaces it and a reload restores this one.
-    // Only an empty slot is filled: a stored personal key (loaded just above)
-    // and a shared event key both win over it.
-    if (attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'personal')) == null
-      && attempt(() => config.keyStore.getMetadata(PROVIDER_ID, 'shared')) == null) {
-      const builtin = typeof builtinKey === 'function' ? builtinKey(PROVIDER_ID) : null;
-      if (builtin) {
-        try { config.keyStore.setPersonal(PROVIDER_ID, builtin, { remember: false }); }
-        catch (error) { startupNotices.push(`error.${redact(error).code}`); }
-      }
+    // Register the memory-only fallback without accessing browser storage.
+    // Existing personal and shared credentials retain priority.
+    const builtin = typeof builtinKey === 'function' ? builtinKey(PROVIDER_ID) : null;
+    if (builtin) {
+      try { config.keyStore.setBuiltin(PROVIDER_ID, builtin); }
+      catch (error) { startupNotices.push(`error.${redact(error).code}`); }
     }
 
     // 4. Audio: one 24 kHz context, created and resumed inside a user gesture.
@@ -607,6 +598,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     hubEngine = createHubListenEngine({ client: listenClient, deviceTTS: hubTTS, ...timing });
     listenEngines = { direct: ownedListener(simEngine, 'sim'), hub: ownedListener(hubEngine, 'hub') };
     shell = mount({ root, i18n, engine: gatedEngine, listenEngines, hubs,
+      getKeyMetadata: ({ providerId, keySource }) => config.keyStore.getMetadata(providerId, keySource),
       beforeTabChange: stopWork, document: doc, window: win, ...timing,
       // The last tab is remembered per device; the first visit opens simultaneous interpretation.
       // Owner, 2026-09-06: every launch opens on simultaneous interpretation.
@@ -654,7 +646,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     const version = await pwa.getVersion();
     const standalone = pwa.snapshot().standalone;
     settingsView = createSettingsView({ shell, i18n, config, engine: gatedEngine, diagnostics: gatedDiagnostics, document: doc, persistence: storage !== null,
-      app: { ...(version ? { version } : {}), standalone }, getDeviceVoices, simEngine,
+      app: { ...(version ? { version } : {}), standalone }, getDeviceVoices, simEngine, policy: policyRuntime, preferences,
       metrics: { snapshot: () => simEngine.snapshot().metrics,
         subscribe: fn => simEngine.subscribe(() => fn()) } });
     controls = createPwaControls({ root: settingsView.elements.appActions, document: doc, i18n, shell, pwa, notify });
@@ -754,7 +746,11 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       if (closed || !simEngine || busy()) return;
       const selection = attempt(() => config.keyStore.getSelection());
       if (!selection || selection.keySource !== 'personal') return;
-      const key = attempt(() => config.keyStore.revealPersonal(selection.providerId));
+      const key = attempt(() => {
+        const route = { ...selection, transport: 'direct' };
+        const credential = config.keyStore.getCredentialRef(route);
+        return config.keyStore.resolveCredential(credential.reference, route);
+      });
       if (typeof key !== 'string' || !key || key === discoveryKey) return;
       discoveryKey = key;
       const found = await discoverLiveModels({ fetch: win.fetch?.bind(win), key });

@@ -97,7 +97,8 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
   const primaryHost = node('div', 'caption-board-primary', board);
   if (primary) primaryHost.append(primary);
   // Always-visible home slot: outside the bar, so BAR_HIDE_MS never takes it away.
-  const homeHost = node('div', 'caption-board-home', board);
+  const footer = node('div', 'caption-board-footer', board);
+  const homeHost = node('div', 'caption-board-home', footer);
   if (home) homeHost.append(home);
   const gaps = Object.fromEntries(['input', 'audio', 'reception'].map(cause =>
     [cause, node('p', `caption-board-gap sim-gap-${cause}`, board, `sim.gap.${cause}`, { role: 'status' })]));
@@ -108,6 +109,8 @@ export function createCaptionBoard({ parent, i18n, document: doc = parent?.owner
   const announcement = node('p', 'sr-only sim-announcement', board, null, { 'aria-live': 'polite', 'aria-atomic': 'true' });
   const latest = node('button', 'btn btn-secondary sim-latest', board, 'sim.captions.latest', { type: 'button' });
   latest.hidden = true;
+  footer.append(latest, homeHost);
+  board.append(footer);
 
   function applySize() {
     attempt(() => board.style.setProperty('--caption-size', `${size}rem`));

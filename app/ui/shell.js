@@ -67,7 +67,7 @@ function element(doc, tag, { className, attributes = {} } = {}) {
  * injected window offers it; otherwise the stacked order stands.
  */
 export function mount({ root, i18n, engine, document: doc = root?.ownerDocument, window: win = null,
-  listenEngines, hubs = [], beforeTabChange, initialTab = DEFAULT_TAB, onTabChange = null,
+  listenEngines, hubs = [], getKeyMetadata = null, beforeTabChange, initialTab = DEFAULT_TAB, onTabChange = null,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   if (!root || !doc || typeof i18n?.t !== 'function' || typeof engine?.state?.subscribe !== 'function') {
     throw new Error('INVALID_REQUEST');
@@ -225,6 +225,11 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const settingsClose = element(doc, 'button', { className: 'btn btn-secondary shell-settings-close', attributes: { type: 'button' } });
   bind.text(settingsClose, 'common.close');
   settingsHeader.append(settingsTitle, settingsClose);
+  const settingsHome = element(doc, 'button', { className: 'btn btn-secondary sheet-home', attributes: { type: 'button' } });
+  bind.text(settingsHome, 'common.home');
+  bind.attribute(settingsHome, 'aria-label', 'common.homeHint');
+  listen(settingsHome, 'click', goHome);
+  settingsHeader.append(settingsHome);
   const settingsBody = element(doc, 'div', { className: 'shell-settings-body sheet-body' });
   settings.append(settingsHeader, settingsBody);
   const inertTargets = [header, notice, message, firstRun, tabs, main];
@@ -264,6 +269,11 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const displayClose = element(doc, 'button', { className: 'btn btn-secondary shell-display-close', attributes: { type: 'button' } });
   bind.text(displayClose, 'common.close');
   displayHeader.append(displayTitle, displayClose);
+  const displayHome = element(doc, 'button', { className: 'btn btn-secondary sheet-home', attributes: { type: 'button' } });
+  bind.text(displayHome, 'common.home');
+  bind.attribute(displayHome, 'aria-label', 'common.homeHint');
+  listen(displayHome, 'click', goHome);
+  displayHeader.append(displayHome);
   const displayBody = element(doc, 'div', { className: 'shell-display-body sheet-body' });
   display.append(displayHeader, displayBody);
   const displaySheet = sheetGroup.register({ id: 'shell-display', element: display,
@@ -287,6 +297,11 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const shareClose = element(doc, 'button', { className: 'btn btn-secondary share-close', attributes: { type: 'button' } });
   bind.text(shareClose, 'share.close');
   shareHeader.append(shareTitle, shareClose);
+  const shareHome = element(doc, 'button', { className: 'btn btn-secondary sheet-home', attributes: { type: 'button' } });
+  bind.text(shareHome, 'common.home');
+  bind.attribute(shareHome, 'aria-label', 'common.homeHint');
+  listen(shareHome, 'click', goHome);
+  shareHeader.append(shareHome);
   const shareImage = element(doc, 'img', { className: 'share-image', attributes: { width: '720', height: '720' } });
   bind.attribute(shareImage, 'alt', 'share.imageAlt');
   const shareImageHost = element(doc, 'div', { className: 'share-image-host' });
@@ -431,7 +446,9 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     const { providerKey, modeKey } = keySelectionKeys(snapshot.keySelection);
     providerBadge.hidden = providerKey === null;
     providerBadge.textContent = providerKey ? i18n.t(resolveKey(i18n, providerKey, 'common.unknown')) : '';
-    modeBadge.textContent = i18n.t(resolveKey(i18n, modeKey));
+    const builtin = snapshot.keySelection?.keySource === 'personal'
+      && attempt(() => getKeyMetadata?.(snapshot.keySelection))?.builtin === true;
+    modeBadge.textContent = i18n.t(builtin ? 'mode.builtin' : resolveKey(i18n, modeKey));
     modeBadge.setAttribute('data-key-source', snapshot.keySelection?.keySource ?? 'none');
     renderConnection();
     renderNotice();
@@ -446,7 +463,10 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     if (destroyed) return selected;
     attempt(() => sheetGroup.closeAll());
     attempt(() => simView?.exitCaptionOnly());
-    return selectTab(DEFAULT_TAB);
+    transition++;
+    applyTab(DEFAULT_TAB);
+    attempt(() => tabButtons[DEFAULT_TAB].focus());
+    return selected;
   }
 
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });

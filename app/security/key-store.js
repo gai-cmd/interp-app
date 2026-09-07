@@ -25,6 +25,7 @@ export function createKeyStore({ registry, storage, now = Date.now,
   clearTimeout: unschedule = globalThis.clearTimeout } = {}) {
   if (!registry) throw new ProviderError('INVALID_REQUEST');
   const personal = new Map();
+  const builtins = new Map();
   const shared = new Map();
   const references = new WeakMap();
   const listeners = new Set();
@@ -90,6 +91,18 @@ export function createKeyStore({ registry, storage, now = Date.now,
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    // Built-in credentials use the personal transport, but are never UI secrets
+    // or persistent user entries. Register even when a personal key wins.
+    setBuiltin(providerId, key) {
+      address(providerId, 'personal');
+      validateKey(key);
+      const entry = { key, remembered: false, builtin: true };
+      builtins.set(providerId, entry);
+      if (personal.has(providerId) || shared.has(providerId)) return;
+      personal.set(providerId, entry);
+      if (!selection) selection = Object.freeze({ providerId, keySource: 'personal' });
+      notify('key-changed', providerId, 'personal');
+    },
     setPersonal(providerId, key, { remember = false } = {}) {
       address(providerId, 'personal');
       validateKey(key);
@@ -142,7 +155,7 @@ export function createKeyStore({ registry, storage, now = Date.now,
         // stored key so the field does not look empty on a phone. The mask
         // needs the length and nothing else, so the length — not the value —
         // is what the metadata carries.
-        ? { providerId, keySource, remembered: entry.remembered, length: entry.key.length }
+        ? { providerId, keySource, remembered: entry.remembered, length: entry.builtin ? 0 : entry.key.length, ...(entry.builtin ? { builtin: true } : {}) }
         : { providerId, keySource, version: entry.version, eventId: entry.eventId, eventName: entry.eventName,
           usageEndsAt: entry.expiresAt, administratorVerified: false, networkRestrictionVerified: false });
     },
@@ -156,7 +169,8 @@ export function createKeyStore({ registry, storage, now = Date.now,
     // (§1.12), and no reference, storage read or provider call happens here.
     revealPersonal(providerId) {
       address(providerId, 'personal');
-      return personal.get(providerId)?.key ?? null;
+      const entry = personal.get(providerId);
+      return entry?.builtin ? null : entry?.key ?? null;
     },
     getCredentialRef({ providerId, keySource, transport }, { signal } = {}) {
       address(providerId, keySource);
@@ -184,7 +198,11 @@ export function createKeyStore({ registry, storage, now = Date.now,
     },
     deleteKey(providerId, keySource) {
       address(providerId, keySource);
+      if (keySource === 'personal' && personal.get(providerId)?.builtin) return;
       mapFor(keySource).delete(providerId);
+      if (keySource === 'personal' && builtins.has(providerId) && !shared.has(providerId)) {
+        personal.set(providerId, builtins.get(providerId));
+      }
       armExpiry();
       notify('key-deleted', providerId, keySource);
       if (keySource === 'personal' && storage) persist('removeItem', providerId);
@@ -201,6 +219,7 @@ export function createKeyStore({ registry, storage, now = Date.now,
       closed = true;
       if (timer !== undefined) unschedule(timer);
       personal.clear();
+      builtins.clear();
       shared.clear();
       selection = null;
       notify('store-closed');

@@ -462,7 +462,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     keyEditing = false;
     keyRevealed = false;
     if (!value) { keyFeedbackKey = 'error.INVALID_KEY'; render(); attempt(() => keyInput.focus()); return; }
-    const remember = persistence && rememberInput.checked === true;
+    const remember = persistence && policyState?.features?.rememberPersonalKey?.enabled !== false && rememberInput.checked === true;
     // No check runs here: the user starts diagnostics explicitly (§6.2).
     try {
       keyStore.setPersonal(providerId, value, { remember });
@@ -562,6 +562,7 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   const billingSection = section('billing');
   const billingControls = block('settings-billing-controls');
   billingSection.append(billingControls);
+  const builtinBilling = note(billingControls, 'billing.builtin', 'settings-note billing-builtin');
 
   // 6. Microphone and audio devices: speech-only defaults (P3-02d). Changes
   // apply at the next capture start. P3-24/28 add permission and device controls.
@@ -694,10 +695,13 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
     keyManage.hidden = !direct;
     const personal = direct ? metadata('personal') : null;
     keyStatus.textContent = i18n.t(!direct ? 'settings.hubKey' : !personal ? 'settings.noKey'
-      : personal.remembered ? 'settings.keyStored' : 'settings.keyMemory');
-    keyStatus.setAttribute('data-key', !direct ? 'hub' : !personal ? 'none' : personal.remembered ? 'remembered' : 'memory');
+      : personal.builtin ? 'settings.keyBuiltin' : personal.remembered ? 'settings.keyStored' : 'settings.keyMemory');
+    keyStatus.setAttribute('data-key', !direct ? 'hub' : !personal ? 'none' : personal.builtin ? 'builtin' : personal.remembered ? 'remembered' : 'memory');
     renderKeyEntry();
-    deleteButton.disabled = personal === null;
+    deleteButton.disabled = personal === null || personal.builtin === true;
+    rememberInput.disabled = policyState?.features?.rememberPersonalKey?.enabled === false;
+    if (rememberInput.disabled && policyState?.policy) rememberInput.checked = false;
+    builtinBilling.hidden = personal?.builtin !== true || current?.providerId !== providerId || current?.keySource !== 'personal';
     if (deleteButton.disabled && confirmingDelete) showDeleteConfirm(false);
     // The router only honours the selected source, so the check needs it selected.
     checkButton.disabled = personal === null || current?.providerId !== providerId || current.keySource !== 'personal';

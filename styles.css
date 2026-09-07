@@ -905,12 +905,11 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
    frame. The top bar hides itself after three seconds, so this button sits
    outside the bar and never goes with it. Visibility is the `hidden` attribute
    the board sets; these rules only place it. */
-.caption-board[data-caption-only="true"] .caption-board-home {
-  position: absolute;
-  right: calc(var(--gap) + env(safe-area-inset-right));
-  bottom: calc(var(--gap) + env(safe-area-inset-bottom));
-  z-index: 1;
+.caption-board-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-2); flex-shrink: 0; }
+.caption-board[data-caption-only="true"] .caption-board-footer {
+  padding: var(--space-2) calc(var(--gap) + env(safe-area-inset-right)) env(safe-area-inset-bottom) calc(var(--gap) + env(safe-area-inset-left));
 }
+.caption-board-home { margin-inline-start: auto; }
 .caption-board[data-caption-only="true"] .sim-fs-home {
   min-height: var(--touch);
   border-color: var(--border);
@@ -960,12 +959,6 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 }
 .caption-board[data-caption-only="true"] .sim-caption[data-status="partial"] { padding-inline-start: var(--space-2); }
 .caption-board[data-caption-only="true"] .sim-caption[data-status="interrupted"] { padding-inline-start: var(--space-2); }
-.caption-board[data-caption-only="true"] .sim-latest {
-  position: absolute;
-  bottom: calc(var(--gap) + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
-}
 /* Board display modes reuse the current tone's light/dark sets from §1 and the
    §10 mono high-contrast set (black background, white text), scoped to the
    board only. The alias is re-declared so it follows the board's own tokens. */

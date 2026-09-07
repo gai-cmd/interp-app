@@ -52,7 +52,8 @@ test('home is one path: it closes the open sheet, leaves the captions-only frame
   // own path is what a caller reaches, and it takes the sheet down with it.
   b.openSheet('display');
   assert.equal(b.openSheetId(), 'display');
-  shell.goHome();
+  byClass(byClass(b.root, 'shell-display'), 'sheet-home').dispatch('click');
+  assert.equal(b.doc.activeElement, shell.elements.tabButtons.simultaneous);
   await until(() => shell.selectedTab === 'simultaneous');
   assert.equal(b.openSheetId(), null);
   assert.equal(b.inertCount(), false, 'no inert survives going home');
@@ -64,6 +65,7 @@ test('home is one path: it closes the open sheet, leaves the captions-only frame
   assert.equal(shell.simView.board.captionOnly, true);
   byClass(b.root, 'sim-fs-home').dispatch('click');
   assert.equal(shell.simView.board.captionOnly, false, 'the frame is down');
+  assert.equal(b.doc.activeElement, shell.elements.tabButtons.simultaneous);
   assert.equal(shell.selectedTab, 'simultaneous');
   assert.equal(b.openSheetId(), null);
   assert.equal(b.gemini.calls.length, calls, 'going home is navigation, not a stop');
@@ -135,4 +137,26 @@ test('the verification document still marks the layout rows as manual', async ()
   assert.match(doc, /Node 테스트의 모의 DOM/, 'the document states what the mock cannot prove');
   // And the hub live control is fixture-only until a server implements it.
   assert.match(doc, /fixture 검증까지만/);
+});
+
+test('P3-44 caption home reserves footer space and shares accessible theme and touch tokens', async t => {
+  const b = await bootP3(); t.after(() => b.app.close());
+  const home = byClass(b.root, 'sim-fs-home');
+  const latest = byClass(b.root, 'sim-latest');
+  const footer = byClass(b.root, 'caption-board-footer');
+  assert.equal(home.parentNode.parentNode, footer);
+  assert.equal(latest.parentNode, footer);
+  assert.equal(footer.contains(byClass(b.root, 'caption-board-primary')), false);
+  assert.equal(byClass(b.root, 'caption-board-bar').contains(home), false);
+  const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  const footerRule = css.match(/\.caption-board-footer\s*\{([^}]+)\}/)[1];
+  assert.match(footerRule, /display:\s*flex/);
+  assert.match(footerRule, /flex-wrap:\s*wrap/);
+  assert.match(footerRule, /flex-shrink:\s*0/);
+  assert.doesNotMatch(css, /\.caption-board\[data-caption-only="true"\] \.(?:sim-latest|caption-board-home)\s*\{[^}]*position:\s*absolute/);
+  assert.match(css, /--touch:\s*44px/);
+  const buttonRule = css.match(/\.btn\s*\{([^}]+)\}/)[1];
+  for (const property of ['min-height', 'min-width']) assert.ok(buttonRule.includes(`${property}: var(--touch)`));
+  assert.ok(buttonRule.includes('color: var(--text)'));
+  assert.ok(buttonRule.includes('background: var(--surface)'));
 });

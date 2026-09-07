@@ -323,3 +323,45 @@ test('real P1-02 router passes only opaque refs and adapter resolves the selecte
   assert.equal((await router.call('translate', textRequest(), context())).status, 'ok');
   store.dispose();
 });
+
+test('P3-44 built-in fallback avoids storage, protects reveal and deletion, and invalidates replaced references', () => {
+  const { store } = setup({ storage: {
+    getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }, removeItem() { throw new Error('blocked'); },
+  } });
+  store.setBuiltin('alpha', personalKey);
+  assert.equal(store.revealPersonal('alpha'), null);
+  const ref = store.getCredentialRef(address());
+  store.deleteKey('alpha', 'personal');
+  assert.equal(store.resolveCredential(ref.reference, address()), personalKey);
+  noSecret(store.getMetadata('alpha', 'personal'));
+  store.dispose();
+
+  const storage = memoryStorage();
+  const b = setup({ storage }).store;
+  b.setPersonal('alpha', sharedKey, { remember: true });
+  b.setBuiltin('alpha', personalKey);
+  assert.equal(b.revealPersonal('alpha'), sharedKey);
+  const old = b.getCredentialRef(address());
+  b.deleteKey('alpha', 'personal');
+  assert.equal(storage.data.size, 0);
+  assert.equal(b.getMetadata('alpha', 'personal').builtin, true);
+  assert.throws(() => b.resolveCredential(old.reference, address()), { code: 'CREDENTIAL_MISMATCH' });
+  const current = b.getCredentialRef(address());
+  assert.equal(b.resolveCredential(current.reference, address()), personalKey);
+  b.dispose();
+});
+
+test('P3-44 shared credentials keep priority and never silently fall back after expiry or deletion', () => {
+  const { store } = setup();
+  store.receiveSharedFragment(fragment());
+  store.setBuiltin('alpha', personalKey);
+  assert.equal(store.getMetadata('alpha', 'personal'), null);
+  store.select('alpha', 'shared');
+  store.setPersonal('alpha', personalKey);
+  store.deleteKey('alpha', 'personal');
+  assert.equal(store.getMetadata('alpha', 'personal'), null);
+  store.endShared('alpha');
+  assert.equal(store.getSelection().keySource, 'shared');
+  assert.throws(() => store.getCredentialRef(address('alpha', 'shared')), { code: 'CREDENTIAL_REQUIRED' });
+  store.dispose();
+});

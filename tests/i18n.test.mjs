@@ -541,7 +541,7 @@ test('P3-03 display, key guidance, permission, device, billing and section strin
       // P3-28: what actually happened to an output choice, so the UI never
       // shows a success line before the browser confirmed the switch.
       'outputApplying', 'outputApplied'].map(k => `device.${k}`),
-    ...['title', 'planLabel', 'displayOnly', 'mayDiffer', 'perProvider', 'keyChanged', 'freeShowsTime', 'paidShowsCost',
+    ...['title', 'planLabel', 'displayOnly', 'mayDiffer', 'perProvider', 'keyChanged', 'builtin', 'freeShowsTime', 'paidShowsCost',
       'usageTime', 'usageMinutes', 'usageHint', 'byCapability', 'estimatedCost', 'estimateAlways', 'formula', 'scope',
       'rates', 'perMinute', 'rateSource', 'ratesRevision', 'verifiedAt', 'rateMissing', 'rateMissingHint', 'notZero',
       'hubExcluded', 'sharedExcluded', 'rateFixed', 'noDoubleCount', 'localRate', 'localRateHint', 'tokenNotIncluded']
