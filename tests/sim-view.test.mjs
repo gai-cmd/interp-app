@@ -495,17 +495,49 @@ test('the captions-only home button outlives the auto-hiding bar, only reports t
   assert.deepEqual(presses, ['home']);
   assert.equal(f.view.board.captionOnly, true, 'the view reports the press; the shell decides what home means');
   assert.equal(f.bar.hidden, true, 'pressing home does not toggle the bar back on');
-  assert.equal(f.direct.calls.length, calls, 'going home starts and stops nothing');
+  const lifecycle = () => f.direct.calls.filter(([name]) => name !== 'mute').length;
+  assert.equal(lifecycle(), calls, 'going home starts and stops nothing');
 
   // exitCaptionOnly is the shell's half of the same path, and is idempotent.
   assert.equal(f.view.exitCaptionOnly(), false);
   assert.equal(f.view.board.captionOnly, false);
   assert.equal(host.hidden, true);
   assert.equal(f.view.exitCaptionOnly(), false);
-  assert.equal(f.direct.calls.length, calls);
+  assert.equal(lifecycle(), calls);
   f.view.destroy();
 });
 
+
+test('the captions-only frame is silent: entering mutes, leaving restores only a sound that was on, and a start from the frame is muted', () => {
+  const f = setup();
+  f.get('start').dispatch('click');
+  f.direct.state.setOutput('ready');
+  f.get('caption-only').dispatch('click');
+  assert.deepEqual(f.direct.calls.at(-1), ['mute', true], 'entering the frame mutes the session');
+  assert.equal(f.get('fs-sound').hidden, true, 'the frame offers no sound control');
+  f.get('fs-sound').dispatch('click');
+  assert.deepEqual(f.direct.calls.at(-1), ['mute', true], 'a stray press cannot unmute inside the frame');
+  f.get('caption-only').dispatch('click');
+  assert.deepEqual(f.direct.calls.at(-1), ['mute', false], 'leaving restores the sound that was on');
+  assert.equal(f.get('fs-sound').hidden, false);
+
+  // Sound that was already off stays off after the frame.
+  f.get('sound').dispatch('click');
+  assert.equal(f.direct.snapshot().output, 'muted');
+  const before = f.direct.calls.length;
+  f.get('caption-only').dispatch('click');
+  f.get('caption-only').dispatch('click');
+  assert.deepEqual(f.direct.calls.slice(before), [['mute', true]], 'no unmute for a session that was muted before');
+  assert.equal(f.direct.snapshot().output, 'muted');
+
+  // A session started from inside the frame asks for silence up front.
+  f.get('stop').dispatch('click');
+  f.get('caption-only').dispatch('click');
+  f.get('fs-primary').dispatch('click');
+  const start = f.direct.calls.findLast(([name]) => name === 'start');
+  assert.equal(start[1].muted, true);
+  f.view.destroy();
+});
 test('captions-only mode: full screen, wake lock, auto-hiding bar, Escape and focus return', async () => {
   const storage = fakeStorage();
   const f = setup({ storage });
@@ -612,9 +644,9 @@ test('full-screen controls share the session handlers and the caption rows', asy
   assert.equal(f.get('fs-primary').hidden, true);
   assert.equal(f.get('fs-stop').hidden, false); assert.equal(f.get('fs-stop').disabled, false);
   assert.equal(f.b('status').textContent, dictionaries.en['sim.status.running']);
-  assert.equal(f.get('fs-sound').textContent, dictionaries.en['sim.enableSound']);
-  f.get('fs-sound').dispatch('click'); assert.deepEqual(f.direct.calls.at(-1), ['mute', false]);
-  assert.equal(f.get('fs-sound').textContent, dictionaries.en['sim.mute']);
+  // The frame is silent by rule (owner 2026-09-07): its sound control is hidden and inert.
+  assert.equal(f.get('fs-sound').hidden, true);
+  f.get('fs-sound').dispatch('click'); assert.notEqual(f.direct.calls.at(-1)[0], 'mute');
   caption(f.direct, 1, 'final', 'translated'); caption(f.direct, 1, 'final', 'spoken', 0, 'source');
   assert.equal(f.get('captions').children.length, 1);
   f.get('fs-source').dispatch('click');

@@ -113,6 +113,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   // 'auto' keeps the previous behaviour (the model decides from what it hears).
   let spoken = 'auto';
   let disposed = false, pending = false, snapshot, unsubscribe, headphonesHinted = false, store = storage, speaking = false;
+  // Whether sound was on when the captions-only frame was entered (null: no session then).
+  let soundBeforeCaptions = null;
+  const silent = () => ['muted', 'blocked', 'unavailable'].includes(snapshot?.output);
+  // Same test as running() below; declared here because the board's storage
+  // restore can toggle the frame while this view is still being built.
+  const inSession = () => snapshot !== undefined && (Boolean(snapshot.busy) || !['idle', 'stopped', 'failed'].includes(snapshot.status));
   // The last failure of this screen (start rejected before the engine ran, or
   // a rejected handle); the engine's own errorCode is read from the snapshot.
   let failure = null;
@@ -251,6 +257,16 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     onToggle(on) {
       section.setAttribute('data-caption-only', String(on));
       captionOnly.setAttribute('aria-pressed', String(on));
+      // Owner (2026-09-07): the captions-only frame is silent, always. Entering
+      // it mutes the running session (the engine also suspends its playback
+      // context); leaving it restores the sound only if it was on before.
+      if (on) {
+        soundBeforeCaptions = inSession() ? !silent() : null;
+        if (inSession()) call(() => current().setMuted(true));
+      } else {
+        if (soundBeforeCaptions === true && inSession()) call(() => current().setMuted(false));
+        soundBeforeCaptions = null;
+      }
       if (snapshot) render();
     } });
   const setText = (el, value) => { if (el.textContent !== value) el.textContent = value; };
@@ -344,6 +360,8 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     call(() => mode === 'hub' ? current().join({ hubId: venueSelect.value, roomCode: room.value, language: target })
       : (startDirect ?? (request => current().start(request)))({
         targetLanguage: target,
+        // A session opened from the captions-only frame starts silent.
+        ...(board.captionOnly ? { muted: true } : {}),
         ...(spoken === 'auto' ? {} : { sourceLanguage: spoken }),
         ...(pair === null ? {} : { languages: pair }) }));
   }
@@ -361,7 +379,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
       startSession();
     });
   }
-  const toggleSound = () => call(() => current().setMuted(!['muted', 'blocked', 'unavailable'].includes(snapshot.output)));
+  const toggleSound = () => { if (!board.captionOnly) call(() => current().setMuted(!silent())); };
   const sourceShown = () => source.getAttribute('aria-pressed') === 'true';
   function toggleSource() {
     const next = String(!sourceShown());
@@ -596,12 +614,14 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     start.disabled = busy || pending || !allowed.includes(target);
     stop.disabled = fsStop.disabled = !busy || pending;
     sound.disabled = fsSound.disabled = pending || snapshot.status !== 'running';
+    // No sound control in the captions-only frame: that frame is always silent.
+    fsSound.hidden = board.captionOnly;
     // After a failure the primary action reads "reopen session"; after a user stop, "restart".
     const startKey = hub ? (snapshot.status === 'failed' || snapshot.status === 'stopped' ? 'hub.reconnect' : 'hub.join')
       : snapshot.status === 'failed' ? 'sim.reopen' : snapshot.status === 'stopped' ? 'sim.restart' : 'common.start';
     for (const el of [start, fsPrimary]) setText(el, i18n.t(startKey));
     for (const el of [stop, fsStop]) setText(el, i18n.t(hub ? 'hub.leave' : 'common.stop'));
-    const soundKey = ['muted', 'blocked', 'unavailable'].includes(snapshot.output) ? 'sim.enableSound' : 'sim.mute';
+    const soundKey = silent() ? 'sim.enableSound' : 'sim.mute';
     for (const el of [sound, fsSound]) setText(el, i18n.t(soundKey));
     // Before a session the full screen shows one large start button; the bar shows stop while busy.
     fsPrimary.hidden = start.disabled;
