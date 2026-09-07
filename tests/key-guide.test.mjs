@@ -135,6 +135,27 @@ test('a first run without a key shows the guide; saving a key removes it from bo
     'the settings card stays: it is reference material, not a prompt');
 });
 
+test('a first visit on a build that ships a key sees no key prompt at all: the badge shows a key and the start path is open', async (t) => {
+  // Owner (2026-09-07): a person who has never used the app opens the site
+  // and can start straight away. Nothing stored, nothing typed.
+  const builtin = `${secrets.personal}-BUILT-IN`;
+  const b = await boot({ builtinKey: () => builtin });
+  t.after(() => b.app.close());
+  const cards = () => all(b.root, (node) => node.classes.has('key-guide'));
+  const shown = () => cards().filter((node) => node.getAttribute('data-variant') !== 'settings'
+    && !node.hidden && node.parentNode?.hidden !== true).map((node) => node.getAttribute('data-variant'));
+  assert.deepEqual(shown(), [], 'no "create a key" card greets the first visitor');
+  assert.equal(b.app.shell.elements.firstRun.hidden, true);
+  assert.equal(b.app.shell.elements.modeBadge.getAttribute('data-key-source'), 'personal');
+  assert.equal(b.app.shell.selectedTab, 'simultaneous', 'and the first screen is the interpreting one');
+  assert.equal(b.el('sim-open-settings')?.hidden ?? true, true, 'no "open settings for a key" action is offered');
+  assert.equal(b.text().includes(builtin), false, 'the key itself is nowhere on screen');
+  // The settings card stays as reference material, and the sequential tab has no prompt either.
+  b.app.shell.selectTab('sequential');
+  await tick();
+  assert.deepEqual(shown(), []);
+});
+
 test('the guide never appears on the hub listening path', async (t) => {
   const b = await boot();
   t.after(() => b.app.close());
