@@ -1,12 +1,16 @@
 {
   "schemaVersion": 1,
-  "revision": 1,
-  "publishedAt": "2026-09-06T00:00:00Z",
+  "revision": 2,
+  "publishedAt": "2026-09-07T03:30:00Z",
   "validUntil": null,
   "minAppVersion": "0.7.0",
   "emergency": {
-    "stopped": false,
-    "reason": null
+    "stopped": true,
+    "reason": {
+      "ko": "이 주소(gai-cmd.github.io)는 더 이상 쓰지 않아요. 새 주소 https://interp-app.vercel.app 를 열어 홈 화면에 다시 추가하세요. 새 주소에서는 키 입력 없이 바로 시작돼요.",
+      "en": "This address (gai-cmd.github.io) is retired. Open the new address https://interp-app.vercel.app and add it to your home screen again. The new address starts without entering a key.",
+      "ja": "このアドレス（gai-cmd.github.io）は使われなくなりました。新しいアドレス https://interp-app.vercel.app を開いてホーム画面に追加し直してください。新しいアドレスではキー入力なしで始められます。"
+    }
   },
   "features": {
     "sequential": true,
@@ -19,17 +23,31 @@
   "settings": {
     "ui.mode": {
       "default": "system",
-      "allowed": ["system", "light", "dark"],
+      "allowed": [
+        "system",
+        "light",
+        "dark"
+      ],
       "locked": false
     },
     "ui.tone": {
       "default": "navy",
-      "allowed": ["navy", "warm", "forest", "mono"],
+      "allowed": [
+        "navy",
+        "warm",
+        "forest",
+        "mono"
+      ],
       "locked": false
     },
     "ui.text": {
       "default": "m",
-      "allowed": ["s", "m", "l", "xl"],
+      "allowed": [
+        "s",
+        "m",
+        "l",
+        "xl"
+      ],
       "locked": false
     },
     "captions.size": {
@@ -41,26 +59,54 @@
     },
     "interpretation.sourceLanguage": {
       "default": "ko",
-      "allowed": ["auto", "ko", "en", "ja"],
+      "allowed": [
+        "auto",
+        "ko",
+        "en",
+        "ja"
+      ],
       "locked": false
     },
     "interpretation.targetLanguage": {
       "default": "ja",
-      "allowed": ["ko", "en", "ja"],
+      "allowed": [
+        "ko",
+        "en",
+        "ja"
+      ],
       "locked": false
     },
     "voice.output": {
       "default": "provider",
-      "allowed": ["provider", "device", "off"],
+      "allowed": [
+        "provider",
+        "device",
+        "off"
+      ],
       "locked": false
     },
     "billing.plan": {
       "default": "free",
-      "allowed": ["free", "paid"],
+      "allowed": [
+        "free",
+        "paid"
+      ],
       "locked": false
     }
   },
-  "notices": [],
+  "notices": [
+    {
+      "id": "moved-to-vercel",
+      "severity": "critical",
+      "showFrom": null,
+      "showUntil": null,
+      "text": {
+        "ko": "새 주소로 이동했어요: https://interp-app.vercel.app — 이 주소는 더 이상 갱신되지 않아요.",
+        "en": "Moved to a new address: https://interp-app.vercel.app — this address is no longer updated.",
+        "ja": "新しいアドレスに移動しました: https://interp-app.vercel.app — このアドレスは更新されません。"
+      }
+    }
+  ],
   "sharedEvents": [],
   "hubControl": {
     "enabled": false,
