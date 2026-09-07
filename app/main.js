@@ -638,7 +638,10 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       const key = POLICY_CHANGE_KEYS[change.type];
       if (key) notify(key);
     }));
-    pwa = createPwa({ window: win, navigator: nav, isBusy: busy, ...timing });
+    // Owner (2026-09-07): a new release applies itself as soon as this page is
+    // idle and alone, so a visitor is on the current version without pressing
+    // anything. A running interpretation still finishes first.
+    pwa = createPwa({ window: win, navigator: nav, isBusy: busy, autoApply: true, ...timing });
     removers.push(activity.subscribe(() => pwa.reloadIfPending()));
     removers.push(engine.subscribeWork(() => pwa.reloadIfPending()));
     removers.push(diagnostics.subscribe(() => pwa.reloadIfPending()));

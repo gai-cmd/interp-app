@@ -23,7 +23,11 @@ export const WORKER_URL = './sw.js';
 export const WORKER_SCOPE = './';
 // Design values: how long a worker reply is awaited, and how many window
 // clients may exist for an update to apply (this page only).
-export const PWA_POLICY = Object.freeze({ replyTimeoutMs: 3000, maxClientsForUpdate: 1 });
+export const PWA_POLICY = Object.freeze({ replyTimeoutMs: 3000, maxClientsForUpdate: 1,
+  // Owner (2026-09-07): with autoApply an update installs itself as soon as
+  // the page is idle and alone; a refusal (busy, other tabs) is retried at
+  // this interval and on every idle signal, so nothing waits for a button.
+  autoRetryMs: 15000 });
 // Same shape the settings view accepts for app.version (P1-16) and the
 // release id pattern of scripts/stage-release.mjs (P1-18).
 export const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
@@ -68,17 +72,24 @@ export function versionOf(reply) {
 
 /**
  * createPwa({ window, navigator?, document?, isBusy?, setTimeout?, clearTimeout?,
- *   replyTimeoutMs? }) returns { supported, register(), getVersion(),
+ *   replyTimeoutMs?, autoApply? }) returns { supported, register(), getVersion(),
  * countClients(), applyUpdate(), reloadIfPending(), promptInstall(),
  * snapshot(), subscribe(listener), close() }. isBusy() reports whether an
  * interpretation turn or a diagnostic check is running; while it is true no
  * update applies and no unrequested controller change reloads the page.
  * Every method resolves; failures surface as snapshot fields, never as thrown
  * browser errors or logs.
+ * autoApply (owner, 2026-09-07; the app turns it on) applies a waiting update
+ * without a button press whenever the page is idle and the only tab, and
+ * re-checks for updates on registration and each time the page becomes
+ * visible, bypassing the HTTP cache for sw.js (updateViaCache: 'none') so a
+ * host that caches the worker script (GitHub Pages, 10 minutes) cannot delay
+ * it. A running interpretation is never interrupted: busy pages retry when
+ * the work ends, exactly as the button path does.
  */
 export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy = () => false,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout,
-  replyTimeoutMs = PWA_POLICY.replyTimeoutMs } = {}) {
+  replyTimeoutMs = PWA_POLICY.replyTimeoutMs, autoApply = false } = {}) {
   if (!win || typeof isBusy !== 'function' || typeof schedule !== 'function' || typeof cancelTimer !== 'function'
     || !Number.isFinite(replyTimeoutMs) || replyTimeoutMs <= 0) throw new Error('INVALID_REQUEST');
   const container = nav?.serviceWorker;
@@ -86,9 +97,10 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
   const listeners = new Set();
   const removers = [];
   let registration = null, waiting = null, installPrompt = null, requested = false, reloaded = false, closed = false;
+  let retryTimer = null;
   const state = { supported, registered: false, standalone: isStandalone({ matchMedia: win.matchMedia?.bind?.(win), navigator: nav }),
     ios: isIOS(nav), installAvailable: false, installed: false, updateAvailable: false, version: null, applying: false,
-    reloadPending: false };
+    reloadPending: false, autoApply: autoApply === true };
 
   function snapshot() { return Object.freeze({ ...state }); }
   function notify() {
@@ -103,9 +115,25 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
   function setWaiting(worker) {
     waiting = worker ?? null;
     const available = waiting !== null;
-    if (available === state.updateAvailable) return;
-    state.updateAvailable = available;
-    notify();
+    if (available !== state.updateAvailable) { state.updateAvailable = available; notify(); }
+    if (available) tryAutoApply();
+  }
+  // The automatic path is the button path with the same refusals; a refusal
+  // only schedules another attempt, so the update is never forced onto a
+  // busy page or a page with siblings.
+  function tryAutoApply() {
+    if (!state.autoApply || closed || !waiting || state.applying || isBusy()) return;
+    api.applyUpdate().then((outcome) => {
+      if (closed || outcome.result === UPDATE_RESULT.APPLIED || outcome.result === UPDATE_RESULT.NONE
+        || outcome.result === UPDATE_RESULT.UNSUPPORTED) return;
+      cancelTimer(retryTimer);
+      retryTimer = schedule(() => { retryTimer = null; tryAutoApply(); }, PWA_POLICY.autoRetryMs);
+      retryTimer?.unref?.();
+    }, () => {});
+  }
+  function checkForUpdate() {
+    if (closed || !registration || typeof registration.update !== 'function') return;
+    attempt(() => Promise.resolve(registration.update()).catch(() => {}));
   }
 
   // One request/reply over a MessageChannel; null on timeout, no worker or failure.
@@ -178,13 +206,19 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
     async register() {
       if (!supported || closed) return null;
       try {
-        registration = await container.register(WORKER_URL, { scope: WORKER_SCOPE });
+        registration = await container.register(WORKER_URL, { scope: WORKER_SCOPE, updateViaCache: 'none' });
       } catch { registration = null; }
       if (!registration || closed) { notify(); return null; }
       state.registered = true;
       listen(registration, 'updatefound', () => track(registration.installing));
       if (registration.waiting) setWaiting(registration.waiting);
       else if (registration.installing) track(registration.installing);
+      if (state.autoApply) {
+        // Ask the browser for a fresh worker now and whenever the page comes
+        // back into view (a phone that was in the pocket during a deploy).
+        checkForUpdate();
+        listen(win.document, 'visibilitychange', () => { if (win.document?.hidden === false) checkForUpdate(); });
+      }
       notify();
       return registration;
     },
@@ -227,6 +261,8 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
     },
     // Called by the app when interpretation ends; reloads a deferred controller change.
     reloadIfPending() {
+      // Every idle signal is also the moment a deferred automatic update may go.
+      if (!isBusy()) tryAutoApply();
       if (!state.reloadPending || isBusy()) return false;
       reload();
       notify();
@@ -256,6 +292,7 @@ export function createPwa({ window: win, navigator: nav = win?.navigator, isBusy
       return () => listeners.delete(listener);
     },
     close() {
+      cancelTimer(retryTimer); retryTimer = null;
       if (closed) return;
       closed = true;
       for (const remove of removers) remove();

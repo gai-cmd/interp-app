@@ -93,7 +93,7 @@ function createRegistration({ waiting = null, installing = null, active = null }
   return registration;
 }
 function createEnvironment({ controller = null, registration = createRegistration(), registerError = null, serviceWorker = true,
-  secure = true, standalone = false, userAgent = 'Mozilla/5.0 (Linux; Android 14) Chrome/128', busy = false } = {}) {
+  secure = true, standalone = false, userAgent = 'Mozilla/5.0 (Linux; Android 14) Chrome/128', busy = false, autoApply = false } = {}) {
   const timers = fakeTimers();
   const container = new Emitter();
   container.controller = controller;
@@ -110,7 +110,7 @@ function createEnvironment({ controller = null, registration = createRegistratio
   win.location = { reloads: 0, reload() { this.reloads += 1; } };
   win.navigator = { userAgent, onLine: true, ...(serviceWorker ? { serviceWorker: container } : {}) };
   const env = { win, container, registration, timers, busy };
-  env.pwa = createPwa({ window: win, isBusy: () => env.busy, ...timers });
+  env.pwa = createPwa({ window: win, isBusy: () => env.busy, autoApply, ...timers });
   return env;
 }
 
@@ -165,13 +165,13 @@ test('registers ./sw.js at the root scope, reads the version from the controller
   env.pwa.subscribe((snapshot) => events.push(snapshot));
   assert.equal(env.pwa.supported, true);
   assert.deepEqual(env.pwa.snapshot(), { supported: true, registered: false, standalone: false, ios: false, installAvailable: false,
-    installed: false, updateAvailable: false, version: null, applying: false, reloadPending: false });
+    installed: false, updateAvailable: false, version: null, applying: false, reloadPending: false, autoApply: false });
   assert.equal(await env.pwa.getVersion(), 'r-1');
   assert.deepEqual(controller.received, [{ type: 'interp:get-release' }]);
   assert.equal(env.pwa.snapshot().version, 'r-1');
   const registration = await env.pwa.register();
   assert.equal(registration, env.registration);
-  assert.deepEqual(env.container.registrations, [{ url: './sw.js', options: { scope: './' } }]);
+  assert.deepEqual(env.container.registrations, [{ url: './sw.js', options: { scope: './', updateViaCache: 'none' } }]);
   assert.equal(env.pwa.snapshot().registered, true);
   assert.equal(env.pwa.snapshot().updateAvailable, true);
   assert.ok(events.some((snapshot) => snapshot.updateAvailable));
@@ -245,6 +245,60 @@ test('update applies only when idle and alone: busy -> active, other tabs -> def
   assert.equal(again.win.location.reloads, 1, 'reload happens once');
   env.pwa.close();
   again.pwa.close();
+});
+
+// Owner (2026-09-07): the app opts into autoApply so a visitor is on the current
+// release without pressing anything; the refusals of the button path still hold.
+test('autoApply: a waiting worker applies itself when idle and alone, waits for a busy page or other tabs, and re-checks on visibility', async () => {
+  const controller = createWorker({ id: 'r-1' });
+  const alone = createWorker({ id: 'r-2', state: 'installed', clients: 1 });
+  const registration = createRegistration({ waiting: alone, active: controller });
+  let updates = 0; registration.update = async () => { updates += 1; };
+  const env = createEnvironment({ controller, registration, autoApply: true });
+  env.win.document = Object.assign(new Emitter(), { hidden: false });
+  assert.equal(env.pwa.snapshot().autoApply, true);
+  await env.pwa.register();
+  assert.equal(updates, 1, 'registration asks the browser for a fresh worker');
+  await tick();
+  assert.deepEqual(alone.received.map((message) => message.type), ['interp:count-clients', 'interp:apply-update'], 'no button press needed');
+  assert.equal(alone.calls.skipWaiting, 1);
+  env.container.dispatch('controllerchange');
+  assert.equal(env.win.location.reloads, 1);
+  env.win.document.dispatch('visibilitychange');
+  assert.equal(updates, 2, 'coming back into view checks again');
+  env.pwa.close();
+
+  // Busy: nothing is sent; the idle signal (reloadIfPending) applies it later.
+  const later = createWorker({ id: 'r-3', state: 'installed', clients: 1 });
+  const busy = createEnvironment({ controller, registration: createRegistration({ waiting: later, active: controller }), busy: true, autoApply: true });
+  await busy.pwa.register();
+  await tick();
+  assert.equal(later.received.length, 0, 'a running interpretation is never interrupted');
+  busy.busy = false;
+  busy.pwa.reloadIfPending();
+  await tick();
+  assert.deepEqual(later.received.map((message) => message.type), ['interp:count-clients', 'interp:apply-update']);
+  busy.pwa.close();
+
+  // Other tabs: deferred and retried on the timer, not forced.
+  const crowded = createWorker({ id: 'r-4', state: 'installed', clients: 2 });
+  const tabs = createEnvironment({ controller, registration: createRegistration({ waiting: crowded, active: controller }), autoApply: true });
+  await tabs.pwa.register();
+  await tick();
+  assert.deepEqual(crowded.received.map((message) => message.type), ['interp:count-clients']);
+  assert.equal(crowded.calls.skipWaiting, 0);
+  assert.equal(tabs.pwa.snapshot().updateAvailable, true, 'the update stays pending for the button or the next attempt');
+  assert.ok(tabs.timers.pending.some((timer) => timer.ms === PWA_POLICY.autoRetryMs), 'a retry is scheduled');
+  tabs.pwa.close();
+  assert.equal(tabs.timers.pending.length, 0, 'close cancels the retry');
+
+  // Off by default: the library does nothing on its own.
+  const quiet = createWorker({ id: 'r-5', state: 'installed', clients: 1 });
+  const off = createEnvironment({ controller, registration: createRegistration({ waiting: quiet, active: controller }) });
+  await off.pwa.register();
+  await tick();
+  assert.equal(quiet.received.length, 0);
+  off.pwa.close();
 });
 
 test('a controller change this page did not request reloads only when idle; reloadIfPending completes it later', async () => {
