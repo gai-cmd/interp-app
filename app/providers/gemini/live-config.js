@@ -12,8 +12,12 @@ import { ProviderError } from '../contract.js';
 import { VOICE_NAMES } from './voice.js';
 
 export const DEFAULT_LIVE_MODEL = 'gemini-3.5-live-translate-preview';
+// The last fallback was 'gemini-live-2.5-flash-preview' until 2026-09-07; the
+// endpoint now answers "not found for API version v1beta, or is not supported
+// for bidiGenerateContent" for it, so it could never catch anything. The
+// native-audio model completes the same flash setup (verified the same day).
 export const LIVE_MODELS = Object.freeze([DEFAULT_LIVE_MODEL,
-  'gemini-3.1-flash-live-preview', 'gemini-live-2.5-flash-preview']);
+  'gemini-3.1-flash-live-preview', 'gemini-2.5-flash-native-audio-latest']);
 // Repository candidates, not a claim of current account/model availability.
 export const LIVE_MODEL_CONFIG = Object.freeze(Object.fromEntries(LIVE_MODELS.map((model) =>
   [model, Object.freeze({ setup: model === DEFAULT_LIVE_MODEL ? 'translation' : 'flash',
@@ -226,11 +230,12 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, sou
       + `Examples: hear ${names[a]} "What time is it?" -> say it in ${names[b]}; hear ${names[b]} "Can you help me?" -> say it in ${names[a]} (never help).` }] };
   } else if (LIVE_MODEL_CONFIG[model].setup === 'translation') {
     // Live Translate supports no source-language field or system instruction.
+    // Transcription stays at the top level of the setup, exactly as for the
+    // other models: Google rejects it inside generationConfig with 1007
+    // 'Unknown name "inputAudioTranscription" at setup.generation_config'
+    // (verified against the live endpoint on 2026-09-07, when every session
+    // on the translate model was failing over to the next model).
     generationConfig.translationConfig = { targetLanguageCode: targetLanguage, echoTargetLanguage: false };
-    generationConfig.inputAudioTranscription = {};
-    generationConfig.outputAudioTranscription = {};
-    delete setup.inputAudioTranscription;
-    delete setup.outputAudioTranscription;
   } else {
     // Model instruction, never a UI string or caller-provided persona.
     setup.systemInstruction = { parts: [{ text:

@@ -50,7 +50,7 @@ test('setup mirrors voiceOpen with a read-only direction and no persona, cache o
   assert.match(buildVoiceInstruction('ko'), /Korean/); assert.match(buildVoiceInstruction('en-US'), /English/);
   assert.throws(() => buildVoiceInstruction('zh'), code('INVALID_REQUEST'));
   assert.throws(() => buildVoiceSetup({ language: 'ko', voice: 'SECRET' }), code('INVALID_REQUEST'));
-  assert.throws(() => buildVoiceSetup({ language: 'ko', model: 'gemini-live-2.5-flash-preview' }), code('MODEL_UNSUPPORTED'));
+  assert.throws(() => buildVoiceSetup({ language: 'ko', model: 'gemini-2.5-flash-native-audio-latest' }), code('MODEL_UNSUPPORTED'));
   assert.equal(VOICE_NAMES.length, 30); assert.ok(VOICE_NAMES.includes('Orus'));
   const h = harness(); const { ws, session } = await ready(h, request({ voice: 'Orus', language: 'ko-KR' }));
   assert.deepEqual(ws.sent, [{ setup: buildVoiceSetup({ voice: 'Orus', language: 'ko-KR' }) }]);

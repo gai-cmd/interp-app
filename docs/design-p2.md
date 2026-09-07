@@ -92,7 +92,7 @@
 이식 원본의 flash-live 후보는 다음과 같다.
 
 1. `gemini-3.1-flash-live-preview`
-2. `gemini-live-2.5-flash-preview`
+2. `gemini-2.5-flash-native-audio-latest`
 
 후보는 코드에 고정하고 모델별 setup과 지원 조건을 선언한다. flash-live에서는 목표어 통역만 하도록 고정 프롬프트를 사용한다. 자유 페르소나·맞장구·내용 첨가 옵션은 이식하지 않는다.
 

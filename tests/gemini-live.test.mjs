@@ -25,8 +25,12 @@ test('fixed models have isolated translation/flash setup for all supported langu
     const s = buildLiveSetup({ model, targetLanguage, sourceLanguage: 'ja', systemInstruction: 'ignored' });
     assert.equal(s.model, `models/${model}`);
     assert.deepEqual(s.generationConfig.responseModalities, ['AUDIO']);
-    assert.deepEqual((model === LIVE_MODELS[0] ? s.generationConfig : s).inputAudioTranscription, {});
-    assert.deepEqual((model === LIVE_MODELS[0] ? s.generationConfig : s).outputAudioTranscription, {});
+    // Top level for every model, the translate model included (2026-09-07: the
+    // endpoint rejects it inside generationConfig with 1007).
+    assert.deepEqual(s.inputAudioTranscription, {});
+    assert.equal(s.generationConfig.inputAudioTranscription, undefined);
+    assert.deepEqual(s.outputAudioTranscription, {});
+    assert.equal(s.generationConfig.outputAudioTranscription, undefined);
     assert.deepEqual(s.realtimeInputConfig.automaticActivityDetection, LIVE_VAD);
     assert.equal(LIVE_VAD.silenceDurationMs, 400);
     assert.equal(s.sourceLanguage, undefined);

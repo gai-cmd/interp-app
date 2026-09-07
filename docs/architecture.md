@@ -110,7 +110,7 @@ UI 문구는 모두 app/i18n/ko.json·en.json·ja.json의 같은 키로 관리�
 
 Gemini의 네 능력 모두 구현 상태가 ready다. Live 기본 모델은
 `gemini-3.5-live-translate-preview`, 순방향 폴백은
-`gemini-3.1-flash-live-preview` → `gemini-live-2.5-flash-preview`다.
+`gemini-3.1-flash-live-preview` → `gemini-2.5-flash-native-audio-latest`다.
 입력 pcm16(16kHz·mono), 출력 pcm16(24kHz·mono)과 subtitle을 선언한다.
 모델별 AUDIO·transcription·translationConfig 및 flash 고정 프롬프트는
 P2-03의 live-config.js를 그대로 사용한다. 지원 목소리는 빈 목록이다.

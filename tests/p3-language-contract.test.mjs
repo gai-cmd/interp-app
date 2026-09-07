@@ -14,8 +14,8 @@ test('source selection never emits an unsupported translation field or excludes 
   for (const sourceLanguage of ['auto', 'ko', 'en', 'ja']) {
     const setup = buildLiveSetup({ sourceLanguage, targetLanguage: 'ja' });
     assert.deepEqual(setup.generationConfig.translationConfig, { targetLanguageCode: 'ja', echoTargetLanguage: false });
-    assert.equal(setup.inputAudioTranscription, undefined);
-    assert.deepEqual(setup.generationConfig.inputAudioTranscription, {});
+    assert.deepEqual(setup.inputAudioTranscription, {});
+    assert.equal(setup.generationConfig.inputAudioTranscription, undefined, 'inside generationConfig the endpoint rejects it (1007)');
   }
   const flash = buildLiveSetup({ model: LIVE_MODELS[1], sourceLanguage: 'ko', targetLanguage: 'ja' });
   assert.match(flash.systemInstruction.parts[0].text, /hint, not a filter/);
