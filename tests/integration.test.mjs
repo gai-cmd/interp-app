@@ -164,7 +164,7 @@ test('cold load: the app boots when the device voice list is still empty', async
   t.after(console_.restore);
   const voices = [];
   const browser = createBrowser({ deviceVoices: voices });
-  const app = await startApp({ builtinKey: () => null, window: browser.win, setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout });
+  const app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: browser.win, setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout });
   assert.deepEqual(console_.calls, []);
   assert.ok(app, `startApp resolved null; #app shows: ${browser.root.textContent}`);
   t.after(() => app.close());

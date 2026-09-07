@@ -249,7 +249,7 @@ function createBrowser({ hash = '', storage: storageInit = {}, languages = ['ko-
 
 async function start(options = {}) {
   const browser = createBrowser(options);
-  const app = await startApp({ builtinKey: () => null, window: browser.win });
+  const app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: browser.win });
   return { ...browser, app };
 }
 const notice = (app) => app.engine.state.snapshot().notice?.messageKey ?? null;
@@ -322,7 +322,7 @@ test('fragment is removed before i18n or storage run; the shared key is held unt
   assert.equal(el(b, 'settings-remember').hidden, false, 'personal-key persistence is offered with storage');
   // Registration happened once, at the root scope, after the UI was up.
   await until(() => b.container.registrations.length === 1);
-  assert.deepEqual(b.container.registrations, [{ url: './sw.js', options: { scope: './' } }]);
+  assert.deepEqual(b.container.registrations, [{ url: './sw.js', options: { scope: './', updateViaCache: 'none' } }]);
   // Secrets never reach the DOM, the store or the config surface.
   assert.equal(/SECRET/.test(domText(b.root)), false);
   assert.equal(leaks(b.app.engine.state.snapshot()), false);
@@ -432,7 +432,7 @@ test('a remembered personal key is loaded before the views; a corrupt stored val
 
 test('URL cleanup failure stops the start with a dictionary message; an invalid payload starts with a notice', async () => {
   const failed = createBrowser({ hash: fragment(), replaceStateError: new Error('SECRET history') });
-  assert.equal(await startApp({ builtinKey: () => null, window: failed.win }), null);
+  assert.equal(await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: failed.win }), null);
   assert.equal(failed.root.textContent, ko['error.URL_CLEANUP_FAILED']);
   assert.deepEqual(failed.ops.filter((op) => !op.startsWith('fetch:i18n')), ['replaceState:/'], 'no storage, no provider call');
   assert.equal(failed.container.registrations.length, 0);
@@ -448,7 +448,7 @@ test('URL cleanup failure stops the start with a dictionary message; an invalid 
   const plain = await start();
   assert.equal(plain.ops.some((op) => op.startsWith('replaceState')), false, 'no fragment, no history rewrite');
   await plain.app.close();
-  await assert.rejects(startApp({ builtinKey: () => null, window: {} }), /INVALID_REQUEST/);
+  await assert.rejects(startApp({ builtinKey: () => null, autoApplyUpdates: false, window: {} }), /INVALID_REQUEST/);
 });
 
 test('shared mode: explicit selection, ending shared use clears the conversation and the key', async () => {
@@ -493,7 +493,7 @@ test('audio context: created at 24 kHz and resumed inside the first gesture, sha
   // Without Web Audio the getter yields null and the engines fall back on their own.
   const silent = createBrowser();
   delete silent.win.AudioContext;
-  const app = await startApp({ builtinKey: () => null, window: silent.win });
+  const app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: silent.win });
   assert.equal(app.getAudioContext(), null);
   await app.close();
 });
@@ -600,7 +600,7 @@ test('boot failure is visible without exposing errors when i18n fetch rejects or
       requests.push(options);
       return hang ? new Promise(() => {}) : Promise.reject(new Error('SECRET fetch'));
     };
-    const pending = startApp({ builtinKey: () => null, window: b.win,
+    const pending = startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win,
       setTimeout(fn) { timeout = fn; return 1; }, clearTimeout() { cleared++; } });
     if (hang) { await tick(); timeout(); }
     assert.equal(await pending, null);
@@ -619,7 +619,7 @@ test('boot failure is visible without exposing errors when i18n fetch rejects or
 test('initialization failures clean gesture listeners and show dictionary text; SW and audio failures do not blank the shell', async () => {
   const broken = createBrowser();
   Object.defineProperty(broken.win, 'speechSynthesis', { get() { throw new Error('SECRET getter'); } });
-  assert.equal(await startApp({ builtinKey: () => null, window: broken.win }), null);
+  assert.equal(await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: broken.win }), null);
   assert.equal(broken.doc.listenerCount, 0);
   assert.equal(broken.root.textContent, ko['error.unknown']);
   assert.equal(broken.root.getAttribute('role'), 'alert');
@@ -628,7 +628,7 @@ test('initialization failures clean gesture listeners and show dictionary text; 
   Object.defineProperty(b.win, 'localStorage', { get() { throw new Error('SECRET storage'); } });
   b.container.register = async () => { throw new Error('SECRET worker'); };
   b.win.AudioContext = class { constructor() { throw new Error('SECRET audio'); } };
-  const app = await startApp({ builtinKey: () => null, window: b.win });
+  const app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win });
   assert.ok(app);
   b.doc.dispatch('pointerdown');
   assert.equal(app.getAudioContext(), null);
@@ -657,7 +657,7 @@ test('automatic entry waits for DOM readiness and starts the first load', async 
 const testHubs = [{ id: 'test', labelKey: 'hub.venue', url: 'wss://hub.example.test/ws' }];
 async function listeningApp(t, { personal = true, ...options } = {}) {
   const b = listeningBrowser(options);
-  b.app = await startApp({ builtinKey: () => null, window: b.win, hubs: testHubs });
+  b.app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win, hubs: testHubs });
   assert.ok(b.app);
   t.after(async () => {
     for (const socket of b.sockets) socket.finishClose();
@@ -752,7 +752,7 @@ for (const event of ['visibilitychange', 'pagehide']) {
 test('P2 hub reception requires no personal key or microphone and remains usable without device speech', async t => {
   const b = listeningBrowser();
   delete b.win.speechSynthesis; delete b.win.SpeechSynthesisUtterance;
-  b.app = await startApp({ builtinKey: () => null, window: b.win, hubs: testHubs });
+  b.app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win, hubs: testHubs });
   t.after(() => b.app.close());
   await b.app.shell.switchTab('simultaneous');
   choose(el(b, 'sim-mode'), 'hub');
@@ -1031,7 +1031,7 @@ test('startup cancellation and body timeout leave no shell, registration, listen
         resolve(dictionaries[url.pathname.match(/(ko|en|ja)\.json$/)[1]]))) };
     };
     if (reason === 'pre-aborted') controller.abort('SECRET');
-    const pending = startApp({ builtinKey: () => null, window: b.win, signal: controller.signal });
+    const pending = startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win, signal: controller.signal });
     await tick();
     if (reason === 'signal') controller.abort('SECRET');
     if (reason === 'pagehide') b.win.dispatch('pagehide');
@@ -1056,10 +1056,10 @@ test('offline dictionary miss shows fallback and a fresh start can recover; cach
   b.win.navigator.onLine = false;
   const cachedFetch = b.win.fetch;
   b.win.fetch = async () => { throw new Error('SECRET offline'); };
-  assert.equal(await startApp({ builtinKey: () => null, window: b.win }), null);
+  assert.equal(await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win }), null);
   assert.equal(b.root.textContent, dictionaries.en['error.NETWORK_ERROR']);
   b.win.fetch = cachedFetch;
-  const app = await startApp({ builtinKey: () => null, window: b.win });
+  const app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win });
   assert.ok(app, 'offline hint must not block cache-backed fetch');
   assert.equal(b.root.hasAttribute('role'), false);
   assert.equal(b.root.hasAttribute('lang'), false);

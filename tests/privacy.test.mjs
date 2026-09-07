@@ -201,7 +201,7 @@ test('built-in key: a device with none of its own starts on the shipped key, nev
   await own.close();
 
   // A build that ships no key behaves exactly as before this file existed.
-  const none = await boot({ builtinKey: () => null });
+  const none = await boot({ builtinKey: () => null, autoApplyUpdates: false });
   assert.equal(none.app.config.keyStore.getMetadata('gemini', 'personal'), null);
   assert.equal(none.el('settings-key-status').getAttribute('data-key'), 'none');
   await none.close();

@@ -34,7 +34,7 @@ const textOf = (b, key) => all(b.root, (node) => node.text === ko[key])[0];
 
 async function boot(t, options = {}) {
   const b = createBrowser({ policy: controlPolicy(), ...options });
-  b.app = await startApp({ builtinKey: () => null, window: b.win, hubs: testHubs });
+  b.app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win, hubs: testHubs });
   assert.ok(b.app, 'the app started');
   t.after(async () => {
     for (const socket of b.sockets) socket.finishClose();
@@ -346,7 +346,7 @@ test('an event that leaves the policy list is left automatically and its control
 
 test('policy gating: disabled hub control hides the section, a hub outside allowedHubIds and an inactive event are refused, direct subscription can be withheld', async (t) => {
   const off = createBrowser({ policy: controlPolicy((policy) => { policy.hubControl = { enabled: false, allowedHubIds: [HUB_ID], allowDirectSubscription: false }; }) });
-  off.app = await startApp({ builtinKey: () => null, window: off.win, hubs: testHubs });
+  off.app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: off.win, hubs: testHubs });
   t.after(() => off.app.close());
   await off.app.shell.switchTab('simultaneous');
   assert.equal(el(off, 'sim-control').hidden, true);
@@ -396,7 +396,7 @@ test('policy gating: disabled hub control hides the section, a hub outside allow
 
 test('teardown closes the control connection and leaves no listeners; the joined event never reaches storage', async (t) => {
   const b = createBrowser({ policy: controlPolicy() });
-  b.app = await startApp({ builtinKey: () => null, window: b.win, hubs: testHubs });
+  b.app = await startApp({ builtinKey: () => null, autoApplyUpdates: false, window: b.win, hubs: testHubs });
   assert.ok(b.app);
   await b.app.shell.switchTab('simultaneous');
   await until(() => el(b, 'sim-control').hidden === false, 50);

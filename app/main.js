@@ -162,12 +162,13 @@ export function captureSharedFragment({ location, history }) {
  * settled gate. `now` returns epoch milliseconds for policy dates.
  */
 // hubs is a trusted code registry, never a settings or QR value.
+// autoApplyUpdates (default true) is the owner's automatic-update choice;
 // builtinKey(providerId) -> key | null is the build's own key lookup. It is an
 // option so the no-key path stays testable: the suite boots without one and
 // still exercises every "this device has no key" screen.
 async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs = REGISTERED_HUBS, fetch: fetcher = win?.fetch?.bind?.(win),
   setTimeout: schedule = win?.setTimeout?.bind?.(win), clearTimeout: cancelTimer = win?.clearTimeout?.bind?.(win),
-  builtinKey = builtinKeyFor, now = () => Date.now() } = {}) {
+  builtinKey = builtinKeyFor, autoApplyUpdates = true, now = () => Date.now() } = {}) {
   const doc = win?.document;
   const nav = win?.navigator;
   const root = givenRoot ?? attempt(() => doc.getElementById(ROOT_ID));
@@ -641,7 +642,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // Owner (2026-09-07): a new release applies itself as soon as this page is
     // idle and alone, so a visitor is on the current version without pressing
     // anything. A running interpretation still finishes first.
-    pwa = createPwa({ window: win, navigator: nav, isBusy: busy, autoApply: true, ...timing });
+    // autoApplyUpdates is an option so the suite can still exercise the
+    // button path and the "update blocked while busy" contracts.
+    pwa = createPwa({ window: win, navigator: nav, isBusy: busy, autoApply: autoApplyUpdates === true, ...timing });
     removers.push(activity.subscribe(() => pwa.reloadIfPending()));
     removers.push(engine.subscribeWork(() => pwa.reloadIfPending()));
     removers.push(diagnostics.subscribe(() => pwa.reloadIfPending()));

@@ -453,7 +453,7 @@ export async function boot(options = {}) {
   // Scenarios boot without one by default so every "this device has no key"
   // screen stays under test; pass builtinKey to exercise the shipped path.
   const app = await startApp({ window: browser.win, setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout,
-    builtinKey: options.builtinKey ?? (() => null) });
+    builtinKey: options.builtinKey ?? (() => null), autoApplyUpdates: options.autoApplyUpdates ?? false });
   assert.ok(app, 'the app started');
   const store = app.engine.state;
   const el = (name) => byClass(browser.root, name);
