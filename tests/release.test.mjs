@@ -470,14 +470,16 @@ test('--builtin-key-file writes the key into the staged copy only, check-release
   const directory = await temp(t);
   const root = await repoLikeSource(directory);
   const run = (script, args) => spawnSync(process.execPath, [join('scripts', script), ...args], { cwd: repoRoot, encoding: 'utf8' });
-  assert.doesNotMatch(await readFile(join(root, 'app/security/builtin-key.js'), 'utf8'), /BUILTIN_KEY = '[^']+'/, 'the repository slot is empty');
-  // Any printable key shape, not only AIza…: the slot is the signal.
+  assert.match(await readFile(join(root, 'app/security/builtin-key.js'), 'utf8'), /BUILTIN_KEYS = Object\.freeze\(\[\]\)/, 'the repository slot is empty');
+  // Any printable key shape, not only AIza…: the slot is the signal. One key
+  // per line in rotation order; comments, blank lines and duplicates drop out.
   const key = 'AQ.TEST_ONLY_' + 'k'.repeat(40);
-  await write(directory, 'key.txt', `${key}\n`);
+  const spare = 'AQ.TEST_ONLY_' + 's'.repeat(40);
+  await write(directory, 'key.txt', `# first key\n${key}\n\n${spare}\n${key}\n`);
   const out = join(directory, 'out');
   await stageRelease({ id: 'keyed', out, root, builtinKeyFile: join(directory, 'key.txt') });
   const staged = await readFile(join(out, 'releases/keyed/app/security/builtin-key.js'), 'utf8');
-  assert.ok(staged.includes(`export const BUILTIN_KEY = '${key}';`), 'the staged file carries the key');
+  assert.ok(staged.includes(`export const BUILTIN_KEYS = Object.freeze(['${key}', '${spare}']);`), 'the staged file carries the keys in order');
   assert.doesNotMatch(await readFile(join(root, 'app/security/builtin-key.js'), 'utf8'), new RegExp(key), 'the source is untouched');
   const manifest = JSON.parse(await readFile(join(out, 'releases/keyed/release.json'), 'utf8'));
   assert.equal(manifest.files['app/security/builtin-key.js'], sha256(Buffer.from(staged)), 'the digest is of the staged bytes');
@@ -486,10 +488,12 @@ test('--builtin-key-file writes the key into the staged copy only, check-release
   assert.deepEqual(result.notices, [{ code: 'RELEASE_BUILTIN_KEY', path: 'releases/keyed/app/security/builtin-key.js' }]);
   // Without the option nothing is written and nothing is announced.
   await stageRelease({ id: 'plain', out, root });
-  assert.doesNotMatch(await readFile(join(out, 'releases/plain/app/security/builtin-key.js'), 'utf8'), /BUILTIN_KEY = '[^']+'/);
+  assert.match(await readFile(join(out, 'releases/plain/app/security/builtin-key.js'), 'utf8'), /BUILTIN_KEYS = Object\.freeze\(\[\]\)/);
   // The root is cumulative, so the keyed release is still announced and the plain one is not.
   assert.deepEqual((await checkRelease({ dir: out })).notices.map((notice) => notice.path), ['releases/keyed/app/security/builtin-key.js']);
   // Refusals are codes only.
+  await write(directory, 'empty.txt', '# only a comment\n\n');
+  await assert.rejects(stageRelease({ id: 'bad0', out, root, builtinKeyFile: join(directory, 'empty.txt') }), { message: 'RELEASE_KEY_INVALID' });
   await write(directory, 'bad.txt', 'has a space');
   await assert.rejects(stageRelease({ id: 'bad', out, root, builtinKeyFile: join(directory, 'bad.txt') }), { message: 'RELEASE_KEY_INVALID' });
   await write(directory, 'quote.txt', "it's");
@@ -501,10 +505,10 @@ test('--builtin-key-file writes the key into the staged copy only, check-release
   assert.ok(!pointed.stdout.includes(key) && !pointed.stderr.includes(key));
   const staged2 = run('stage-release.mjs', ['--id', 'cli-keyed', '--out', out, '--builtin-key-file', join(directory, 'key.txt')]);
   assert.equal(staged2.status, 0, staged2.stderr);
-  assert.ok(!staged2.stdout.includes(key), 'the key is never echoed');
+  assert.ok(!staged2.stdout.includes(key) && !staged2.stdout.includes(spare), 'the keys are never echoed');
   const checked = run('check-release.mjs', [out]);
   assert.match(checked.stdout, /^RELEASE_BUILTIN_KEY releases\/cli-keyed\/app\/security\/builtin-key\.js\nRELEASE_BUILTIN_KEY releases\/keyed\/app\/security\/builtin-key\.js\nRELEASE_OK current=cli-keyed releases=3 files=\d+\n$/);
-  assert.ok(!checked.stdout.includes(key));
+  assert.ok(!checked.stdout.includes(key) && !checked.stdout.includes(spare));
 });
 
 test('CLI stages and checks with fixed codes and never echoes argument contents', async (t) => {

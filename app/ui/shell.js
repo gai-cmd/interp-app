@@ -444,14 +444,22 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   // Whether the site's built-in key is what the selected source resolves to
   // (metadata only, never a value). The badge and the simultaneous view's
   // quota message both read this, so they cannot disagree.
-  const usingBuiltinKey = () => snapshot.keySelection?.keySource === 'personal'
-    && attempt(() => getKeyMetadata?.(snapshot.keySelection))?.builtin === true;
+  const builtinKeyState = () => {
+    if (snapshot.keySelection?.keySource !== 'personal') return null;
+    const meta = attempt(() => getKeyMetadata?.(snapshot.keySelection));
+    return meta?.builtin === true ? meta : null;
+  };
+  const usingBuiltinKey = () => builtinKeyState() !== null;
   function render(next = store.snapshot()) {
     snapshot = next;
     const { providerKey, modeKey } = keySelectionKeys(snapshot.keySelection);
     providerBadge.hidden = providerKey === null;
     providerBadge.textContent = providerKey ? i18n.t(resolveKey(i18n, providerKey, 'common.unknown')) : '';
-    modeBadge.textContent = i18n.t(usingBuiltinKey() ? 'mode.builtin' : resolveKey(i18n, modeKey));
+    const builtin = builtinKeyState();
+    // With several site keys in rotation the badge says which one is in use.
+    modeBadge.textContent = builtin === null ? i18n.t(resolveKey(i18n, modeKey))
+      : builtin.builtinCount > 1 ? i18n.t('mode.builtinIndexed', { index: String(builtin.builtinIndex + 1), count: String(builtin.builtinCount) })
+        : i18n.t('mode.builtin');
     modeBadge.setAttribute('data-key-source', snapshot.keySelection?.keySource ?? 'none');
     renderConnection();
     renderNotice();
@@ -475,7 +483,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });
   const simView = listenEngines ? createSimView({ root: panels.simultaneous, i18n, engines: listenEngines, hubs,
     document: doc, onSequential: () => switchTab('sequential'), onOpenSettings: () => openSettings('key'),
-    onHome: () => goHome(), isBuiltinKey: () => usingBuiltinKey() }) : null;
+    onHome: () => goHome(), builtinKeyState: () => builtinKeyState() }) : null;
   listen(homeButton, 'click', () => goHome());
   const unsubscribe = store.subscribe(render);
   removers.push(engine.subscribeVoice?.(renderConnection) ?? (() => {}));

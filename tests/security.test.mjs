@@ -365,3 +365,36 @@ test('P3-44 shared credentials keep priority and never silently fall back after 
   assert.throws(() => store.getCredentialRef(address('alpha', 'shared')), { code: 'CREDENTIAL_REQUIRED' });
   store.dispose();
 });
+
+// Owner (2026-09-07): several free-tier site keys are used in turns.
+test('built-in key pool: rotateBuiltin moves to the next key, invalidates the old reference, reports exhaustion, and never touches an own key', () => {
+  const { store } = setup();
+  const keys = ['pool-key-one', 'pool-key-two', 'pool-key-three'];
+  store.setBuiltin('alpha', [...keys, keys[0]]);
+  const meta = () => store.getMetadata('alpha', 'personal');
+  assert.deepEqual([meta().builtinIndex, meta().builtinCount, meta().builtinExhausted], [0, 3, false], 'duplicates collapse');
+  noSecret(meta());
+  const first = store.getCredentialRef(address());
+  assert.equal(store.resolveCredential(first.reference, address()), keys[0]);
+  const events = [];
+  store.subscribe((event) => events.push(event.type));
+  assert.deepEqual(store.rotateBuiltin('alpha'), { index: 1, count: 3 });
+  assert.deepEqual(events, ['key-changed']);
+  assert.throws(() => store.resolveCredential(first.reference, address()), { code: 'CREDENTIAL_MISMATCH' }, 'the spent key cannot be resolved through an old reference');
+  assert.equal(store.resolveCredential(store.getCredentialRef(address()).reference, address()), keys[1]);
+  assert.deepEqual(store.rotateBuiltin('alpha'), { index: 2, count: 3 });
+  assert.equal(store.rotateBuiltin('alpha'), null, 'no key after the last');
+  assert.deepEqual([meta().builtinIndex, meta().builtinExhausted], [2, true]);
+  assert.equal(store.resolveCredential(store.getCredentialRef(address()).reference, address()), keys[2], 'the last key stays usable');
+  assert.equal(store.rotateBuiltin('alpha'), null);
+  assert.equal(store.revealPersonal('alpha'), null);
+  // A person's own key is never rotated away: the pool advances only its own position.
+  store.setPersonal('alpha', 'own-key-value');
+  assert.equal(store.getMetadata('alpha', 'personal').builtin, undefined);
+  assert.equal(store.rotateBuiltin('alpha'), null);
+  store.deleteKey('alpha', 'personal');
+  assert.deepEqual([meta().builtin, meta().builtinIndex], [true, 2], 'deleting the own key returns to the pool where it stood');
+  assert.throws(() => store.setBuiltin('alpha', []), { code: 'INVALID_KEY' });
+  assert.equal(store.rotateBuiltin('beta'), null, 'no pool for that provider');
+  store.dispose();
+});

@@ -234,7 +234,7 @@ function validateTargets({ id, root, out }) {
 // built-in key (app/security/builtin-key.js) is '' in git and is written into
 // the staged copy from a local file, so a public repository never carries it.
 export const BUILTIN_KEY_FILE = 'app/security/builtin-key.js';
-const BUILTIN_KEY_SLOT = "export const BUILTIN_KEY = '';";
+const BUILTIN_KEY_SLOT = 'export const BUILTIN_KEYS = Object.freeze([]);';
 // Same shape app/security/shared-key.js validateKey accepts.
 const BUILTIN_KEY_SHAPE = /^[\x21-\x7e]{1,512}$/;
 
@@ -243,15 +243,21 @@ async function stagedBytes(file, bytes, builtinKey) {
   if (builtinKey === null || file !== BUILTIN_KEY_FILE) return bytes;
   const text = bytes.toString('utf8');
   if (text.split(BUILTIN_KEY_SLOT).length !== 2) throw fail('RELEASE_KEY_SLOT_INVALID');
-  return Buffer.from(text.replace(BUILTIN_KEY_SLOT, `export const BUILTIN_KEY = '${builtinKey}';`), 'utf8');
+  const list = builtinKey.map((key) => `'${key}'`).join(', ');
+  return Buffer.from(text.replace(BUILTIN_KEY_SLOT, `export const BUILTIN_KEYS = Object.freeze([${list}]);`), 'utf8');
 }
-/** Reads and validates the key file; the value is returned, never printed. */
+/**
+ * Reads and validates the key file — one key per line, in rotation order;
+ * blank lines and lines starting with # are ignored, duplicates collapse.
+ * The values are returned, never printed.
+ */
 async function readBuiltinKey(path) {
   if (path === null || path === undefined) return null;
   let text;
-  try { text = (await readFile(path, 'utf8')).trim(); } catch { throw fail('RELEASE_KEY_FILE_MISSING'); }
-  if (!BUILTIN_KEY_SHAPE.test(text) || text.includes("'") || text.includes('\\')) throw fail('RELEASE_KEY_INVALID');
-  return text;
+  try { text = await readFile(path, 'utf8'); } catch { throw fail('RELEASE_KEY_FILE_MISSING'); }
+  const keys = [...new Set(text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith('#')))];
+  if (!keys.length || keys.some((key) => !BUILTIN_KEY_SHAPE.test(key) || key.includes("'") || key.includes('\\'))) throw fail('RELEASE_KEY_INVALID');
+  return keys;
 }
 
 export async function stageRelease({ id, out, root = projectRoot, now = () => new Date(), builtinKeyFile = null } = {}) {

@@ -49,7 +49,7 @@ export const SECRET_PATTERNS = Object.freeze([
 // contain one.
 export const SECRET_EXEMPT_FILES = Object.freeze(['app/security/builtin-key.js']);
 /** A staged built-in key file whose slot was filled by stage-release --builtin-key-file. */
-const BUILTIN_KEY_PRESENT = /export const BUILTIN_KEY = '[^']+';/;
+const BUILTIN_KEY_PRESENT = /export const BUILTIN_KEYS = Object\.freeze\(\['/;
 /** True for the one versioned file allowed to carry the built-in key. */
 export function isSecretExempt(path) {
   const kind = classifyPath(path);

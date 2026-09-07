@@ -26,6 +26,7 @@ export function createKeyStore({ registry, storage, now = Date.now,
   if (!registry) throw new ProviderError('INVALID_REQUEST');
   const personal = new Map();
   const builtins = new Map();
+  const builtinEntry = (pool) => ({ key: pool.keys[pool.index], remembered: false, builtin: true, pool });
   const shared = new Map();
   const references = new WeakMap();
   const listeners = new Set();
@@ -93,15 +94,40 @@ export function createKeyStore({ registry, storage, now = Date.now,
     },
     // Built-in credentials use the personal transport, but are never UI secrets
     // or persistent user entries. Register even when a personal key wins.
-    setBuiltin(providerId, key) {
+    // Owner (2026-09-07): `keys` is one key or a list used in turns — the
+    // pool keeps its position, and rotateBuiltin() moves to the next key.
+    setBuiltin(providerId, keys) {
       address(providerId, 'personal');
-      validateKey(key);
-      const entry = { key, remembered: false, builtin: true };
-      builtins.set(providerId, entry);
+      const list = [...new Set((Array.isArray(keys) ? keys : [keys]).map((key) => validateKey(key)))];
+      if (!list.length) throw new ProviderError('INVALID_KEY');
+      const pool = { keys: Object.freeze(list), index: 0, exhausted: false };
+      builtins.set(providerId, pool);
       if (personal.has(providerId) || shared.has(providerId)) return;
-      personal.set(providerId, entry);
+      personal.set(providerId, builtinEntry(pool));
       if (!selection) selection = Object.freeze({ providerId, keySource: 'personal' });
       notify('key-changed', providerId, 'personal');
+    },
+    /**
+     * Moves the built-in pool to its next key after the active one hit its
+     * quota. Returns { index, count } when a spare key took over (references
+     * to the spent key are invalidated by the change event), or null when the
+     * pool is spent — which the metadata then reports as builtinExhausted.
+     */
+    rotateBuiltin(providerId) {
+      address(providerId, 'personal');
+      const pool = builtins.get(providerId);
+      if (!pool) return null;
+      const active = personal.get(providerId)?.builtin === true;
+      if (pool.index + 1 >= pool.keys.length) {
+        if (pool.exhausted) return null;
+        pool.exhausted = true;
+        if (active) notify('key-changed', providerId, 'personal');
+        return null;
+      }
+      pool.index += 1;
+      pool.exhausted = false;
+      if (active) { personal.set(providerId, builtinEntry(pool)); notify('key-changed', providerId, 'personal'); }
+      return Object.freeze({ index: pool.index, count: pool.keys.length });
     },
     setPersonal(providerId, key, { remember = false } = {}) {
       address(providerId, 'personal');
@@ -155,7 +181,9 @@ export function createKeyStore({ registry, storage, now = Date.now,
         // stored key so the field does not look empty on a phone. The mask
         // needs the length and nothing else, so the length — not the value —
         // is what the metadata carries.
-        ? { providerId, keySource, remembered: entry.remembered, length: entry.builtin ? 0 : entry.key.length, ...(entry.builtin ? { builtin: true } : {}) }
+        ? { providerId, keySource, remembered: entry.remembered, length: entry.builtin ? 0 : entry.key.length,
+          ...(entry.builtin ? { builtin: true, builtinIndex: entry.pool.index, builtinCount: entry.pool.keys.length,
+            builtinExhausted: entry.pool.exhausted } : {}) }
         : { providerId, keySource, version: entry.version, eventId: entry.eventId, eventName: entry.eventName,
           usageEndsAt: entry.expiresAt, administratorVerified: false, networkRestrictionVerified: false });
     },
@@ -201,7 +229,7 @@ export function createKeyStore({ registry, storage, now = Date.now,
       if (keySource === 'personal' && personal.get(providerId)?.builtin) return;
       mapFor(keySource).delete(providerId);
       if (keySource === 'personal' && builtins.has(providerId) && !shared.has(providerId)) {
-        personal.set(providerId, builtins.get(providerId));
+        personal.set(providerId, builtinEntry(builtins.get(providerId)));
       }
       armExpiry();
       notify('key-deleted', providerId, keySource);

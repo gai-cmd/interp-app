@@ -71,7 +71,7 @@ function fake(mode) {
   };
 }
 function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers(), voicePreference = createLiveVoicePreference(),
-  onOpenSettings, onHome, isBuiltinKey } = {}) {
+  onOpenSettings, onHome, builtinKeyState } = {}) {
   const doc = { createElement(tag) { return new BoardElement(doc, tag); }, activeElement: null, hidden: false,
     fullscreenElement: null, fullscreenRequests: [], exits: 0, listeners: new Map(),
     async exitFullscreen() { doc.exits++; doc.fullscreenElement = null; },
@@ -82,7 +82,7 @@ function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers 
   const root = doc.createElement('main'), direct = fake('direct'), hub = fake('hub');
   const i18n = createI18n({ dictionaries, language: 'en' });
   const view = createSimView({ root, i18n, engines: { direct, hub }, document: doc, window: win, storage, ...timers, voicePreference,
-    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings, onHome, isBuiltinKey });
+    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings, onHome, builtinKeyState });
   const get = name => byClass(root, `sim-${name}`);
   const choose = (name, value) => { get(name).value = value; get(name).dispatch('change'); };
   return { root, doc, win, direct, hub, i18n, view, get, choose, storage, wakeLock, timers, voicePreference,
@@ -328,8 +328,9 @@ test('unregistered hubs are hidden and rejected promises expose no raw error', a
 // shown as "the site key is blocked" and offers the key entry, since entering
 // one's own key is the way to continue right away.
 test('a quota failure on the built-in key says the site key is blocked and offers settings; on an own key it stays the plain 429 text', () => {
-  let builtin = true, opened = 0;
-  const f = setup({ onOpenSettings: () => { opened++; }, isBuiltinKey: () => builtin });
+  // The pool state the shell reports: one key, already spent.
+  let builtin = { builtin: true, builtinIndex: 0, builtinCount: 1, builtinExhausted: true }, opened = 0;
+  const f = setup({ onOpenSettings: () => { opened++; }, builtinKeyState: () => builtin });
   for (const code of ['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']) {
     f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: code }); };
     f.get('start').dispatch('click');
@@ -340,21 +341,34 @@ test('a quota failure on the built-in key says the site key is blocked and offer
   f.get('open-settings').dispatch('click'); assert.equal(opened, 1);
   f.i18n.setLanguage('ko'); f.view.refresh();
   assert.equal(f.get('notice').textContent, dictionaries.ko['sim.error.builtinQuota']);
+  // Several site keys: while a spare took over, the text says which key is in use and asks for a reopen.
+  builtin = { builtin: true, builtinIndex: 1, builtinCount: 3, builtinExhausted: false };
+  f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'DAILY_LIMIT' }); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, f.i18n.t('sim.error.builtinRotated', { index: '2', count: '3' }));
+  assert.ok(f.get('notice').textContent.includes('2/3'));
+  assert.equal(f.get('notice').getAttribute('data-failure'), 'builtin-rotated');
+  assert.equal(f.get('open-settings').hidden, false);
+  // The last key spent: back to "blocked".
+  builtin = { builtin: true, builtinIndex: 2, builtinCount: 3, builtinExhausted: true };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, f.i18n.t('sim.error.builtinQuota'));
+  assert.equal(f.get('notice').getAttribute('data-failure'), 'builtin-quota');
   // The same failure on a key the person entered themselves keeps the ordinary text and no settings action.
-  builtin = false;
+  builtin = null;
   f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'RATE_LIMITED' }); };
   f.get('start').dispatch('click');
   assert.equal(f.get('notice').textContent, dictionaries.ko['sim.error.RATE_LIMITED']);
   assert.equal(f.get('notice').getAttribute('data-failure'), 'RATE_LIMITED');
   assert.equal(f.get('open-settings').hidden, true);
   // A non-quota failure on the built-in key is not dressed up as a quota problem.
-  builtin = true;
+  builtin = { builtin: true, builtinIndex: 0, builtinCount: 1, builtinExhausted: false };
   f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'NETWORK_ERROR' }); };
   f.get('start').dispatch('click');
   assert.notEqual(f.get('notice').textContent, dictionaries.ko['sim.error.builtinQuota']);
   assert.equal(f.get('open-settings').hidden, true);
   // A throwing predicate is treated as "not built-in", never as a crash of the screen.
-  const g = setup({ isBuiltinKey: () => { throw new Error('SECRET'); } });
+  const g = setup({ builtinKeyState: () => { throw new Error('SECRET'); } });
   g.direct.start = () => { g.direct.patch({ status: 'failed', errorCode: 'RATE_LIMITED' }); };
   g.get('start').dispatch('click');
   assert.equal(g.get('notice').textContent, dictionaries.en['sim.error.RATE_LIMITED']);

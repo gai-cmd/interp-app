@@ -537,6 +537,47 @@ test('P3-34 the policy export carries no key, and the generator is the only plac
   }
 });
 
+// Owner (2026-09-07): free-tier site keys are used in turns. A 429 on the
+// active one moves the pool on and the screen says so; the last one leaves it spent.
+test('built-in key pool: a 429 on the site key moves to the spare key, the badge and the screen say so, and the last key leaves the pool spent', async t => {
+  const captured = captureConsole(); t.after(captured.restore);
+  const keys = [`${secrets.personal}-POOL-ONE`, `${secrets.personal}-POOL-TWO`];
+  const b = await boot({ builtinKey: () => keys });
+  t.after(() => b.close());
+  const keysStore = b.app.config.keyStore;
+  const badge = () => b.app.shell.elements.modeBadge.textContent;
+  const notice = () => byClass(b.root, 'sim-notice');
+  assert.equal(badge(), b.app.i18n.t('mode.builtinIndexed', { index: '1', count: '2' }));
+  const failWith429 = async (expectedKey) => {
+    const sockets = b.sockets.length;
+    b.el('sim-start').dispatch('click');
+    await until(() => b.audio.nodes.at(-1)?.port.onmessage);
+    b.microphone.feed(new Float32Array(4096).fill(0.1));
+    await until(() => b.sockets.length === sockets + 1);
+    const ws = b.sockets[sockets];
+    assert.equal(b.socketURLs[sockets], `${LIVE_ENDPOINT}?key=${encodeURIComponent(expectedKey)}`);
+    live.ready(ws);
+    await until(() => b.app.listenEngines.direct.snapshot().status === 'running');
+    ws.json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: `${expectedKey} ${SECRET_MARK}` } });
+    await until(() => b.app.listenEngines.direct.snapshot().status === 'failed');
+    await until(() => !b.app.listenEngines.direct.snapshot().busy);
+  };
+  await failWith429(keys[0]);
+  assert.deepEqual([keysStore.getMetadata('gemini', 'personal').builtinIndex, keysStore.getMetadata('gemini', 'personal').builtinExhausted], [1, false], 'the pool moved on');
+  assert.equal(badge(), b.app.i18n.t('mode.builtinIndexed', { index: '2', count: '2' }));
+  assert.equal(notice().getAttribute('data-failure'), 'builtin-rotated');
+  assert.equal(notice().textContent, b.app.i18n.t('sim.error.builtinRotated', { index: '2', count: '2' }));
+  assert.equal(b.el('sim-open-settings').hidden, false);
+  // Reopening uses the spare key; its 429 leaves the pool spent and the screen says blocked.
+  await failWith429(keys[1]);
+  assert.equal(keysStore.getMetadata('gemini', 'personal').builtinExhausted, true);
+  assert.equal(notice().getAttribute('data-failure'), 'builtin-quota');
+  assert.equal(notice().textContent, b.app.i18n.t('sim.error.builtinQuota'));
+  assert.equal(badge(), b.app.i18n.t('mode.builtinIndexed', { index: '2', count: '2' }));
+  assert.equal(leaks({ observed: observable(b), logs: captured.calls }), false);
+  assert.equal(leaks([...b.storage]), false, 'no pool key is ever stored');
+});
+
 test('P3-44 first visit starts Live from the UI with a protected site default and no persistence permission', async t => {
   const captured = captureConsole(); t.after(captured.restore);
   const { scenarioPolicy } = await import('./fixtures/scenarios.mjs');

@@ -19,7 +19,7 @@
 //   - The value is NOT in git. GitHub secret scanning reports any Google key
 //     pushed to a public repository and Google revokes it within minutes
 //     (this happened to the first key on 2026-09-07). The committed value
-//     stays '' and scripts/stage-release.mjs --builtin-key-file <path>
+//     stays empty and scripts/stage-release.mjs --builtin-key-file <path>
 //     writes the real key into the staged copy only, so it reaches the
 //     deployed site and never a repository. Rotating means replacing the
 //     local file and staging a new release.
@@ -35,14 +35,17 @@ import { GEMINI_PROVIDER_ID } from '../providers/gemini/index.js';
 export const BUILTIN_PROVIDER_ID = GEMINI_PROVIDER_ID;
 
 /**
- * The shipped key. In git this is always '' (see above); a release staged
- * with --builtin-key-file carries the real value here. Deploying without one
- * makes the app behave exactly as it did before this file existed (the key
- * entry is the only way in).
+ * The shipped keys, in the order they are used. In git this is always the
+ * empty list (see above); a release staged with --builtin-key-file carries the
+ * file's keys here, one per line. Owner (2026-09-07): several free-tier keys
+ * are used in turns — when the active one hits its quota (429) the app moves
+ * to the next, and only when the last one is spent does it report the site
+ * key as blocked. Deploying with none makes the app behave exactly as it did
+ * before this file existed (the key entry is the only way in).
  */
-export const BUILTIN_KEY = '';
+export const BUILTIN_KEYS = Object.freeze([]);
 
-/** The key for `providerId`, or null when this build ships none for it. */
+/** The keys for `providerId` in rotation order, or null when this build ships none for it. */
 export function builtinKeyFor(providerId) {
-  return providerId === BUILTIN_PROVIDER_ID && BUILTIN_KEY !== '' ? BUILTIN_KEY : null;
+  return providerId === BUILTIN_PROVIDER_ID && BUILTIN_KEYS.length ? [...BUILTIN_KEYS] : null;
 }

@@ -271,10 +271,11 @@ N/L/T·언어/경로 분포·좌석/AP·회선·기기·모델·서버·릴리�
 
 - 키는 사이트를 여는 누구나 읽을 수 있다(구글 공식 문서는 클라이언트 코드에 키를 넣지 말라고 권고하며, Generative Language API는 HTTP 리퍼러 제한이 확실하지 않다). 무료 등급 키라 과금은 없고, 한도를 다 쓰면 초기화까지 전원이 429를 본다(앱은 "사이트 기본 키 한도" 문구와 설정 열기를 보여준다).
 - **키를 공개 GitHub 레포에 넣으면 안 된다.** 2026-09-07 10:20 `gh-pages` push 직후 GitHub 시크릿 스캐닝이 경고(`secret-scanning/alerts/1`)를 열고 구글에 통보해 1분 안에 키가 무효화됐다(`Your API key was reported as leaked`). 그래서:
-  - git의 `BUILTIN_KEY`는 항상 `''`다. 실제 키는 **`~/.config/interp-app/builtin-key`**(레포 밖, 한 줄) 에만 둔다.
+  - git의 `BUILTIN_KEYS`는 항상 빈 목록이다. 실제 키는 **`~/.config/interp-app/builtin-key`**(레포 밖, **한 줄에 키 하나**, `#` 줄과 빈 줄 무시, 위에서부터 순서대로) 에만 둔다. 편집은 **`node tools/keys-console.mjs`**(로컬 127.0.0.1:8799 페이지, 5칸): 구글에 물어 살아 있는 키만 남겨 저장하고, "저장 후 배포"는 아래 Vercel 절차를 그대로 실행한다.
   - `node scripts/stage-release.mjs --id <id> --out <루트> --builtin-key-file ~/.config/interp-app/builtin-key` 가 스테이징 사본의 그 파일에만 키를 써 넣는다(해시 계산 전). 키 모양이 아니면 `RELEASE_KEY_INVALID`, 파일이 없으면 `RELEASE_KEY_FILE_MISSING`, `--point`와 함께 쓰면 `RELEASE_ARGUMENT_INVALID`.
   - 키가 든 배포 루트는 **git 브랜치(gh-pages)에 커밋하지 않는다.** 호스트에 직접 업로드한다(§Vercel).
 - `scripts/check-release.mjs`의 비밀 스캔은 그대로 살아 있다. `SECRET_EXEMPT_FILES`의 이 파일 하나만 예외이고, 키가 든 릴리스는 `RELEASE_OK` 앞줄에 `RELEASE_BUILTIN_KEY releases/<id>/app/security/builtin-key.js`를 찍는다. 다른 파일의 키는 여전히 `RELEASE_SECRET_PATTERN`.
+- **교대 사용(2026-09-07)**: 배포본은 키 목록을 전부 싣고 첫 키부터 쓴다. 활성 키가 429 계열(RATE_LIMITED·DAILY_LIMIT·TOKEN_LIMIT·UNKNOWN_429)로 실패하면 `keyStore.rotateBuiltin()`이 다음 키로 넘기고(이전 참조 무효화) 동시통역 화면은 "예비 키 n/m으로 바꿨어요 — 세션 다시 열기"를, 헤더 배지는 "사이트 기본 키 n/m"을 보인다. 마지막 키까지 실패하면 풀은 소진 상태로 남고 "사이트 기본 키 한도" 문구가 뜬다. 사람이 넣은 개인 키는 절대 교대 대상이 아니다.
 - 앱 안의 우선순위: 이 기기에 저장된 개인 키 > 공용 이벤트 키 > 내장 키. 내장 키는 localStorage에 절대 기록되지 않고, 설정에는 "사이트 기본 키 사용 중"으로만 보이며 표시·삭제가 막혀 있다.
 
 키 회전: AI Studio에서 새 키 발급 → 이전 키 삭제 → `~/.config/interp-app/builtin-key` 교체 → 새 `--id`로 `stage-release --builtin-key-file` → `check-release`(`RELEASE_BUILTIN_KEY` 줄 확인) → Vercel 업로드.

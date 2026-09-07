@@ -49,6 +49,7 @@ import { createVoiceEngine } from './engine/voice.js';
 import { createSeqEngine } from './engine/seq.js';
 import { createDiagnostics } from './engine/diagnostics.js';
 import { DEFAULT_TAB, TABS, mount } from './ui/shell.js';
+import { QUOTA_CODES } from './ui/sim-view.js';
 import { createSettingsView } from './ui/settings-view.js';
 import { createAppearance } from './ui/appearance.js';
 import { createDisplayControls } from './ui/display-view.js';
@@ -463,6 +464,32 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       platform, getAudioContext, ...timing,
       resolveFallback: (...args) => config.resolveFallback(PROVIDER_ID, 'live')?.(...args),
       onLevel: level => shell?.simView?.onLevel(level) });
+    // Owner (2026-09-07): the site's free-tier keys are used in turns. A quota
+    // failure (429 family) on the built-in key moves the pool to its next key
+    // and tells the person to reopen; the last key's failure leaves the pool
+    // spent, which the simultaneous screen then reports as blocked. One
+    // rotation per failure event, never on a key the person entered.
+    let rotatedFor = null;
+    const rotateOnQuota = (code, marker) => {
+      if (!QUOTA_CODES.includes(code) || marker === rotatedFor) return;
+      rotatedFor = marker;
+      const selection = attempt(() => config.keyStore.getSelection());
+      if (selection?.keySource !== 'personal') return;
+      if (attempt(() => config.keyStore.getMetadata(selection.providerId, 'personal'))?.builtin !== true) return;
+      const next = attempt(() => config.keyStore.rotateBuiltin(selection.providerId)) ?? null;
+      attempt(() => shell?.render());
+      attempt(() => shell?.simView?.refresh());
+      if (next) notify('sim.builtinRotated');
+    };
+    removers.push(simEngine.subscribe(() => {
+      const current = simEngine.snapshot();
+      if (current.status === 'failed' && current.errorCode) rotateOnQuota(current.errorCode, `sim:${current.generation}:${current.errorCode}`);
+    }));
+    removers.push(engine.state.subscribe((current) => {
+      for (const turn of current.turns ?? []) {
+        if (turn.phase === TURN_PHASE.ERROR && turn.errorCode) rotateOnQuota(turn.errorCode, `seq:${turn.turnId}`);
+      }
+    }));
     // P2-13 requires speak/cancel even on browsers without speech synthesis.
     // Keep captions available through its existing unavailable-output contract.
     const hubTTS = deviceTTS ?? Object.freeze({
