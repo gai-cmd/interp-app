@@ -48,6 +48,8 @@ export const SECRET_PATTERNS = Object.freeze([
 // notice; this list must never grow to cover a file that merely happens to
 // contain one.
 export const SECRET_EXEMPT_FILES = Object.freeze(['app/security/builtin-key.js']);
+/** A staged built-in key file whose slot was filled by stage-release --builtin-key-file. */
+const BUILTIN_KEY_PRESENT = /export const BUILTIN_KEY = '[^']+';/;
 /** True for the one versioned file allowed to carry the built-in key. */
 export function isSecretExempt(path) {
   const kind = classifyPath(path);
@@ -284,11 +286,15 @@ export async function checkRelease({ dir, endpointOrigins } = {}) {
     const bytes = await readFile(join(root, path));
     contents.set(path, bytes);
     const text = bytes.toString('latin1');
-    if (!SECRET_PATTERNS.some((pattern) => pattern.test(text))) continue;
     // The built-in key file is the one reviewed exception; it is announced,
-    // not accepted in silence. Everything else is still a release blocker.
-    if (isSecretExempt(path)) notices.push({ code: 'RELEASE_BUILTIN_KEY', path });
-    else issues.push({ code: 'RELEASE_SECRET_PATTERN', path });
+    // not accepted in silence, whatever shape the key has (the slot itself is
+    // the signal, so a key the patterns do not know is announced too).
+    // Everything else is still a release blocker.
+    if (isSecretExempt(path)) {
+      if (BUILTIN_KEY_PRESENT.test(text) || SECRET_PATTERNS.some((pattern) => pattern.test(text))) notices.push({ code: 'RELEASE_BUILTIN_KEY', path });
+      continue;
+    }
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(text))) issues.push({ code: 'RELEASE_SECRET_PATTERN', path });
   }
 
   // Every release directory must be complete and byte-identical to its manifest.

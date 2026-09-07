@@ -464,6 +464,49 @@ test('the real shell, headers and endpoint origins pass the full check', async (
   assert.ok(shell.every((path) => !/^[a-z]+:/.test(path)));
 });
 
+// Owner (2026-09-07): the built-in key is never in git. stage-release writes it
+// into the staged copy from a local file, and check-release announces it.
+test('--builtin-key-file writes the key into the staged copy only, check-release announces it, and bad input is refused by code', async (t) => {
+  const directory = await temp(t);
+  const root = await repoLikeSource(directory);
+  const run = (script, args) => spawnSync(process.execPath, [join('scripts', script), ...args], { cwd: repoRoot, encoding: 'utf8' });
+  assert.doesNotMatch(await readFile(join(root, 'app/security/builtin-key.js'), 'utf8'), /BUILTIN_KEY = '[^']+'/, 'the repository slot is empty');
+  // Any printable key shape, not only AIza…: the slot is the signal.
+  const key = 'AQ.TEST_ONLY_' + 'k'.repeat(40);
+  await write(directory, 'key.txt', `${key}\n`);
+  const out = join(directory, 'out');
+  await stageRelease({ id: 'keyed', out, root, builtinKeyFile: join(directory, 'key.txt') });
+  const staged = await readFile(join(out, 'releases/keyed/app/security/builtin-key.js'), 'utf8');
+  assert.ok(staged.includes(`export const BUILTIN_KEY = '${key}';`), 'the staged file carries the key');
+  assert.doesNotMatch(await readFile(join(root, 'app/security/builtin-key.js'), 'utf8'), new RegExp(key), 'the source is untouched');
+  const manifest = JSON.parse(await readFile(join(out, 'releases/keyed/release.json'), 'utf8'));
+  assert.equal(manifest.files['app/security/builtin-key.js'], sha256(Buffer.from(staged)), 'the digest is of the staged bytes');
+  const result = await checkRelease({ dir: out });
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.notices, [{ code: 'RELEASE_BUILTIN_KEY', path: 'releases/keyed/app/security/builtin-key.js' }]);
+  // Without the option nothing is written and nothing is announced.
+  await stageRelease({ id: 'plain', out, root });
+  assert.doesNotMatch(await readFile(join(out, 'releases/plain/app/security/builtin-key.js'), 'utf8'), /BUILTIN_KEY = '[^']+'/);
+  // The root is cumulative, so the keyed release is still announced and the plain one is not.
+  assert.deepEqual((await checkRelease({ dir: out })).notices.map((notice) => notice.path), ['releases/keyed/app/security/builtin-key.js']);
+  // Refusals are codes only.
+  await write(directory, 'bad.txt', 'has a space');
+  await assert.rejects(stageRelease({ id: 'bad', out, root, builtinKeyFile: join(directory, 'bad.txt') }), { message: 'RELEASE_KEY_INVALID' });
+  await write(directory, 'quote.txt', "it's");
+  await assert.rejects(stageRelease({ id: 'bad2', out, root, builtinKeyFile: join(directory, 'quote.txt') }), { message: 'RELEASE_KEY_INVALID' });
+  await assert.rejects(stageRelease({ id: 'bad3', out, root, builtinKeyFile: join(directory, 'missing.txt') }), { message: 'RELEASE_KEY_FILE_MISSING' });
+  const pointed = run('stage-release.mjs', ['--point', 'keyed', '--out', out, '--builtin-key-file', join(directory, 'key.txt')]);
+  assert.equal(pointed.status, 1);
+  assert.equal(pointed.stderr.trim(), 'RELEASE_ARGUMENT_INVALID');
+  assert.ok(!pointed.stdout.includes(key) && !pointed.stderr.includes(key));
+  const staged2 = run('stage-release.mjs', ['--id', 'cli-keyed', '--out', out, '--builtin-key-file', join(directory, 'key.txt')]);
+  assert.equal(staged2.status, 0, staged2.stderr);
+  assert.ok(!staged2.stdout.includes(key), 'the key is never echoed');
+  const checked = run('check-release.mjs', [out]);
+  assert.match(checked.stdout, /^RELEASE_BUILTIN_KEY releases\/cli-keyed\/app\/security\/builtin-key\.js\nRELEASE_BUILTIN_KEY releases\/keyed\/app\/security\/builtin-key\.js\nRELEASE_OK current=cli-keyed releases=3 files=\d+\n$/);
+  assert.ok(!checked.stdout.includes(key));
+});
+
 test('CLI stages and checks with fixed codes and never echoes argument contents', async (t) => {
   const directory = await temp(t);
   const run = (script, args) => spawnSync(process.execPath, [join('scripts', script), ...args], { cwd: repoRoot, encoding: 'utf8' });
@@ -501,9 +544,7 @@ test('CLI stages and checks with fixed codes and never echoes argument contents'
   await stageRelease({ id: 'cli-2', out: join(directory, 'good'), root });
   const ok = run('check-release.mjs', [join(directory, 'good')]);
   assert.equal(ok.status, 0, ok.stderr);
-  // The repository ships a built-in provider key (owner decision, 2026-09-07),
-  // so a passing check announces it on the line before RELEASE_OK.
-  assert.match(ok.stdout, /^RELEASE_BUILTIN_KEY releases\/cli-2\/app\/security\/builtin-key\.js\nRELEASE_OK current=cli-2 releases=1 files=\d+\n$/);
+  assert.match(ok.stdout, /^RELEASE_OK current=cli-2 releases=1 files=\d+\n$/);
   await write(join(directory, 'good'), 'docs/notes.md', fakeKey());
   const bad = run('check-release.mjs', [join(directory, 'good')]);
   assert.equal(bad.status, 1);

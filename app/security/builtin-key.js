@@ -16,7 +16,13 @@
 //     referrer restriction, so the site's origin cannot fence it in.
 //   - Every call made with it bills the owner's Google account. Set a budget
 //     cap on the project and rotate the key at the first sign of abuse.
-//   - Rotating means editing BUILTIN_KEY here and staging a new release.
+//   - The value is NOT in git. GitHub secret scanning reports any Google key
+//     pushed to a public repository and Google revokes it within minutes
+//     (this happened to the first key on 2026-09-07). The committed value
+//     stays '' and scripts/stage-release.mjs --builtin-key-file <path>
+//     writes the real key into the staged copy only, so it reaches the
+//     deployed site and never a repository. Rotating means replacing the
+//     local file and staging a new release.
 //
 // The value flows through exactly one path: app/main.js installs it as the
 // personal key when a device has none of its own, so it uses the reviewed
@@ -29,10 +35,12 @@ import { GEMINI_PROVIDER_ID } from '../providers/gemini/index.js';
 export const BUILTIN_PROVIDER_ID = GEMINI_PROVIDER_ID;
 
 /**
- * The shipped key. Set to '' to deploy without one; the app then behaves
- * exactly as it did before this file existed (the key entry is the only way in).
+ * The shipped key. In git this is always '' (see above); a release staged
+ * with --builtin-key-file carries the real value here. Deploying without one
+ * makes the app behave exactly as it did before this file existed (the key
+ * entry is the only way in).
  */
-export const BUILTIN_KEY = 'AIzaSyDpqaUo0i3Rtc0fL0nw0AgneA2i-bEEwSI';
+export const BUILTIN_KEY = '';
 
 /** The key for `providerId`, or null when this build ships none for it. */
 export function builtinKeyFor(providerId) {

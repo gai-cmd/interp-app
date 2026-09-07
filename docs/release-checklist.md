@@ -263,30 +263,33 @@ N/L/T·언어/경로 분포·좌석/AP·회선·기기·모델·서버·릴리�
   그 증거가 없는 한 [p3-verification.md](p3-verification.md) V22·V27은 미검증으로 남는다.
 - 정책 `no-store`는 요청 측 구현으로 보완하고 있으나, 그것이 헤더 적용의 증거는 아니다.
 
-## 내장 키 (2026-09-07, 오너 결정)
+## 내장 키 (2026-09-07, 오너 결정) — 키는 git에 없다
 
-이 빌드는 `app/security/builtin-key.js`에 Gemini 키를 **하나 담아 배포**한다. 설정한 적 없는 기기가 사이트를 열자마자 통역을 시작할 수 있게 해달라는 오너 요청이며, 오너가 아래 조건을 확인한 뒤 선택한 예외다.
+이 빌드는 `app/security/builtin-key.js`의 키로 설정한 적 없는 기기도 열자마자 통역을 시작한다. 오너가 아래를 확인한 뒤 선택한 예외다.
 
-- 키는 사이트를 여는 누구나 읽을 수 있다. 구글 공식 문서(<https://ai.google.dev/gemini-api/docs/api-key>)는 클라이언트 코드에 키를 넣지 말라고 권고하며, Generative Language API는 HTTP 리퍼러 제한이 확실하지 않아 사이트 도메인으로 키를 묶을 수 없다.
-- 그 키로 나가는 모든 호출은 오너의 구글 계정에 과금된다. **Google Cloud 프로젝트에 예산 상한을 걸어두고**, 이상 사용이 보이면 즉시 회전한다.
+- 키는 사이트를 여는 누구나 읽을 수 있다(구글 공식 문서는 클라이언트 코드에 키를 넣지 말라고 권고하며, Generative Language API는 HTTP 리퍼러 제한이 확실하지 않다). 무료 등급 키라 과금은 없고, 한도를 다 쓰면 초기화까지 전원이 429를 본다(앱은 "사이트 기본 키 한도" 문구와 설정 열기를 보여준다).
+- **키를 공개 GitHub 레포에 넣으면 안 된다.** 2026-09-07 10:20 `gh-pages` push 직후 GitHub 시크릿 스캐닝이 경고(`secret-scanning/alerts/1`)를 열고 구글에 통보해 1분 안에 키가 무효화됐다(`Your API key was reported as leaked`). 그래서:
+  - git의 `BUILTIN_KEY`는 항상 `''`다. 실제 키는 **`~/.config/interp-app/builtin-key`**(레포 밖, 한 줄) 에만 둔다.
+  - `node scripts/stage-release.mjs --id <id> --out <루트> --builtin-key-file ~/.config/interp-app/builtin-key` 가 스테이징 사본의 그 파일에만 키를 써 넣는다(해시 계산 전). 키 모양이 아니면 `RELEASE_KEY_INVALID`, 파일이 없으면 `RELEASE_KEY_FILE_MISSING`, `--point`와 함께 쓰면 `RELEASE_ARGUMENT_INVALID`.
+  - 키가 든 배포 루트는 **git 브랜치(gh-pages)에 커밋하지 않는다.** 호스트에 직접 업로드한다(§Vercel).
+- `scripts/check-release.mjs`의 비밀 스캔은 그대로 살아 있다. `SECRET_EXEMPT_FILES`의 이 파일 하나만 예외이고, 키가 든 릴리스는 `RELEASE_OK` 앞줄에 `RELEASE_BUILTIN_KEY releases/<id>/app/security/builtin-key.js`를 찍는다. 다른 파일의 키는 여전히 `RELEASE_SECRET_PATTERN`.
+- 앱 안의 우선순위: 이 기기에 저장된 개인 키 > 공용 이벤트 키 > 내장 키. 내장 키는 localStorage에 절대 기록되지 않고, 설정에는 "사이트 기본 키 사용 중"으로만 보이며 표시·삭제가 막혀 있다.
 
-검사와 배포에서의 취급:
+키 회전: AI Studio에서 새 키 발급 → 이전 키 삭제 → `~/.config/interp-app/builtin-key` 교체 → 새 `--id`로 `stage-release --builtin-key-file` → `check-release`(`RELEASE_BUILTIN_KEY` 줄 확인) → Vercel 업로드.
 
-- `scripts/check-release.mjs`의 비밀 스캔은 그대로 살아 있다. `SECRET_EXEMPT_FILES`에 적힌 이 파일 **하나만** 예외이고, 다른 파일에서 키가 나오면 여전히 `RELEASE_SECRET_PATTERN`으로 배포가 거부된다.
-- 예외는 조용히 통과하지 않는다. 키를 담은 릴리스는 `check-release`가 `RELEASE_OK` 앞줄에 `RELEASE_BUILTIN_KEY releases/<id>/app/security/builtin-key.js`를 찍는다. **§3 게이트 6번의 기대 출력에 이 줄이 포함된다.** 이 줄이 없으면 키 없는 빌드를 배포하는 것이므로 의도한 상태인지 확인한다.
-- `tests/privacy.test.mjs`는 이 파일만 예외로 두고 나머지 소스·릴리스 산출물의 키 스캔을 그대로 유지한다.
+## Vercel 배포 (2026-09-07부터의 기본 호스트)
 
-키 회전 절차:
+gai-cmd 계정의 기존 Vercel(무료 정적 호스팅). 정적 파일을 CLI로 **직접 업로드**하므로 git을 거치지 않고, `_headers`의 CSP·권한 헤더가 `vercel.json`으로 실제 적용된다(GitHub Pages는 적용하지 않았다).
 
-1. <https://aistudio.google.com/apikey>에서 새 키를 발급하고 이전 키를 삭제한다.
-2. `app/security/builtin-key.js`의 `BUILTIN_KEY` 값을 새 키로 바꾼다.
-3. `node --test tests/*.test.mjs` → `node scripts/check-i18n.mjs` → 새 `--id`로 `stage-release` → `check-release`(`RELEASE_BUILTIN_KEY` 줄 확인) → §5 배포.
+```sh
+KEY=~/.config/interp-app/builtin-key
+ROOT=<누적 배포 루트, 레포 밖>          # 이전 releases/* 를 그대로 보관하는 곳
+node scripts/stage-release.mjs --id <id> --out "$ROOT" --builtin-key-file "$KEY"
+node scripts/check-release.mjs "$ROOT"      # RELEASE_BUILTIN_KEY … 다음 RELEASE_OK
+node scripts/vercel-json.mjs "$ROOT"        # _headers → vercel.json (check-release 뒤에)
+cd "$ROOT" && vercel deploy --prod --yes     # 승인 뒤. 프로젝트 interp-app
+```
 
-키 없이 배포하려면 `BUILTIN_KEY`를 `''`로 두면 된다. 그러면 앱은 이 파일이 없던 때와 똑같이 동작한다(키 입력 화면이 유일한 입구). 앱 안에서의 우선순위는 **이 기기에 저장된 개인 키 > 공용 이벤트 키 > 내장 키** 순이고, 내장 키는 localStorage에 절대 기록되지 않는다.
+업로드 사본에서 `.git`·`.nojekyll`은 빼고, `vercel.json`은 check-release **뒤에** 만든다(허용 목록 밖 파일이라 앞에 두면 `RELEASE_UNEXPECTED_FILE`). 배포 후 §6 확인은 Vercel 주소로 하고, 2번(CSP 헤더)은 이제 실제로 통과해야 한다.
 
-
-### P3-44 기본 키 표시·삭제 계약
-
-설정과 배지는 사이트 기본 키 사용을 별도로 표시한다. 내장 키의 입력란 재노출·표시·삭제는 허용하지 않고, 개인 키 입력은 허용한다. 개인 키 삭제 시 공용 키가 없는 경우 기본 키로 복귀하며 활성 작업은 정리하고 자동 재시작하지 않는다. 공용 키 종료·만료는 자동 개인 전환을 일으키지 않는다. 내장 키가 없는 빌드는 기존 키 없음 동작을 유지한다.
-
-`rememberPersonalKey` 금지는 새 개인 키 저장에 적용하며 기본 키는 항상 메모리에서 사용한다. 요금제 화면은 기본 키 호출의 운영자 계정 청구와 Free/Paid 표시 설정의 차이를 안내한다. Live WebSocket 인증 URL은 기존 자격증명 전달 예외이며 페이지 URL·이력·사이트 공유 QR에는 키가 없어야 한다. 상세 결정은 `docs/design-p3.md`의 P3-44 절을 따른다.
+GitHub Pages(`gai-cmd.github.io/interp-app`)는 **키 없는 빌드**만 둔다(개인 키 입력 안내가 뜨는 상태). 거기에 키가 든 릴리스를 올리면 위 스캐닝이 다시 키를 죽인다.

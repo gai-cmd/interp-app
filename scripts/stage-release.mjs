@@ -230,8 +230,33 @@ function validateTargets({ id, root, out }) {
  * release directories are never overwritten or removed (§13.2): staging the
  * same id twice fails with RELEASE_EXISTS.
  */
-export async function stageRelease({ id, out, root = projectRoot, now = () => new Date() } = {}) {
+// The one file a staged release may differ from the repository in: the
+// built-in key (app/security/builtin-key.js) is '' in git and is written into
+// the staged copy from a local file, so a public repository never carries it.
+export const BUILTIN_KEY_FILE = 'app/security/builtin-key.js';
+const BUILTIN_KEY_SLOT = "export const BUILTIN_KEY = '';";
+// Same shape app/security/shared-key.js validateKey accepts.
+const BUILTIN_KEY_SHAPE = /^[\x21-\x7e]{1,512}$/;
+
+/** The staged bytes of `file`: the built-in key file with the key written in, everything else verbatim. */
+async function stagedBytes(file, bytes, builtinKey) {
+  if (builtinKey === null || file !== BUILTIN_KEY_FILE) return bytes;
+  const text = bytes.toString('utf8');
+  if (text.split(BUILTIN_KEY_SLOT).length !== 2) throw fail('RELEASE_KEY_SLOT_INVALID');
+  return Buffer.from(text.replace(BUILTIN_KEY_SLOT, `export const BUILTIN_KEY = '${builtinKey}';`), 'utf8');
+}
+/** Reads and validates the key file; the value is returned, never printed. */
+async function readBuiltinKey(path) {
+  if (path === null || path === undefined) return null;
+  let text;
+  try { text = (await readFile(path, 'utf8')).trim(); } catch { throw fail('RELEASE_KEY_FILE_MISSING'); }
+  if (!BUILTIN_KEY_SHAPE.test(text) || text.includes("'") || text.includes('\\')) throw fail('RELEASE_KEY_INVALID');
+  return text;
+}
+
+export async function stageRelease({ id, out, root = projectRoot, now = () => new Date(), builtinKeyFile = null } = {}) {
   const { rootPath, outPath } = validateTargets({ id, root, out });
+  const builtinKey = await readBuiltinKey(builtinKeyFile);
   for (const file of [ENTRY_FILE, WORKER_FILE, ...ROOT_COPIED_FILES]) await assertRegularFile(join(rootPath, file));
   const releaseDir = join(outPath, RELEASES_DIRECTORY, id);
   let exists = true;
@@ -242,7 +267,7 @@ export async function stageRelease({ id, out, root = projectRoot, now = () => ne
   for (const file of versionedFiles) {
     const source = join(rootPath, file);
     await assertRegularFile(source);
-    const bytes = await readFile(source);
+    const bytes = await stagedBytes(file, await readFile(source), builtinKey);
     await mkdir(dirname(join(releaseDir, file)), { recursive: true });
     await writeFile(join(releaseDir, file), bytes);
     digests[file] = sha256(bytes);
@@ -281,7 +306,7 @@ function parseArguments(args) {
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (!['--id', '--out', '--point'].includes(flag) || typeof value !== 'string' || value.startsWith('--')
+    if (!['--id', '--out', '--point', '--builtin-key-file'].includes(flag) || typeof value !== 'string' || value.startsWith('--')
         || Object.hasOwn(options, flag)) {
       throw fail('RELEASE_ARGUMENT_INVALID');
     }
@@ -290,14 +315,17 @@ function parseArguments(args) {
   const id = options['--id'];
   const point = options['--point'];
   const out = options['--out'];
+  const builtinKeyFile = options['--builtin-key-file'] ?? null;
   if ((id === undefined) === (point === undefined) || out === undefined) throw fail('RELEASE_ARGUMENT_INVALID');
-  return { id: id ?? point, out, point: point !== undefined };
+  // A rollback rewrites entry files only; it has no release copy to write a key into.
+  if (point !== undefined && builtinKeyFile !== null) throw fail('RELEASE_ARGUMENT_INVALID');
+  return { id: id ?? point, out, point: point !== undefined, builtinKeyFile };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const { id, out, point } = parseArguments(process.argv.slice(2));
-    const result = point ? await pointRelease({ id, out }) : await stageRelease({ id, out });
+    const { id, out, point, builtinKeyFile } = parseArguments(process.argv.slice(2));
+    const result = point ? await pointRelease({ id, out }) : await stageRelease({ id, out, builtinKeyFile });
     // Fixed codes plus the validated id and counts; never file contents.
     process.stdout.write(`${point ? 'RELEASE_POINTED' : 'RELEASE_STAGED'} id=${result.id} files=${result.files.length}\n`);
   } catch (error) {
