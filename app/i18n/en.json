@@ -726,6 +726,7 @@
   "sim.error.MICROPHONE_UNAVAILABLE": "The microphone could not be opened. Another app may be using it, or there is no input device.",
   "sim.error.PERMISSION_DENIED": "This key cannot use the Live API. Check the key restrictions and API access.",
   "sim.error.RATE_LIMITED": "The request limit (429) was hit, so the session was closed. It is not reopened automatically, to save the remaining quota. Tap Reopen session in a moment.",
+  "sim.error.builtinQuota": "The site's default key has hit its free limit, so interpreting is blocked for now. Try again later, or open Settings and enter your own API key to continue right away.",
   "sim.gap.audio": "Queued speech was skipped. Captions are preserved.",
   "sim.gap.input": "Some microphone input was not sent.",
   "sim.gap.reception": "Some content may have been missed during the connection.",

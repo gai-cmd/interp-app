@@ -71,7 +71,7 @@ function fake(mode) {
   };
 }
 function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers = fakeTimers(), voicePreference = createLiveVoicePreference(),
-  onOpenSettings, onHome } = {}) {
+  onOpenSettings, onHome, isBuiltinKey } = {}) {
   const doc = { createElement(tag) { return new BoardElement(doc, tag); }, activeElement: null, hidden: false,
     fullscreenElement: null, fullscreenRequests: [], exits: 0, listeners: new Map(),
     async exitFullscreen() { doc.exits++; doc.fullscreenElement = null; },
@@ -82,7 +82,7 @@ function setup({ hubs = true, storage = null, wakeLock = fakeWakeLock(), timers 
   const root = doc.createElement('main'), direct = fake('direct'), hub = fake('hub');
   const i18n = createI18n({ dictionaries, language: 'en' });
   const view = createSimView({ root, i18n, engines: { direct, hub }, document: doc, window: win, storage, ...timers, voicePreference,
-    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings, onHome });
+    hubs: hubs ? [{ id: 'venue', labelKey: 'hub.venue' }] : [], startDirect: request => direct.start(request), onOpenSettings, onHome, isBuiltinKey });
   const get = name => byClass(root, `sim-${name}`);
   const choose = (name, value) => { get(name).value = value; get(name).dispatch('change'); };
   return { root, doc, win, direct, hub, i18n, view, get, choose, storage, wakeLock, timers, voicePreference,
@@ -322,6 +322,43 @@ test('unregistered hubs are hidden and rejected promises expose no raw error', a
   f.direct.start = () => ({ ready: Promise.reject(new Error('SECRET')), done: Promise.reject(new Error('SECRET')) });
   f.get('start').dispatch('click'); await tick();
   assert.equal(f.root.textContent.includes('SECRET'), false);
+});
+
+// Owner (2026-09-07): on the site's built-in free-tier key, a quota failure is
+// shown as "the site key is blocked" and offers the key entry, since entering
+// one's own key is the way to continue right away.
+test('a quota failure on the built-in key says the site key is blocked and offers settings; on an own key it stays the plain 429 text', () => {
+  let builtin = true, opened = 0;
+  const f = setup({ onOpenSettings: () => { opened++; }, isBuiltinKey: () => builtin });
+  for (const code of ['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']) {
+    f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: code }); };
+    f.get('start').dispatch('click');
+    assert.equal(f.get('notice').textContent, dictionaries.en['sim.error.builtinQuota'], code);
+    assert.equal(f.get('notice').getAttribute('data-failure'), 'builtin-quota');
+    assert.equal(f.get('open-settings').hidden, false, `${code} offers the key entry`);
+  }
+  f.get('open-settings').dispatch('click'); assert.equal(opened, 1);
+  f.i18n.setLanguage('ko'); f.view.refresh();
+  assert.equal(f.get('notice').textContent, dictionaries.ko['sim.error.builtinQuota']);
+  // The same failure on a key the person entered themselves keeps the ordinary text and no settings action.
+  builtin = false;
+  f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'RATE_LIMITED' }); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.ko['sim.error.RATE_LIMITED']);
+  assert.equal(f.get('notice').getAttribute('data-failure'), 'RATE_LIMITED');
+  assert.equal(f.get('open-settings').hidden, true);
+  // A non-quota failure on the built-in key is not dressed up as a quota problem.
+  builtin = true;
+  f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'NETWORK_ERROR' }); };
+  f.get('start').dispatch('click');
+  assert.notEqual(f.get('notice').textContent, dictionaries.ko['sim.error.builtinQuota']);
+  assert.equal(f.get('open-settings').hidden, true);
+  // A throwing predicate is treated as "not built-in", never as a crash of the screen.
+  const g = setup({ isBuiltinKey: () => { throw new Error('SECRET'); } });
+  g.direct.start = () => { g.direct.patch({ status: 'failed', errorCode: 'RATE_LIMITED' }); };
+  g.get('start').dispatch('click');
+  assert.equal(g.get('notice').textContent, dictionaries.en['sim.error.RATE_LIMITED']);
+  f.view.destroy(); g.view.destroy();
 });
 
 // P3-02e: failures are named by code; key problems lead to the settings key entry.

@@ -441,14 +441,17 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     connectionBadge.setAttribute('data-connection', offline ? 'offline' : sessionOpen ? 'connected' : 'idle');
   }
 
+  // Whether the site's built-in key is what the selected source resolves to
+  // (metadata only, never a value). The badge and the simultaneous view's
+  // quota message both read this, so they cannot disagree.
+  const usingBuiltinKey = () => snapshot.keySelection?.keySource === 'personal'
+    && attempt(() => getKeyMetadata?.(snapshot.keySelection))?.builtin === true;
   function render(next = store.snapshot()) {
     snapshot = next;
     const { providerKey, modeKey } = keySelectionKeys(snapshot.keySelection);
     providerBadge.hidden = providerKey === null;
     providerBadge.textContent = providerKey ? i18n.t(resolveKey(i18n, providerKey, 'common.unknown')) : '';
-    const builtin = snapshot.keySelection?.keySource === 'personal'
-      && attempt(() => getKeyMetadata?.(snapshot.keySelection))?.builtin === true;
-    modeBadge.textContent = i18n.t(builtin ? 'mode.builtin' : resolveKey(i18n, modeKey));
+    modeBadge.textContent = i18n.t(usingBuiltinKey() ? 'mode.builtin' : resolveKey(i18n, modeKey));
     modeBadge.setAttribute('data-key-source', snapshot.keySelection?.keySource ?? 'none');
     renderConnection();
     renderNotice();
@@ -472,7 +475,7 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
   const seqView = createSeqView({ root: panels.sequential, i18n, engine, document: doc });
   const simView = listenEngines ? createSimView({ root: panels.simultaneous, i18n, engines: listenEngines, hubs,
     document: doc, onSequential: () => switchTab('sequential'), onOpenSettings: () => openSettings('key'),
-    onHome: () => goHome() }) : null;
+    onHome: () => goHome(), isBuiltinKey: () => usingBuiltinKey() }) : null;
   listen(homeButton, 'click', () => goHome());
   const unsubscribe = store.subscribe(render);
   removers.push(engine.subscribeVoice?.(renderConnection) ?? (() => {}));

@@ -726,6 +726,7 @@
   "sim.error.MICROPHONE_UNAVAILABLE": "마이크를 열 수 없어요. 다른 앱이 마이크를 쓰고 있거나 입력 장치가 없어요.",
   "sim.error.PERMISSION_DENIED": "이 키로는 Live API를 쓸 수 없어요. 키 제한과 API 사용 설정을 확인하세요.",
   "sim.error.RATE_LIMITED": "요청 한도(429)에 걸려 세션을 닫았어요. 남은 한도를 아끼기 위해 자동으로 다시 열지 않아요. 잠시 후 세션 다시 열기를 누르세요.",
+  "sim.error.builtinQuota": "사이트 기본 키의 무료 한도에 걸려 지금은 통역이 막혔어요. 잠시 뒤 다시 시도하거나, 설정 열기에서 내 API 키를 넣으면 바로 이어서 쓸 수 있어요.",
   "sim.gap.audio": "밀린 음성을 건너뛰었어요. 자막은 그대로 유지돼요.",
   "sim.gap.input": "일부 마이크 입력이 전송되지 않았어요.",
   "sim.gap.reception": "연결 중 일부 내용을 받지 못했을 수 있어요.",

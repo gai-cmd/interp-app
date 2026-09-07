@@ -31,6 +31,11 @@ export const TWO_WAY_STORAGE_KEY = 'interp-app.ui.v1.twoWay';
 export const SIM_SOURCE_STORAGE_KEY = 'interp-app.ui.v1.simSource';
 // Failure codes whose remedy is the key entry in settings.
 export const KEY_FAILURE_CODES = Object.freeze(['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED']);
+// Owner (2026-09-07): the 429 family. On the site's built-in (free-tier) key
+// these mean the shared quota is used up, and the way out is to wait or to
+// enter one's own key — so they get their own message and the settings action.
+export const QUOTA_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']);
+export const BUILTIN_QUOTA_KEY = 'sim.error.builtinQuota';
 const codePattern = /^[A-Z][A-Z0-9_]{0,39}$/;
 
 /**
@@ -76,6 +81,9 @@ export function readVoiceGender(storage) {
  * needs no new wiring; the app hands its usable storage over with
  * setStorage(storage) after mount (only app/main.js reads localStorage).
  * onOpenSettings() is offered as an action when the failure is a key problem.
+ * isBuiltinKey() -> boolean says whether the site's built-in key is the one in
+ * use; a quota failure on it is shown as "the site key is blocked" with the
+ * settings action, since one's own key is the immediate remedy.
  * onHome() (owner, 2026-09-07) is what the always-visible home button of the
  * captions-only frame calls. This view only reports the press; the shell owns
  * what "main screen" means (leave captions-only, close every sheet, select the
@@ -88,7 +96,7 @@ export function readVoiceGender(storage) {
  * Event labels are policy text shown as text; every other string is a key.
  */
 export function createSimView({ root, i18n, engines, engine, hubs = [], startDirect,
-  targetLanguage = 'ja', onSequential, onOpenSettings, onHome, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
+  targetLanguage = 'ja', onSequential, onOpenSettings, onHome, isBuiltinKey = null, document: doc = root?.ownerDocument, window: win = doc?.defaultView ?? null,
   storage = null, voicePreference = liveVoicePreference,
   setTimeout: schedule = globalThis.setTimeout, clearTimeout: cancelTimer = globalThis.clearTimeout } = {}) {
   engines ??= { direct: engine };
@@ -608,8 +616,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     setText(broadcast, hub ? i18n.t(`hub.broadcast.${snapshot.broadcast}`) : '');
     // A failure of this screen wins over the engine's last result; both are codes only.
     const shown = failure ?? (snapshot.errorCode ? listenFailure(i18n, { code: snapshot.errorCode }) : null);
-    if (shown) setText(notice, i18n.t(shown.key));
-    openSettings.hidden = hub || !shown || !KEY_FAILURE_CODES.includes(shown.code) || typeof onOpenSettings !== 'function';
+    const builtinBlocked = !hub && shown !== null && QUOTA_CODES.includes(shown.code)
+      && typeof isBuiltinKey === 'function' && (() => { try { return isBuiltinKey() === true; } catch { return false; } })();
+    if (shown) setText(notice, i18n.t(builtinBlocked ? BUILTIN_QUOTA_KEY : shown.key));
+    notice.setAttribute('data-failure', shown ? (builtinBlocked ? 'builtin-quota' : shown.code ?? 'unknown') : 'none');
+    openSettings.hidden = hub || !shown || typeof onOpenSettings !== 'function'
+      || !(KEY_FAILURE_CODES.includes(shown.code) || builtinBlocked);
     fallback.hidden = hub || snapshot.status !== 'failed' || !onSequential;
     if (snapshot.status !== 'running') { meter.setAttribute('value', '0'); speaking = false; }
     renderSpeech();
