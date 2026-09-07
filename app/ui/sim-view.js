@@ -84,9 +84,10 @@ export function readVoiceGender(storage) {
  * onOpenSettings() is offered as an action when the failure is a key problem.
  * builtinKeyState() -> key metadata | null says whether the site's built-in
  * key is the one in use ({ builtinIndex, builtinCount, builtinExhausted }).
- * A quota failure on it reads "moved to spare key i/n, reopen" while a spare
- * took over, and "the site key is blocked" once the pool is spent; both offer
- * the settings action, since one's own key is the immediate remedy.
+ * A quota failure on it reads "switching to another site key" while a spare
+ * took over (the app then restarts the session itself), and "the site key is
+ * blocked" once the pool is spent; both offer the settings action, since
+ * one's own key is the immediate remedy.
  * onHome() (owner, 2026-09-07) is what the always-visible home button of the
  * captions-only frame calls. This view only reports the press; the shell owns
  * what "main screen" means (leave captions-only, close every sheet, select the
@@ -625,9 +626,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     // A spare key took over (the app rotates on the failure) unless the pool is spent.
     const rotated = builtinBlocked && (builtin.builtinCount ?? 1) > 1 && builtin.builtinExhausted !== true;
     if (shown) {
-      setText(notice, rotated
-        ? i18n.t(BUILTIN_ROTATED_KEY, { index: String((builtin.builtinIndex ?? 0) + 1), count: String(builtin.builtinCount) })
-        : i18n.t(builtinBlocked ? BUILTIN_QUOTA_KEY : shown.key));
+      setText(notice, i18n.t(rotated ? BUILTIN_ROTATED_KEY : builtinBlocked ? BUILTIN_QUOTA_KEY : shown.key));
     }
     notice.setAttribute('data-failure', shown ? (rotated ? 'builtin-rotated' : builtinBlocked ? 'builtin-quota' : shown.code ?? 'unknown') : 'none');
     openSettings.hidden = hub || !shown || typeof onOpenSettings !== 'function'
@@ -644,6 +643,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   function subscribe() { unsubscribe?.(); snapshot = current().snapshot(); unsubscribe = current().subscribe(render); render(snapshot); }
   subscribe();
   return Object.freeze({ element: section, board, render,
+    /**
+     * Starts a fresh direct session with the current settings after a failure
+     * or stop — what the primary button does then. The app calls it after a
+     * silent site-key rotation so interpreting resumes without a press.
+     */
+    restart() { if (!disposed && mode === 'direct' && !pending && !running()) startSession(); },
     /** Leaves the captions-only frame if it is on; the shell's home path uses this. */
     exitCaptionOnly() { if (!disposed && board.captionOnly) board.setCaptionOnly(false); return board.captionOnly; },
     refresh() { if (!disposed) { bind.refresh(); board.refresh(); renderCaptionControls(); render(); } },

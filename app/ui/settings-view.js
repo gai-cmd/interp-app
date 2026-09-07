@@ -418,6 +418,10 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
   function renderKeyEntry() {
     const stored = metadata('personal');
     const length = stored?.length ?? 0;
+    // Typing brings the guide card and the manage row back (see renderKey).
+    const siteKeyOnly = stored?.builtin === true && !keyEditing;
+    keyGuideHost.hidden = siteKeyOnly;
+    keyManage.hidden = !acceptsDirectKey(descriptor(), 'personal') || siteKeyOnly;
     const canReveal = keyEditing || length > 0;
     keyToggle.hidden = !canReveal;
     keyToggle.setAttribute('aria-pressed', String(keyRevealed));
@@ -698,6 +702,12 @@ export function createSettingsView({ shell, i18n, config, engine, diagnostics, d
       : personal.builtin ? 'settings.keyBuiltin' : personal.remembered ? 'settings.keyStored' : 'settings.keyMemory');
     keyStatus.setAttribute('data-key', !direct ? 'hub' : !personal ? 'none' : personal.builtin ? 'builtin' : personal.remembered ? 'remembered' : 'memory');
     renderKeyEntry();
+    // Owner (2026-09-07): with the site key in use the section is one line and
+    // the entry — the guide card, check and delete only matter for a key of
+    // one's own, so they appear once a person starts typing or has stored one.
+    const siteKeyOnly = personal?.builtin === true && !keyEditing;
+    keyGuideHost.hidden = siteKeyOnly;
+    keyManage.hidden = !direct || siteKeyOnly;
     deleteButton.disabled = personal === null || personal.builtin === true;
     rememberInput.disabled = policyState?.features?.rememberPersonalKey?.enabled === false;
     if (rememberInput.disabled && policyState?.policy) rememberInput.checked = false;

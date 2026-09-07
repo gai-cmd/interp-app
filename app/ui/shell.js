@@ -463,11 +463,13 @@ export function mount({ root, i18n, engine, document: doc = root?.ownerDocument,
     const { providerKey, modeKey } = keySelectionKeys(snapshot.keySelection);
     providerBadge.hidden = providerKey === null;
     providerBadge.textContent = providerKey ? i18n.t(resolveKey(i18n, providerKey, 'common.unknown')) : '';
-    const builtin = builtinKeyState();
-    // With several site keys in rotation the badge says which one is in use.
-    modeBadge.textContent = builtin === null ? i18n.t(resolveKey(i18n, modeKey))
-      : builtin.builtinCount > 1 ? i18n.t('mode.builtinIndexed', { index: String(builtin.builtinIndex + 1), count: String(builtin.builtinCount) })
-        : i18n.t('mode.builtin');
+    // Owner (2026-09-07): rotation among the site keys is silent — the badge
+    // never says which one is in use.
+    const siteKey = builtinKeyState() !== null;
+    modeBadge.textContent = i18n.t(siteKey ? 'mode.builtin' : resolveKey(i18n, modeKey));
+    // Owner (2026-09-07): key setup stays out of sight while the site key does
+    // the work — the badge appears only for "no key" or a key of one's own.
+    modeBadge.hidden = siteKey;
     modeBadge.setAttribute('data-key-source', snapshot.keySelection?.keySource ?? 'none');
     renderConnection();
     renderNotice();

@@ -345,8 +345,7 @@ test('a quota failure on the built-in key says the site key is blocked and offer
   builtin = { builtin: true, builtinIndex: 1, builtinCount: 3, builtinExhausted: false };
   f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'DAILY_LIMIT' }); };
   f.get('start').dispatch('click');
-  assert.equal(f.get('notice').textContent, f.i18n.t('sim.error.builtinRotated', { index: '2', count: '3' }));
-  assert.ok(f.get('notice').textContent.includes('2/3'));
+  assert.equal(f.get('notice').textContent, f.i18n.t('sim.error.builtinRotated'));
   assert.equal(f.get('notice').getAttribute('data-failure'), 'builtin-rotated');
   assert.equal(f.get('open-settings').hidden, false);
   // The last key spent: back to "blocked".

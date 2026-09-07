@@ -479,7 +479,11 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       const next = attempt(() => config.keyStore.rotateBuiltin(selection.providerId)) ?? null;
       attempt(() => shell?.render());
       attempt(() => shell?.simView?.refresh());
-      if (next) notify('sim.builtinRotated');
+      if (!next) return;
+      notify('sim.builtinRotated');
+      // Owner: rotation is silent — the simultaneous session comes back by
+      // itself on the next key, after the failed operation has fully settled.
+      if (marker.startsWith('sim:')) schedule(() => { if (!closed) attempt(() => shell?.simView?.restart()); }, 0);
     };
     removers.push(simEngine.subscribe(() => {
       const current = simEngine.snapshot();
