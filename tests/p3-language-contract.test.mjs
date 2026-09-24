@@ -12,12 +12,13 @@ const i18n = { has: key => Object.hasOwn(ko, key) };
 
 test('source selection never emits an unsupported translation field or excludes third languages', () => {
   for (const sourceLanguage of ['auto', 'ko', 'en', 'ja']) {
-    const setup = buildLiveSetup({ sourceLanguage, targetLanguage: 'ja' });
+    const setup = buildLiveSetup({ model: LIVE_MODELS[1], sourceLanguage, targetLanguage: 'ja' });
     assert.deepEqual(setup.generationConfig.translationConfig, { targetLanguageCode: 'ja', echoTargetLanguage: false });
     assert.deepEqual(setup.inputAudioTranscription, {});
     assert.equal(setup.generationConfig.inputAudioTranscription, undefined, 'inside generationConfig the endpoint rejects it (1007)');
   }
-  const flash = buildLiveSetup({ model: LIVE_MODELS[1], sourceLanguage: 'ko', targetLanguage: 'ja' });
+  const flash = buildLiveSetup({ sourceLanguage: 'ko', targetLanguage: 'ja' });
+  assert.equal(flash.generationConfig.translationConfig, undefined, 'the default (general Live) model carries no translation field');
   assert.match(flash.systemInstruction.parts[0].text, /hint, not a filter/);
   assert.throws(() => buildLiveSetup({ sourceLanguage: 'invalid', targetLanguage: 'ja' }), { code: 'INVALID_REQUEST' });
 });

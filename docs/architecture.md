@@ -109,8 +109,10 @@ UI 문구는 모두 app/i18n/ko.json·en.json·ja.json의 같은 키로 관리�
 ## P2-05 Live 등록과 공통 복구 정책
 
 Gemini의 네 능력 모두 구현 상태가 ready다. Live 기본 모델은
-`gemini-3.5-live-translate-preview`, 순방향 폴백은
-`gemini-3.1-flash-live-preview` → `gemini-2.5-flash-native-audio-latest`다.
+`gemini-3.8-live`(범용 Live, 지시문 경로), 순방향 폴백은
+`gemini-3.5-live-translate-preview`(번역 전용 경로) →
+`gemini-2.5-flash-native-audio-latest`다 (2026-09-24 오너 결정: 3.1 Flash Live
+프리뷰는 레거시라 3.8 Live로 교체하고 기본값으로 올림. 3.8 번역 전용 모델은 없음).
 입력 pcm16(16kHz·mono), 출력 pcm16(24kHz·mono)과 subtitle을 선언한다.
 모델별 AUDIO·transcription·translationConfig 및 flash 고정 프롬프트는
 P2-03의 live-config.js를 그대로 사용한다. 지원 목소리는 빈 목록이다.

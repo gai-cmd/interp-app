@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGeminiLive } from '../app/providers/gemini/live.js';
-import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD, DEFAULT_LIVE_MODEL, LIVE_MODEL_CONFIG,
+import { buildLiveSetup, LIVE_MODELS, SIM_LIMITS, LIVE_VAD, DEFAULT_LIVE_MODEL, TRANSLATE_LIVE_MODEL, LIVE_MODEL_CONFIG,
   sanitizeLiveModel, liveRoute, detectReply, normalizeLanguagePair, LIVE_VOICE_GENDERS, DEFAULT_LIVE_VOICE_GENDER, LIVE_GENDER_VOICES,
   LIVE_VOICE_POLICY_FIELDS, resolveLiveVoice, createLiveVoicePreference, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { VOICE_NAMES } from '../app/providers/gemini/voice.js';
@@ -36,7 +36,7 @@ test('fixed models have isolated translation/flash setup for all supported langu
     assert.equal(s.sourceLanguage, undefined);
     // P3-02d: the default voice (female Kore) is applied on both routes.
     assert.deepEqual(s.generationConfig.speechConfig, { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } });
-    if (model === LIVE_MODELS[0]) {
+    if (model === TRANSLATE_LIVE_MODEL) {
       assert.equal(Object.hasOwn(s, 'systemInstruction'), false);
       // Translation-only setup has no source-language field.
       assert.deepEqual(s.generationConfig.translationConfig,
@@ -136,16 +136,19 @@ test('the shared voice preference decides when the request names no voice; gende
   assert.equal(name(buildLiveSetup({ targetLanguage: 'ko' })), 'Kore');
 });
 
-test('translation-only model is first; unknown selections and routes resolve to it', () => {
+test('general Live model is first and unknown selections resolve to it; only the translate model takes the translation route', () => {
   assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL);
-  assert.equal(LIVE_MODEL_CONFIG[DEFAULT_LIVE_MODEL].setup, 'translation');
-  assert.ok(LIVE_MODELS.slice(1).every((model) => LIVE_MODEL_CONFIG[model].setup === 'flash'));
+  assert.equal(DEFAULT_LIVE_MODEL, 'gemini-3.8-live');
+  assert.equal(LIVE_MODELS[1], TRANSLATE_LIVE_MODEL);
+  assert.equal(LIVE_MODEL_CONFIG[DEFAULT_LIVE_MODEL].setup, 'flash');
+  assert.equal(LIVE_MODEL_CONFIG[TRANSLATE_LIVE_MODEL].setup, 'translation');
+  assert.ok(LIVE_MODELS.filter((model) => model !== TRANSLATE_LIVE_MODEL).every((model) => LIVE_MODEL_CONFIG[model].setup === 'flash'));
   for (const value of [undefined, null, '', 'gemini-3.8-live ', { model: LIVE_MODELS[1] }, 42, '__proto__']) {
     assert.equal(sanitizeLiveModel(value), DEFAULT_LIVE_MODEL);
-    assert.equal(liveRoute(value), 'translation');
+    assert.equal(liveRoute(value), 'flash');
   }
   for (const model of LIVE_MODELS) assert.equal(sanitizeLiveModel(model), model);
-  assert.equal(liveRoute(LIVE_MODELS[1]), 'flash');
+  assert.equal(liveRoute(LIVE_MODELS[1]), 'translation');
 });
 
 test('reply detection is conservative: assistant openers and finished foreign-script sentences only', () => {
@@ -185,7 +188,7 @@ test('every open builds the flash interpreter rules fresh, so reopened sessions 
   const live = fakeLive(), controller = new AbortController();
   const context = { signal: controller.signal, sessionId: 'sim', generation: 1, turnId: 'turn', onEvent() {} };
   const adapter = createGeminiLive({ live });
-  const flash = { ...request, model: LIVE_MODELS[1], targetLanguage: 'ja' };
+  const flash = { ...request, model: LIVE_MODELS[0], targetLanguage: 'ja' };
   const first = await adapter.open(flash, context);
   const closing = first.close(); live.confirm(); await closing;
   const second = await adapter.open(flash, { ...context, generation: 2 });
@@ -385,7 +388,8 @@ test('existing Live client remains the only socket owner and receives the real e
   await session.sendAudio(new Uint8Array(1024)); await session.finishInput();
   socket.message({ serverContent: pcmContent() });
   assert.equal(events[0].type, 'audio');
-  assert.equal(socket.sent[0].setup.systemInstruction, undefined);
+  assert.match(socket.sent[0].setup.systemInstruction.parts[0].text, /INTERPRETER/);
+  assert.equal(socket.sent[0].setup.generationConfig.translationConfig, undefined);
   assert.deepEqual(socket.sent.at(-1), { realtimeInput: { audioStreamEnd: true } });
   await session.close(); await session.closed; assert.equal(sockets.length, 1);
 });

@@ -11,21 +11,24 @@
 import { ProviderError } from '../contract.js';
 import { VOICE_NAMES } from './voice.js';
 
-export const DEFAULT_LIVE_MODEL = 'gemini-3.5-live-translate-preview';
+// 2026-09-24 (owner): the stable general Live model is the default; the
+// translate-only preview is the first fallback and stays selectable.
+export const DEFAULT_LIVE_MODEL = 'gemini-3.8-live';
+export const TRANSLATE_LIVE_MODEL = 'gemini-3.5-live-translate-preview';
 // The last fallback was 'gemini-live-2.5-flash-preview' until 2026-09-07; the
 // endpoint now answers "not found for API version v1beta, or is not supported
 // for bidiGenerateContent" for it, so it could never catch anything. The
 // native-audio model completes the same flash setup (verified the same day).
 // 2026-09-24: gemini-3.1-flash-live-preview is a legacy preview; Google's model
-// page recommends gemini-3.8-live (stable) in its place. Live Translate stays
-// the default: there is no 3.8 translate model. 3.8 Live rejects thinking
-// config in the setup; the flash setup never sends one.
+// page recommends gemini-3.8-live (stable) in its place. There is no 3.8
+// translate model. 3.8 Live rejects thinking config in the setup; the flash
+// setup never sends one.
 // https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live
 export const LIVE_MODELS = Object.freeze([DEFAULT_LIVE_MODEL,
-  'gemini-3.8-live', 'gemini-2.5-flash-native-audio-latest']);
+  TRANSLATE_LIVE_MODEL, 'gemini-2.5-flash-native-audio-latest']);
 // Repository candidates, not a claim of current account/model availability.
 export const LIVE_MODEL_CONFIG = Object.freeze(Object.fromEntries(LIVE_MODELS.map((model) =>
-  [model, Object.freeze({ setup: model === DEFAULT_LIVE_MODEL ? 'translation' : 'flash',
+  [model, Object.freeze({ setup: model === TRANSLATE_LIVE_MODEL ? 'translation' : 'flash',
     automaticActivityDetection: true, transcriptionMode: 'delta', voices: Object.freeze([]) })])));
 // 400 ms accepts short phrase pauses without the aggressive 100 ms example.
 // Keep 100 ms onset padding and low end sensitivity to limit clipped syllables.

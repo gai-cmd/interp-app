@@ -5,6 +5,7 @@ import { DelayedBlob } from './fixtures/live.mjs';
 import { NO_REPLACEMENT_CODES } from '../app/engine/sim.js';
 import { buildLiveSetup, DEFAULT_LIVE_MODEL, LIVE_MODELS } from '../app/providers/gemini/live-config.js';
 const FLASH = 'gemini-3.8-live';
+const TRANSLATE = 'gemini-3.5-live-translate-preview';
 
 async function advanceInput(f, ms) {
   while (ms > 0) { f.frame(); const step = Math.min(ms, 500); f.audio.advance(step); await tick(); ms -= step; }
@@ -144,7 +145,7 @@ test('missing credentials preserve routing failure before any budget charge', as
 test('registered model fallback and goAway share three additional connections', async t => {
   const f = simFixture(); t.after(() => f.close());
   const h = f.start(); await tick(); f.frame(); await tick();
-  assert.deepEqual([f.engine.snapshot().route, f.engine.snapshot().fallback], ['translation', false]);
+  assert.deepEqual([f.engine.snapshot().route, f.engine.snapshot().fallback], ['flash', false]);
   f.sockets[0].open();
   assert.equal(f.sockets[0].sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
   f.sockets[0].json({ error: { code: 404, details: [
@@ -153,46 +154,49 @@ test('registered model fallback and goAway share three additional connections', 
   await advanceInput(f, 1125);
   assert.equal(f.sockets.length, 2);
   await f.open(); await h.ready;
-  assert.match(f.sockets[1].sent[0].setup.model, /gemini-3.8-live/);
+  assert.equal(f.sockets[1].sent[0].setup.model, `models/${TRANSLATE}`);
   // The switch to the auxiliary model is visible, never silent.
-  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [FLASH, 'flash', true]);
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [TRANSLATE, 'translation', true]);
   for (const delay of [2250, 4500]) {
     f.sockets.at(-1).json({ goAway: { timeLeft: '10s' } }); await tick();
     await advanceInput(f, delay); await f.open();
   }
   assert.equal(f.sockets.length, 4);
-  // Every reopened flash session carries the current interpreter-only rules, built fresh each time.
+  // The first (default) session carries the interpreter-only rules; every
+  // reopened translate session carries the translation field and no prompt.
   const rules = buildLiveSetup({ model: FLASH, targetLanguage: 'ko' }).systemInstruction;
+  assert.deepEqual(f.sockets[0].sent[0].setup.systemInstruction, rules);
+  assert.match(rules.parts[0].text, /NOT an assistant[\s\S]*never answer questions/);
+  assert.equal(f.sockets[0].sent[0].setup.generationConfig.translationConfig, undefined);
   for (const socket of f.sockets.slice(1)) {
-    assert.deepEqual(socket.sent[0].setup.systemInstruction, rules);
-    assert.match(socket.sent[0].setup.systemInstruction.parts[0].text, /NOT an assistant[\s\S]*never answer questions/);
-    assert.equal(socket.sent[0].setup.generationConfig.translationConfig, undefined);
+    assert.equal(socket.sent[0].setup.systemInstruction, undefined);
+    assert.deepEqual(socket.sent[0].setup.generationConfig.translationConfig, { targetLanguageCode: 'ko', echoTargetLanguage: false });
   }
-  assert.equal(f.sockets[0].sent[0].setup.systemInstruction, undefined);
   f.sockets.at(-1).json({ goAway: { timeLeft: '10s' } });
   assert.equal((await h.done).errorCode, 'BUDGET_EXHAUSTED');
   assert.equal(f.sockets.length, 4); assert.deepEqual(f.calls, ['live', 'live', 'live', 'live']);
-  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().fallback], [FLASH, true]);
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().fallback], [TRANSLATE, true]);
 });
 
-test('translation-only model is the default and corrupted selections recover to it', async t => {
+test('general Live model is the default and corrupted selections recover to it', async t => {
   const f = simFixture(); t.after(() => f.close());
-  assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL);
-  assert.equal(buildLiveSetup({ targetLanguage: 'ja' }).generationConfig.translationConfig.targetLanguageCode, 'ja');
+  assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL); assert.equal(DEFAULT_LIVE_MODEL, FLASH);
+  assert.equal(buildLiveSetup({ targetLanguage: 'ja' }).generationConfig.translationConfig, undefined);
+  assert.match(buildLiveSetup({ targetLanguage: 'ja' }).systemInstruction.parts[0].text, /INTERPRETER into Japanese/);
   assert.deepEqual([f.engine.model, f.engine.defaultModel, f.engine.snapshot().defaultModel], [DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL]);
   await assert.rejects(f.engine.setModel('gemini-3.8-live-corrupted'), { code: 'MODEL_UNSUPPORTED' });
   assert.equal(await f.engine.restoreModel({ model: 'SECRET' }), DEFAULT_LIVE_MODEL);
-  assert.equal(await f.engine.restoreModel(FLASH), FLASH); assert.equal(f.engine.model, FLASH);
+  assert.equal(await f.engine.restoreModel(TRANSLATE), TRANSLATE); assert.equal(f.engine.model, TRANSLATE);
   assert.equal(await f.engine.restoreModel(null), DEFAULT_LIVE_MODEL); assert.equal(f.engine.model, DEFAULT_LIVE_MODEL);
   await f.running({ model: 'models/evil; DROP' });
   assert.equal(f.sockets[0].sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
-  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [DEFAULT_LIVE_MODEL, 'translation', false]);
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [DEFAULT_LIVE_MODEL, 'flash', false]);
   assert.doesNotMatch(JSON.stringify(f.engine.snapshot()), /evil|SECRET/);
   await f.engine.stop();
-  // Explicit selection of a flash model is a route, not a fallback.
+  // Explicit selection of the translate model is a route, not a fallback.
   f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
-  await f.engine.setModel(FLASH); await f.running();
-  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [FLASH, 'flash', false]);
+  await f.engine.setModel(TRANSLATE); await f.running();
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [TRANSLATE, 'translation', false]);
 });
 
 test('flash route discards the rest of a turn once a reply is detected; translation route never filters', async t => {
@@ -237,7 +241,7 @@ test('flash route discards the rest of a turn once a reply is detected; translat
   assert.equal(f.engine.snapshot().skippedSegments.length, 2);
   // Translation-only route: translationConfig prevents replies structurally, so nothing is filtered.
   f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
-  await f.running({ targetLanguage: 'en' });
+  await f.running({ model: TRANSLATE, targetLanguage: 'en' });
   assert.equal(f.engine.snapshot().skippedSegments.length, 0);
   content(f.sockets[1], { outputTranscription: { text: 'Sure, I can help you with that', finished: true }, ...audioContent }); await tick();
   assert.equal(f.engine.snapshot().captions.captions.at(-1).status, 'final');
@@ -344,11 +348,11 @@ test('external abort and explicit restart use fresh generations and recovery bud
 
 test('model selection closes current Live and only explicit restart opens the selected model', async t => {
   const f = simFixture(); t.after(() => f.close()); await f.running();
-  await f.engine.setModel('gemini-3.8-live');
+  await f.engine.setModel(TRANSLATE);
   assert.equal(f.engine.snapshot().busy, false); assert.equal(f.sockets.length, 1);
   f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
   await f.running();
-  assert.equal(f.sockets[1].sent[0].setup.model, 'models/gemini-3.8-live');
+  assert.equal(f.sockets[1].sent[0].setup.model, `models/${TRANSLATE}`);
   f.frame(0); f.audio.advance(500); await tick(); f.frame(0); await tick();
   assert.equal(f.sockets[1].sent.some(v => v.realtimeInput?.audioStreamEnd || v.realtimeInput?.activityEnd), false);
 });

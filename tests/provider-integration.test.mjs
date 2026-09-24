@@ -318,7 +318,7 @@ test('voice and live share one physical client slot in both directions', async (
     if (first === 'live') {
       assert.equal(ws.sent[0].setup.model, 'models/' + DEFAULT_LIVE_MODEL);
       assert.deepEqual(ws.sent[0].setup.generationConfig.responseModalities, ['AUDIO']);
-      assert.equal(ws.sent[0].setup.systemInstruction, undefined);
+      assert.match(ws.sent[0].setup.systemInstruction.parts[0].text, /INTERPRETER/);
       await session.sendAudio(new Uint8Array(1024));
     }
     await session.close();
