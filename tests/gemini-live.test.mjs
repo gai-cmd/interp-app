@@ -140,7 +140,7 @@ test('translation-only model is first; unknown selections and routes resolve to 
   assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL);
   assert.equal(LIVE_MODEL_CONFIG[DEFAULT_LIVE_MODEL].setup, 'translation');
   assert.ok(LIVE_MODELS.slice(1).every((model) => LIVE_MODEL_CONFIG[model].setup === 'flash'));
-  for (const value of [undefined, null, '', 'gemini-3.1-flash-live-preview ', { model: LIVE_MODELS[1] }, 42, '__proto__']) {
+  for (const value of [undefined, null, '', 'gemini-3.8-live ', { model: LIVE_MODELS[1] }, 42, '__proto__']) {
     assert.equal(sanitizeLiveModel(value), DEFAULT_LIVE_MODEL);
     assert.equal(liveRoute(value), 'translation');
   }

@@ -707,9 +707,9 @@ test('settings exposes both Live models and applies selection without starting i
   const simEngine = { model: 'gemini-3.5-live-translate-preview', async setModel(model) { calls.push(model); this.model = model; } };
   const h = harness({ simEngine }); t.after(() => teardown(h));
   const select = h.view.elements.modelSelect;
-  assert.ok(options(select).includes('gemini-3.1-flash-live-preview'));
-  choose(select, 'gemini-3.1-flash-live-preview'); await tick();
-  assert.deepEqual(calls, ['gemini-3.1-flash-live-preview']);
+  assert.ok(options(select).includes('gemini-3.8-live'));
+  choose(select, 'gemini-3.8-live'); await tick();
+  assert.deepEqual(calls, ['gemini-3.8-live']);
   assert.equal(select.disabled, false);
 });
 

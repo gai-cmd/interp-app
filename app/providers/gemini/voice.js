@@ -12,7 +12,8 @@
  */
 import { ProviderError, assertActive, normalizeError } from '../contract.js';
 
-export const DEFAULT_VOICE_MODEL = 'gemini-3.1-flash-live-preview';
+// 2026-09-24: moved from the legacy gemini-3.1-flash-live-preview to the stable 3.8 Live.
+export const DEFAULT_VOICE_MODEL = 'gemini-3.8-live';
 export const VOICE_MODELS = Object.freeze([DEFAULT_VOICE_MODEL]);
 export const DEFAULT_VOICE = 'Kore';
 // Prebuilt Live voices as listed by the source on 2026-09-04; P1-13 registers them.

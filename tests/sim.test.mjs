@@ -4,7 +4,7 @@ import { simFixture, content, audioContent, deferred, tick } from './fixtures/si
 import { DelayedBlob } from './fixtures/live.mjs';
 import { NO_REPLACEMENT_CODES } from '../app/engine/sim.js';
 import { buildLiveSetup, DEFAULT_LIVE_MODEL, LIVE_MODELS } from '../app/providers/gemini/live-config.js';
-const FLASH = 'gemini-3.1-flash-live-preview';
+const FLASH = 'gemini-3.8-live';
 
 async function advanceInput(f, ms) {
   while (ms > 0) { f.frame(); const step = Math.min(ms, 500); f.audio.advance(step); await tick(); ms -= step; }
@@ -153,7 +153,7 @@ test('registered model fallback and goAway share three additional connections', 
   await advanceInput(f, 1125);
   assert.equal(f.sockets.length, 2);
   await f.open(); await h.ready;
-  assert.match(f.sockets[1].sent[0].setup.model, /gemini-3.1-flash-live-preview/);
+  assert.match(f.sockets[1].sent[0].setup.model, /gemini-3.8-live/);
   // The switch to the auxiliary model is visible, never silent.
   assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback], [FLASH, 'flash', true]);
   for (const delay of [2250, 4500]) {
@@ -180,7 +180,7 @@ test('translation-only model is the default and corrupted selections recover to 
   assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL);
   assert.equal(buildLiveSetup({ targetLanguage: 'ja' }).generationConfig.translationConfig.targetLanguageCode, 'ja');
   assert.deepEqual([f.engine.model, f.engine.defaultModel, f.engine.snapshot().defaultModel], [DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL]);
-  await assert.rejects(f.engine.setModel('gemini-3.1-flash-live-preview-corrupted'), { code: 'MODEL_UNSUPPORTED' });
+  await assert.rejects(f.engine.setModel('gemini-3.8-live-corrupted'), { code: 'MODEL_UNSUPPORTED' });
   assert.equal(await f.engine.restoreModel({ model: 'SECRET' }), DEFAULT_LIVE_MODEL);
   assert.equal(await f.engine.restoreModel(FLASH), FLASH); assert.equal(f.engine.model, FLASH);
   assert.equal(await f.engine.restoreModel(null), DEFAULT_LIVE_MODEL); assert.equal(f.engine.model, DEFAULT_LIVE_MODEL);
@@ -344,11 +344,11 @@ test('external abort and explicit restart use fresh generations and recovery bud
 
 test('model selection closes current Live and only explicit restart opens the selected model', async t => {
   const f = simFixture(); t.after(() => f.close()); await f.running();
-  await f.engine.setModel('gemini-3.1-flash-live-preview');
+  await f.engine.setModel('gemini-3.8-live');
   assert.equal(f.engine.snapshot().busy, false); assert.equal(f.sockets.length, 1);
   f.track.readyState = 'live'; f.platform.createAudioContext().state = 'running';
   await f.running();
-  assert.equal(f.sockets[1].sent[0].setup.model, 'models/gemini-3.1-flash-live-preview');
+  assert.equal(f.sockets[1].sent[0].setup.model, 'models/gemini-3.8-live');
   f.frame(0); f.audio.advance(500); await tick(); f.frame(0); await tick();
   assert.equal(f.sockets[1].sent.some(v => v.realtimeInput?.audioStreamEnd || v.realtimeInput?.activityEnd), false);
 });

@@ -182,12 +182,12 @@ test('status line always shows the active model and route; fallback and reply sk
   f.direct.patch({ model: 'gemini-3.5-live-translate-preview', route: 'translation', fallback: false, skippedSegments: [] });
   assert.equal(f.get('route').hidden, false);
   assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.translation']} · gemini-3.5-live-translate-preview`);
-  f.direct.patch({ model: 'gemini-3.1-flash-live-preview', route: 'flash' });
-  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.flash']} · gemini-3.1-flash-live-preview`);
+  f.direct.patch({ model: 'gemini-3.8-live', route: 'flash' });
+  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.flash']} · gemini-3.8-live`);
   f.direct.patch({ fallback: true });
-  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.fallback']} · gemini-3.1-flash-live-preview`);
+  assert.equal(f.get('route').textContent, `${dictionaries.en['sim.route.fallback']} · gemini-3.8-live`);
   f.i18n.setLanguage('ko'); f.view.refresh();
-  assert.equal(f.get('route').textContent, `${dictionaries.ko['sim.route.fallback']} · gemini-3.1-flash-live-preview`);
+  assert.equal(f.get('route').textContent, `${dictionaries.ko['sim.route.fallback']} · gemini-3.8-live`);
   caption(f.direct, 1, 'interrupted', 'Sure, I can help you with that');
   f.direct.patch({ skippedSegments: ['translation-1'] });
   const row = f.get('caption');

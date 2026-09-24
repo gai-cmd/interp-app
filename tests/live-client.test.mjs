@@ -5,7 +5,7 @@ import { createSessionManager } from '../app/engine/session-manager.js';
 import { createSocketFixture, createClock, DelayedBlob, deferred, tick } from './fixtures/live.mjs';
 
 const code = (value) => (error) => error.code === value && !`${error.stack}${JSON.stringify(error)}`.includes('SECRET');
-const request = { setup: { model: 'models/gemini-3.1-flash-live-preview', generationConfig: { responseModalities: ['AUDIO'] } } };
+const request = { setup: { model: 'models/gemini-3.8-live', generationConfig: { responseModalities: ['AUDIO'] } } };
 function harness(socketOptions = {}, clientOptions = {}) {
   const fixture = createSocketFixture(socketOptions);
   const clock = createClock();

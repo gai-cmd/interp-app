@@ -742,7 +742,7 @@
   "sim.manualResume": "앱으로 돌아온 뒤 시작 버튼을 눌러 청취를 재개하세요.",
   "sim.model": "동시통역 모델",
   "sim.model0": "Gemini 3.5 Live Translate (기본)",
-  "sim.model1": "Gemini 3.1 Flash Live",
+  "sim.model1": "Gemini 3.8 Live",
   "sim.model2": "Gemini 2.5 Flash Live",
   "sim.modelDiscovered": "지금 쓰는 통역 모델: “{model}” — 이 계정에서 새로 찾은 모델이에요. 목록에서 다른 모델로 바꿀 수 있어요.",
   "sim.modelHelp": "변경하면 통역이 중지됩니다. 시작을 눌러 비교하세요. 모델 선택은 이번 실행 동안 유지됩니다.",

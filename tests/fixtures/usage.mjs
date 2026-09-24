@@ -6,7 +6,7 @@ export function createClock(start = 0) {
   return { now: () => time, advance(ms) { time += ms; return time; }, set(value) { time = value; } };
 }
 /** One rate entry as the policy schema validates it. */
-export const rate = (overrides = {}) => ({ model: 'gemini-3.1-flash-live-preview', capability: 'live',
+export const rate = (overrides = {}) => ({ model: 'gemini-3.8-live', capability: 'live',
   unit: 'minute', amount: 0.6, basis: 'activeMinuteEstimate', confidence: 'medium',
   verifiedAt: '2026-09-01T00:00:00Z', ...overrides });
 /** A price list; `rates` replaces the default single entry. */

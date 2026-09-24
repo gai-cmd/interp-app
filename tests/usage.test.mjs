@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { ESTIMATE_STATES, MINUTE_MS, USAGE_SCOPES, createUsage, findRate } from '../app/engine/usage.js';
 import { MINUTES, createClock, pricing, rate } from './fixtures/usage.mjs';
 
-const live = { id: 's1', capability: 'live', model: 'gemini-3.1-flash-live-preview' };
+const live = { id: 's1', capability: 'live', model: 'gemini-3.8-live' };
 
 test('Free shows time and no cost at all', () => {
   const clock = createClock();
@@ -61,7 +61,7 @@ test('an unpriced model is "cannot estimate", never zero, and a partial list is 
   assert.equal(estimate.amount, 0.6);
   assert.equal(estimate.estimableMs, MINUTES);
   assert.equal(estimate.unestimableMs, MINUTES);
-  assert.deepEqual(estimate.models, { 'gemini-3.5-flash': 'unrated', 'gemini-3.1-flash-live-preview': 'rated' });
+  assert.deepEqual(estimate.models, { 'gemini-3.5-flash': 'unrated', 'gemini-3.8-live': 'rated' });
   usage.close();
 });
 
@@ -120,7 +120,7 @@ test('hub listening is measured but never priced, and scopes are not summed', ()
   const clock = createClock();
   const usage = createUsage({ now: clock.now, pricing: pricing({ rates: [rate({ capability: 'live' }),
     rate({ capability: 'hubListen', amount: 5 })] }), plan: 'paid' });
-  usage.begin({ id: 'hub', capability: 'hubListen', model: 'gemini-3.1-flash-live-preview', billable: false });
+  usage.begin({ id: 'hub', capability: 'hubListen', model: 'gemini-3.8-live', billable: false });
   clock.advance(10 * MINUTES);
   usage.end('hub');
   let state = usage.snapshot();

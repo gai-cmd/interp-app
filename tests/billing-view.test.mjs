@@ -12,7 +12,7 @@ import { MINUTES, createClock, pricing, rate } from './fixtures/usage.mjs';
 const dictionaries = Object.fromEntries(await Promise.all(['ko', 'en', 'ja'].map(async (lang) =>
   [lang, JSON.parse(await readFile(new URL(`../app/i18n/${lang}.json`, import.meta.url)))])));
 const ko = dictionaries.ko;
-const live = { id: 's1', capability: 'live', model: 'gemini-3.1-flash-live-preview' };
+const live = { id: 's1', capability: 'live', model: 'gemini-3.8-live' };
 
 function policyDouble(table = pricing()) {
   const listeners = new Set();
