@@ -109,8 +109,9 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
     const snapshot = controller.snapshot();
     const facts = controller.facts();
     const phase = lastState[lane].phase;
+    const languages = Array.isArray(facts.languages) ? facts.languages.join('>') : null;   // a string, so the memo compares by value
     const inputs = [snapshot?.captions ?? null, snapshot?.skippedSegments ?? null, facts.epoch, facts.targetLanguage,
-      phase, settings.style.showSource, destination === 'overlay' ? settings.style.maxLines : PANEL_ROWS];
+      languages, phase, settings.style.showSource, destination === 'overlay' ? settings.style.maxLines : PANEL_ROWS];
     const memo = captionMemo.get(`${lane}:${destination}`);
     if (memo && memo.inputs.every((value, index) => value === inputs[index])) return memo.frame;
     // A lane that ended in error keeps showing what it last said (panel preview, 8.2.3 rule 16): the finished run's
@@ -121,7 +122,8 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
       return kept;
     }
     const frame = buildCaptionFrame({ captions: snapshot?.captions ?? null, skippedSegments: snapshot?.skippedSegments ?? [],
-      lane, lang: facts.targetLanguage, epoch: facts.epoch, seq: 0, showSource: settings.style.showSource,
+      lane, lang: facts.targetLanguage, languages: facts.languages, epoch: facts.epoch, seq: 0,
+      showSource: settings.style.showSource,
       maxRows: destination === 'overlay' ? settings.style.maxLines : PANEL_ROWS,
       live: phase === 'running' || phase === 'reconnecting' });
     captionMemo.set(`${lane}:${destination}`, { inputs, frame });

@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import { CAPTION_SIZE as APP_CAPTION_SIZE, clampCaptionSize as appClampCaptionSize } from '../app/preferences.js';
 import { LIVE_MODELS, LIVE_VOICE_GENDERS } from '../app/providers/gemini/live-config.js';
-import { CAPTION_SIZE as CONSTANT_CAPTION_SIZE, TARGET_LANGUAGES, UI_LANGUAGES, VOICE_GENDERS, clampCaptionSize } from '../extension/lib/constants.js';
+import {
+  CAPTION_SIZE as CONSTANT_CAPTION_SIZE, TARGET_LANGUAGES, UI_LANGUAGES, VOICE_GENDERS, clampCaptionSize, defaultPartnerLanguage,
+  isLanguagePair,
+} from '../extension/lib/constants.js';
 import { STORAGE_KEYS, validateMessage } from '../extension/lib/protocol.js';
 import {
   CAPTION_SIZE, DEFAULT_SETTINGS, MIGRATIONS, createDefaultSettings, deleteKey, hasKey, hostSettingsOf, laneRequestOf,
@@ -44,11 +47,14 @@ function assertNormalized(settings, label = '', { frozen = true } = {}) {
   assert.ok(LIVE_VOICE_GENDERS.includes(settings.voiceGender), label);
   assert.equal(typeof settings.speechMuted, 'boolean');
   assert.deepEqual(Object.keys(settings.lanes), ['tab', 'mic']);
-  assert.deepEqual(Object.keys(settings.lanes.tab), ['enabled', 'targetLanguage', 'model', 'originalVolume', 'captions'], label);
-  assert.deepEqual(Object.keys(settings.lanes.mic), ['enabled', 'targetLanguage', 'model', 'captions'], label);
+  // Two-way (twoWay, partnerLanguage) joined the lane fields: the D10 "no two-way" non-goal was reversed.
+  assert.deepEqual(Object.keys(settings.lanes.tab), ['enabled', 'targetLanguage', 'twoWay', 'partnerLanguage', 'model', 'originalVolume', 'captions'], label);
+  assert.deepEqual(Object.keys(settings.lanes.mic), ['enabled', 'targetLanguage', 'twoWay', 'partnerLanguage', 'model', 'captions'], label);
   for (const lane of Object.values(settings.lanes)) {
     assert.equal(typeof lane.enabled, 'boolean');
     assert.ok(TARGET_LANGUAGES.includes(lane.targetLanguage));
+    assert.equal(typeof lane.twoWay, 'boolean', label);
+    assert.ok(isLanguagePair([lane.targetLanguage, lane.partnerLanguage]), `${label}: the partner is a language other than the target`);
     assert.ok(LIVE_MODELS.includes(lane.model));
     assert.equal(typeof lane.captions, 'boolean');
   }
@@ -66,8 +72,8 @@ function assertNormalized(settings, label = '', { frozen = true } = {}) {
 test('DEFAULT_SETTINGS is frozen and equals the 7.1 listing (microphone captions default to off)', () => {
   assert.deepEqual(DEFAULT_SETTINGS, { v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: true,
     lanes: {
-      tab: { enabled: true, targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview', originalVolume: 65, captions: true },
-      mic: { enabled: false, targetLanguage: 'en', model: 'gemini-3.8-live', captions: false },
+      tab: { enabled: true, targetLanguage: 'ko', twoWay: false, partnerLanguage: 'en', model: 'gemini-3.5-live-translate-preview', originalVolume: 65, captions: true },
+      mic: { enabled: false, targetLanguage: 'en', twoWay: false, partnerLanguage: 'ko', model: 'gemini-3.8-live', captions: false },
     },
     captions: { size: 1.5, position: 'bottom', display: 'dark', showSource: false, maxLines: 3, autoHideSeconds: 8 } });
   assert.ok(isDeepFrozen(DEFAULT_SETTINGS));
@@ -249,6 +255,151 @@ test('laneRequestOf returns the per-lane language and model, and refuses an unkn
   assert.ok(Object.isFrozen(laneRequestOf(settings, 'tab')));
   assert.deepEqual(Object.keys(laneRequestOf(settings, 'tab')), ['targetLanguage', 'model']);
   for (const lane of ['both', undefined, '', 'TAB', 0]) assert.throws(() => laneRequestOf(settings, lane), (error) => error.code === 'INVALID_REQUEST');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Two-way mode: per-lane `twoWay` and `partnerLanguage` (the D10 "no two-way" non-goal is reversed).
+
+test('two-way defaults: off, and the partner is English unless the lane\'s language is English (then Korean)', () => {
+  assert.equal(defaultPartnerLanguage('ko'), 'en');
+  assert.equal(defaultPartnerLanguage('ja'), 'en');
+  assert.equal(defaultPartnerLanguage('en'), 'ko');
+  for (const language of [undefined, 'auto', 'fr', null]) assert.equal(defaultPartnerLanguage(language), 'en', String(language));
+  for (const ui of [undefined, 'ko', 'en', 'ja', 'fr']) {
+    const defaults = createDefaultSettings(ui);
+    for (const lane of Object.values(defaults.lanes)) {
+      assert.equal(lane.twoWay, false, `${ui}: two-way is opt-in`);
+      assert.equal(lane.partnerLanguage, defaultPartnerLanguage(lane.targetLanguage), ui);
+      assert.notEqual(lane.partnerLanguage, lane.targetLanguage, ui);
+    }
+    assertNormalized(defaults);
+  }
+  assert.deepEqual([DEFAULT_SETTINGS.lanes.tab.partnerLanguage, DEFAULT_SETTINGS.lanes.mic.partnerLanguage], ['en', 'ko']);
+  assert.deepEqual(createDefaultSettings('en').lanes.tab, { ...DEFAULT_SETTINGS.lanes.tab, targetLanguage: 'en', partnerLanguage: 'ko' });
+});
+
+test('isLanguagePair accepts exactly two distinct interpretation languages', () => {
+  for (const first of TARGET_LANGUAGES) {
+    for (const second of TARGET_LANGUAGES) assert.equal(isLanguagePair([first, second]), first !== second, `${first} ${second}`);
+  }
+  const sparse = new Array(2); sparse[0] = 'ko';
+  for (const bad of [undefined, null, 'ko,en', {}, [], ['ko'], ['ko', 'en', 'ja'], ['ko', 'fr'], ['fr', 'de'], ['ko', null], ['ko', undefined], [1, 2], sparse,
+    { 0: 'ko', 1: 'en', length: 2 }, new Set(['ko', 'en'])]) assert.equal(isLanguagePair(bad), false, JSON.stringify(bad));
+});
+
+test('normalizeSettings: a record from before two-way existed reads as one-way with the default partner, everything else kept', () => {
+  const old = { v: 1, uiLanguage: 'ja', voiceGender: 'male', speechMuted: false,
+    lanes: { tab: { enabled: false, targetLanguage: 'en', model: 'gemini-3.8-live', originalVolume: 30, captions: false },
+      mic: { enabled: true, targetLanguage: 'ja', model: 'gemini-3.5-live-translate-preview', captions: true } },
+    captions: { size: 1.25, position: 'top', display: 'mono', showSource: true, maxLines: 5, autoHideSeconds: 0 } };
+  const read = migrateSettings(old);
+  assertNormalized(read);
+  assert.deepEqual(read.lanes.tab, { enabled: false, targetLanguage: 'en', twoWay: false, partnerLanguage: 'ko', model: 'gemini-3.8-live', originalVolume: 30, captions: false });
+  assert.deepEqual(read.lanes.mic, { enabled: true, targetLanguage: 'ja', twoWay: false, partnerLanguage: 'en', model: 'gemini-3.5-live-translate-preview', captions: true });
+  assert.equal(read.v, 1, 'no storage version bump: the missing fields are defaults');
+  assert.equal(read.voiceGender, 'male');
+  assert.deepEqual(normalizeSettings(read), read, 'idempotent');
+  assert.equal(laneRequestOf(read, 'tab').languages, undefined, 'a migrated lane stays one-way');
+});
+
+test('normalizeSettings: twoWay is a strict boolean (default false), partnerLanguage one of ko/en/ja', () => {
+  const lane = (patch, which = 'tab') => normalizeSettings({ lanes: { [which]: patch } }).lanes[which];
+  assert.equal(lane({ twoWay: true }).twoWay, true);
+  assert.equal(lane({ twoWay: false }).twoWay, false);
+  for (const twoWay of ['true', 1, 'yes', null, undefined, {}, [true]]) assert.equal(lane({ twoWay }).twoWay, false, String(twoWay));
+  // every valid (target, partner) pair is kept as it is, for both lanes
+  for (const targetLanguage of TARGET_LANGUAGES) {
+    for (const partnerLanguage of TARGET_LANGUAGES.filter((code) => code !== targetLanguage)) {
+      for (const which of ['tab', 'mic']) {
+        const kept = lane({ targetLanguage, partnerLanguage, twoWay: true }, which);
+        assert.deepEqual([kept.targetLanguage, kept.partnerLanguage, kept.twoWay], [targetLanguage, partnerLanguage, true], `${which} ${targetLanguage}/${partnerLanguage}`);
+      }
+    }
+  }
+  // a partner that is unknown, mistyped or missing becomes the default partner of the lane's language
+  for (const partnerLanguage of ['fr', 'auto', '', null, 5, 'KO', ['ko'], {}, undefined]) {
+    assert.equal(lane({ targetLanguage: 'ja', partnerLanguage }).partnerLanguage, 'en', String(partnerLanguage));
+    assert.equal(lane({ targetLanguage: 'en', partnerLanguage }).partnerLanguage, 'ko', String(partnerLanguage));
+  }
+  assert.equal(lane({}).partnerLanguage, 'en', 'tab default: target ko, partner en');
+  assert.equal(lane({}, 'mic').partnerLanguage, 'ko', 'mic default: target en, partner ko');
+});
+
+test('normalizeSettings: a partner equal to the target is repaired to the default partner of that target, never left equal', () => {
+  const lane = (patch, which = 'tab') => normalizeSettings({ lanes: { [which]: patch } }).lanes[which];
+  for (const which of ['tab', 'mic']) {
+    for (const language of TARGET_LANGUAGES) {
+      const repaired = lane({ targetLanguage: language, partnerLanguage: language, twoWay: true }, which);
+      assert.equal(repaired.partnerLanguage, defaultPartnerLanguage(language), `${which} ${language}`);
+      assert.notEqual(repaired.partnerLanguage, repaired.targetLanguage);
+    }
+  }
+  // the repair follows the NORMALIZED target: an unreadable target falls back to the lane default first
+  assert.deepEqual(lane({ targetLanguage: 'fr', partnerLanguage: 'ko' }), { ...DEFAULT_SETTINGS.lanes.tab, partnerLanguage: 'en' }, 'tab: target falls back to ko, so ko as partner is repaired to en');
+  assert.equal(lane({ targetLanguage: 'fr', partnerLanguage: 'ko' }, 'mic').partnerLanguage, 'ko', 'mic: target falls back to en, so ko is a valid partner');
+  assert.equal(lane({ targetLanguage: 'fr', partnerLanguage: 'en' }, 'mic').partnerLanguage, 'ko', 'mic: en equals the fallback target en');
+});
+
+test('settings storage: an old record is read without a write; a changed target that equals the partner is repaired in the saved record', async () => {
+  const old = { v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: true,
+    lanes: { tab: { enabled: true, targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview', originalVolume: 65, captions: true },
+      mic: { enabled: false, targetLanguage: 'en', model: 'gemini-3.8-live', captions: false } },
+    captions: { size: 1.5, position: 'bottom', display: 'dark', showSource: false, maxLines: 3, autoHideSeconds: 8 } };
+  const area = fakeArea({ [STORAGE_KEYS.settings]: old });
+  assert.deepEqual(await readSettings(area), DEFAULT_SETTINGS, 'the old record reads as the defaults it had');
+  assert.deepEqual(area.writes(), [], 'reading never upgrades the stored record');
+
+  const chosen = await updateSettings(area, (draft) => { draft.lanes.tab.twoWay = true; draft.lanes.tab.partnerLanguage = 'ja'; });
+  assert.deepEqual([chosen.lanes.tab.twoWay, chosen.lanes.tab.partnerLanguage], [true, 'ja']);
+  assert.deepEqual(area.read(STORAGE_KEYS.settings).lanes.tab.partnerLanguage, 'ja');
+  // the user picks the partner's language as the first language: the saved pair is repaired, not left as ja/ja
+  const moved = await updateSettings(area, (draft) => { draft.lanes.tab.targetLanguage = 'ja'; });
+  assert.equal(moved.lanes.tab.partnerLanguage, 'en');
+  assert.deepEqual(area.read(STORAGE_KEYS.settings).lanes.tab, { ...moved.lanes.tab });
+  assert.deepEqual([moved.lanes.tab.targetLanguage, moved.lanes.tab.partnerLanguage, moved.lanes.tab.twoWay], ['ja', 'en', true]);
+  assert.deepEqual(laneRequestOf(await readSettings(area), 'tab').languages, ['ja', 'en']);
+});
+
+test('laneRequestOf: a two-way lane adds languages [target, partner]; targetLanguage and model stay; one-way adds nothing', () => {
+  const settings = normalizeSettings({ lanes: {
+    tab: { targetLanguage: 'ko', twoWay: true, partnerLanguage: 'ja', model: 'gemini-3.8-live' },
+    mic: { targetLanguage: 'en', twoWay: true, model: 'gemini-3.5-live-translate-preview' } } });
+  const tab = laneRequestOf(settings, 'tab');
+  assert.deepEqual(tab, { targetLanguage: 'ko', model: 'gemini-3.8-live', languages: ['ko', 'ja'] });
+  assert.deepEqual(Object.keys(tab), ['targetLanguage', 'model', 'languages']);
+  assert.ok(Object.isFrozen(tab) && Object.isFrozen(tab.languages), 'the request and its pair are frozen');
+  // the pair is ordered [target, partner]; the default partner of English is Korean
+  assert.deepEqual(laneRequestOf(settings, 'mic'), { targetLanguage: 'en', model: 'gemini-3.5-live-translate-preview', languages: ['en', 'ko'] },
+    'the model is NOT changed here: the engine moves a translation-only model to an instruction-driven one itself');
+  // off, or a partner left over from an earlier choice, gives the same request as before two-way existed
+  const off = normalizeSettings({ lanes: { tab: { targetLanguage: 'ko', twoWay: false, partnerLanguage: 'ja' } } });
+  assert.deepEqual(laneRequestOf(off, 'tab'), { targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview' });
+  assert.equal(Object.hasOwn(laneRequestOf(off, 'tab'), 'languages'), false);
+  assert.equal(Object.hasOwn(laneRequestOf(DEFAULT_SETTINGS, 'mic'), 'languages'), false);
+  // a stored pair that is not a pair is repaired before it can reach a request
+  for (const [targetLanguage, partnerLanguage, expected] of [['en', 'en', ['en', 'ko']], ['ja', 'ja', ['ja', 'en']], ['ko', 'ko', ['ko', 'en']], ['ko', 'fr', ['ko', 'en']]]) {
+    const request = laneRequestOf({ lanes: { tab: { targetLanguage, partnerLanguage, twoWay: true } } }, 'tab');
+    assert.deepEqual(request.languages, expected, `${targetLanguage}/${partnerLanguage}`);
+    assert.ok(isLanguagePair(request.languages));
+  }
+  assert.deepEqual(laneRequestOf({ lanes: { tab: { twoWay: 'true' } } }, 'tab'), laneRequestOf(DEFAULT_SETTINGS, 'tab'), 'a non-boolean twoWay is off');
+});
+
+test('laneRequestOf output is accepted by the host/lane-start validator, the pair included', () => {
+  const settings = normalizeSettings({ lanes: { tab: { targetLanguage: 'ja', twoWay: true, partnerLanguage: 'ko' } } });
+  const message = { v: 1, target: 'offscreen', type: 'host/lane-start', lane: 'tab', key: FAKE_KEY, request: laneRequestOf(settings, 'tab'),
+    voiceGender: 'female', muted: true, captions: true, style: hostSettingsOf(settings).style, tab: { tabId: 1, streamId: 's', originalVolume: 65 } };
+  const checked = validateMessage(message);
+  assert.equal(checked.ok, true, 'the SW can never build a start the host refuses');
+  assert.deepEqual(checked.message.request.languages, ['ja', 'ko']);
+  assert.equal(validateMessage({ ...message, request: laneRequestOf(DEFAULT_SETTINGS, 'tab') }).ok, true, 'and the one-way request still passes');
+});
+
+test('hostSettingsOf never carries two-way: it applies from the next start, like the language', () => {
+  const settings = normalizeSettings({ lanes: { tab: { twoWay: true, partnerLanguage: 'ja' }, mic: { twoWay: true } } });
+  const host = hostSettingsOf(settings);
+  assert.deepEqual(host, hostSettingsOf(DEFAULT_SETTINGS), 'switching two-way changes nothing a running host applies live');
+  for (const forbidden of ['twoWay', 'partner', 'languages']) assert.equal(JSON.stringify(host).includes(forbidden), false, forbidden);
 });
 
 test('parity with the app: voice genders, target languages, caption size and its clamp', () => {

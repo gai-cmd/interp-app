@@ -24,13 +24,23 @@
     <section id="card-tab" class="card lane-card" aria-labelledby="tab-title" data-lane="tab">
       <label class="lane-head"><input id="tab-enabled" type="checkbox"><span id="tab-title" data-i18n="ext.lane.tab.title"></span></label>
       <p class="text-sub" data-i18n="ext.lane.tab.lead"></p>
-      <label class="field"><span data-i18n="language.target"></span>
+      <label class="field"><span id="tab-target-label" data-i18n="language.target"></span>
         <select id="tab-target">
           <option value="ko" data-i18n="language.ko"></option>
           <option value="en" data-i18n="language.en"></option>
           <option value="ja" data-i18n="language.ja"></option>
         </select></label>
-      <p id="tab-apply-next" class="text-sub" role="status"></p><!-- live: ext.applyNext, right below the select it refers to -->
+      <label class="field field-check"><input id="tab-two-way" type="checkbox" aria-describedby="tab-two-way-hint"><span data-i18n="ext.twoWay.label"></span></label>
+      <div id="tab-partner-row" class="partner-row" hidden><!-- shown while two-way is on; the options are the languages other than the target, rebuilt by the controller -->
+        <label class="field"><span data-i18n="ext.twoWay.partner"></span>
+          <select id="tab-partner">
+            <option value="en" data-i18n="language.en"></option>
+            <option value="ja" data-i18n="language.ja"></option>
+          </select></label>
+      </div>
+      <p id="tab-two-way-hint" class="text-sub" data-i18n="ext.twoWay.hint"></p><!-- not live: static help for the checkbox (aria-describedby) -->
+      <p id="tab-two-way-note" class="text-sub" hidden data-i18n="ext.twoWay.modelNote"></p><!-- not live: shown while two-way is on and this lane's model is the translation-only one -->
+      <p id="tab-apply-next" class="text-sub" role="status"></p><!-- live: ext.applyNext, below the language controls it refers to -->
       <p id="tab-source-note" class="text-sub" data-i18n="ext.source.auto"></p>
       <label class="field field-range"><span data-i18n="ext.tab.originalVolume"></span>
         <input id="tab-volume" type="range" min="0" max="100" step="5">
@@ -52,13 +62,23 @@
       <label class="lane-head"><input id="mic-enabled" type="checkbox"><span id="mic-title" data-i18n="ext.lane.mic.title"></span></label>
       <p class="text-sub" data-i18n="ext.lane.mic.lead"></p>
       <p id="mic-mode" class="text-sub" data-i18n="ext.mic.mode"></p>
-      <label class="field"><span data-i18n="language.target"></span>
+      <label class="field"><span id="mic-target-label" data-i18n="language.target"></span>
         <select id="mic-target">
           <option value="ko" data-i18n="language.ko"></option>
           <option value="en" data-i18n="language.en"></option>
           <option value="ja" data-i18n="language.ja"></option>
         </select></label>
-      <p id="mic-apply-next" class="text-sub" role="status"></p><!-- live: ext.applyNext -->
+      <label class="field field-check"><input id="mic-two-way" type="checkbox" aria-describedby="mic-two-way-hint"><span data-i18n="ext.twoWay.label"></span></label>
+      <div id="mic-partner-row" class="partner-row" hidden><!-- shown while two-way is on; the options are the languages other than the target, rebuilt by the controller -->
+        <label class="field"><span data-i18n="ext.twoWay.partner"></span>
+          <select id="mic-partner">
+            <option value="en" data-i18n="language.en"></option>
+            <option value="ja" data-i18n="language.ja"></option>
+          </select></label>
+      </div>
+      <p id="mic-two-way-hint" class="text-sub" data-i18n="ext.twoWay.hint"></p><!-- not live: static help for the checkbox (aria-describedby) -->
+      <p id="mic-two-way-note" class="text-sub" hidden data-i18n="ext.twoWay.modelNote"></p><!-- not live: shown while two-way is on and this lane's model is the translation-only one -->
+      <p id="mic-apply-next" class="text-sub" role="status"></p><!-- live: ext.applyNext, below the language controls it refers to -->
       <p id="mic-source-note" class="text-sub" data-i18n="ext.source.auto"></p>
       <label class="field field-check"><input id="mic-captions" type="checkbox"><span data-i18n="ext.captions.show"></span></label>
       <p id="mic-captions-hint" class="text-sub" data-i18n="ext.captions.micHint"></p>

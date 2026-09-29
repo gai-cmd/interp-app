@@ -7,7 +7,7 @@
 import {
   CAPTION_ROLES, CAPTION_STATUSES, ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES,
   MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
-  VOICE_GENDERS, deepFreeze, isMachineCode, isPlainObject, isValidStyle,
+  VOICE_GENDERS, deepFreeze, isLanguagePair, isMachineCode, isPlainObject, isValidStyle,
 } from './constants.js';
 
 export const PROTOCOL_VERSION = 1;
@@ -89,9 +89,13 @@ function laneStartOf(m) {
   const { request } = m;
   if (!isPlainObject(request) || !TARGET_LANGUAGES.includes(request.targetLanguage)
     || !text(request.model, 1, MODEL_MAX_CHARS)) return null;
+  // Two-way: `languages` is optional, but when it is there it must be exactly two distinct interpretation languages
+  // (anything else, null included, is refused: a half-valid pair must never be guessed into a one-way session).
+  if (request.languages !== undefined && !isLanguagePair(request.languages)) return null;
   if (!VOICE_GENDERS.includes(m.voiceGender) || typeof m.muted !== 'boolean' || typeof m.captions !== 'boolean'
     || !isValidStyle(m.style)) return null;
-  const out = { lane: m.lane, key: m.key, request: { targetLanguage: request.targetLanguage, model: request.model },
+  const pair = request.languages === undefined ? {} : { languages: [request.languages[0], request.languages[1]] };
+  const out = { lane: m.lane, key: m.key, request: { targetLanguage: request.targetLanguage, model: request.model, ...pair },
     voiceGender: m.voiceGender, muted: m.muted, captions: m.captions, style: pickStyle(m.style) };
   if (m.lane === 'tab') {
     const { tab } = m;
@@ -286,11 +290,14 @@ export function validateUiState(value) {
     concurrent: value.concurrent, lanes: { tab, mic } });
 }
 
+// `lang` is optional and only a two-way lane sends it: that lane's rows come out in either language of its pair, so
+// the language of each row travels with the row (the frame's own `lang` stays the language of the newest one).
 function captionRowOf(row) {
   if (!isPlainObject(row) || !text(row.id, 1, 64) || !CAPTION_ROLES.includes(row.role)
     || !CAPTION_STATUSES.includes(row.status) || !text(row.text, 1, LIMITS.maxRowChars)
-    || typeof row.skipped !== 'boolean') return null;
-  return { id: row.id, role: row.role, status: row.status, text: row.text, skipped: row.skipped };
+    || typeof row.skipped !== 'boolean' || (row.lang !== undefined && !TARGET_LANGUAGES.includes(row.lang))) return null;
+  return { id: row.id, role: row.role, status: row.status, text: row.text, skipped: row.skipped,
+    ...(row.lang === undefined ? {} : { lang: row.lang }) };
 }
 
 // Each returns the sanitized payload fields or null.

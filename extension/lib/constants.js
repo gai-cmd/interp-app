@@ -10,6 +10,15 @@ export const VOICE_GENDERS = Object.freeze(['female', 'male']);
 export const TARGET_LANGUAGES = Object.freeze(['ko', 'en', 'ja']);
 export const UI_LANGUAGES = Object.freeze(['auto', ...TARGET_LANGUAGES]);
 
+// Two-way mode (a lane interprets in both directions between its target language and a partner language). The
+// pair is [target, partner]: two DISTINCT interpretation languages. The rules live here, with the other enums, so
+// the message validator, the settings normalizer and the caption row guess agree on what a pair is.
+/** The partner a lane starts with: English, unless the target already is English (then Korean). */
+export const defaultPartnerLanguage = (target) => (target === 'en' ? 'ko' : 'en');
+/** True only for an array of exactly two distinct interpretation languages. */
+export const isLanguagePair = (value) => Array.isArray(value) && value.length === 2   // indexed, not every(): a hole is no language
+  && TARGET_LANGUAGES.includes(value[0]) && TARGET_LANGUAGES.includes(value[1]) && value[0] !== value[1];
+
 // Same numbers as app/preferences.js CAPTION_SIZE (registered `captions.size` policy spec).
 export const CAPTION_SIZE = Object.freeze({ min: 1, max: 2, step: 0.125, initial: 1.5 });
 /** Nearest valid caption size; anything unreadable falls back to the default (same semantics as the app). */

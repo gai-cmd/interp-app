@@ -230,6 +230,54 @@ test('host/lane-start: key, stream id, tab and request shape rules of section 4.
   assert.equal(validateMessage(message('host/lane-start', MIC_START)).ok, true);
 });
 
+// Two-way mode: `request.languages` is optional; when present it is exactly two DISTINCT ko|en|ja values.
+test('host/lane-start: request.languages carries a two-way pair (ordered, distinct, ko|en|ja), sanitized and copied', () => {
+  const start = (lane, languages) => message('host/lane-start', withPatch(lane === 'tab' ? LANE_START : MIC_START,
+    { request: { targetLanguage: languages[0], model: 'gemini-3.8-live', languages } }));
+  for (const lane of ['tab', 'mic']) {
+    for (const first of TARGET_LANGUAGES) {
+      for (const second of TARGET_LANGUAGES.filter((code) => code !== first)) {
+        const input = start(lane, [first, second]);
+        const result = validateMessage(input);
+        assert.equal(result.ok, true, `${lane} ${first}/${second}`);
+        assert.deepEqual(result.message.request, { targetLanguage: first, model: 'gemini-3.8-live', languages: [first, second] }, 'the order is kept: [target, partner]');
+        assert.ok(isDeepFrozen(result.message));
+        assert.notEqual(result.message.request.languages, input.request.languages, 'a copy: the sender\'s array is never shared');
+      }
+    }
+  }
+  // the pair does not have to contain targetLanguage in the validator (that is the SW's job), only be a pair
+  assert.equal(validateMessage(start('mic', ['en', 'ja'])).ok, true);
+  const oneWay = validateMessage(message('host/lane-start', LANE_START));
+  assert.equal(Object.hasOwn(oneWay.message.request, 'languages'), false, 'a one-way request gains no languages field');
+  assert.equal(validateMessage(message('host/lane-start', withPatch(LANE_START, { request: { targetLanguage: 'ko', model: 'm', languages: undefined } }))).ok, true,
+    'an absent (undefined) pair is a one-way request');
+  assert.equal(Object.hasOwn(validateMessage(message('host/lane-start', { ...LANE_START, request: { targetLanguage: 'ko', model: 'm', languages: undefined } })).message.request, 'languages'), false);
+  // other request fields are still dropped
+  const noisy = validateMessage(message('host/lane-start', withPatch(LANE_START, { request: { targetLanguage: 'ko', model: 'm', languages: ['ko', 'en'],
+    sourceLanguage: 'ja', voice: 'x' } })));
+  assert.deepEqual(noisy.message.request, { targetLanguage: 'ko', model: 'm', languages: ['ko', 'en'] });
+});
+
+test('host/lane-start: a pair that is not exactly two distinct ko|en|ja values is INVALID_MESSAGE and is never echoed', () => {
+  const sparse = new Array(2); sparse[0] = 'ko';
+  const bad = [['equal', ['ko', 'ko']], ['equal en', ['en', 'en']], ['three values', ['ko', 'en', 'ja']], ['one value', ['ko']], ['empty', []],
+    ['unknown code', ['ko', 'fr']], ['both unknown', ['fr', 'de']], ['wrong case', ['KO', 'en']], ['empty string', ['ko', '']], ['null member', ['ko', null]],
+    ['undefined member', ['ko', undefined]], ['number members', [1, 2]], ['nested', [['ko'], ['en']]], ['object member', ['ko', { code: 'en' }]],
+    ['sparse array', sparse], ['string', 'ko,en'], ['string of a pair', 'koen'], ['null', null], ['number', 2], ['true', true], ['object', { 0: 'ko', 1: 'en', length: 2 }],
+    ['set', new Set(['ko', 'en'])], ['frozen equal', Object.freeze(['ja', 'ja'])]];
+  for (const [label, languages] of bad) {
+    const result = validateMessage(message('host/lane-start', { ...clone(LANE_START), request: { targetLanguage: 'ko', model: 'gemini-3.8-live', languages } }));
+    assert.deepEqual(result, { ok: false, code: 'INVALID_MESSAGE' }, label);
+    assert.equal(JSON.stringify(result).includes('synthetic'), false, `${label}: no echo`);
+    const micResult = validateMessage(message('host/lane-start', { ...clone(MIC_START), request: { targetLanguage: 'en', model: 'gemini-3.8-live', languages } }));
+    assert.equal(micResult.ok, false, `${label} (mic)`);
+  }
+  assert.throws(() => makeMessage('host/lane-start', { ...clone(LANE_START), request: { targetLanguage: 'ko', model: 'm', languages: ['ko', 'ko'] } }),
+    (error) => error.code === 'INVALID_MESSAGE' && !JSON.stringify([error.message, error.stack]).includes('synthetic'));
+  assert.deepEqual(makeMessage('host/lane-start', { ...clone(LANE_START), request: { targetLanguage: 'ko', model: 'm', languages: ['ko', 'ja'] } }).request.languages, ['ko', 'ja']);
+});
+
 test('makeMessage builds the envelope, cannot be told a different target and refuses what a receiver would refuse', () => {
   for (const type of MESSAGE_TYPES) assert.deepEqual(makeMessage(type, VALID[type]), message(type), type);
   assert.deepEqual(makeMessage('sw/lane-stop'), { v: 1, target: 'sw', type: 'sw/lane-stop' });
@@ -562,6 +610,33 @@ test('frames: a captions frame is bounded, typed and capped at 8192 characters o
   assert.equal(validateFrame('host->panel', huge).ok, false, 'a frame over the byte cap is dropped');
   const built = buildCaptionFrame({ captions: null, lane: 'mic', lang: 'en', epoch: 1, seq: 2, live: true });
   assert.equal(validateFrame('host->overlay', built).ok, true);
+});
+
+test('frames: a caption row may carry its own lang (two-way rows come out in either language); a bad lang drops the frame', () => {
+  const row = { id: 't1', role: 'translation', status: 'final', text: 'hello', skipped: false };
+  const frame = { v: 1, type: 'captions', epoch: 2, seq: 5, lane: 'tab', lang: 'en', rows: [{ ...row, lang: 'en' }, { ...row, id: 't2', text: '안녕', lang: 'ko' }],
+    gaps: { input: false, audio: false, reception: false }, live: true };
+  for (const direction of ['host->panel', 'host->overlay']) {
+    const checked = validateFrame(direction, frame);
+    assert.equal(checked.ok, true, direction);
+    assert.deepEqual(checked.frame.rows.map((entry) => entry.lang), ['en', 'ko'], 'the row language survives the validator');
+    assert.ok(isDeepFrozen(checked.frame));
+  }
+  // a row without lang (every one-way frame) is unchanged: no lang key appears
+  const plain = validateFrame('host->panel', { ...frame, rows: [row] });
+  assert.deepEqual(plain.frame.rows, [row]);
+  assert.equal(Object.hasOwn(plain.frame.rows[0], 'lang'), false);
+  for (const lang of ['fr', '', null, 5, 'KO', ['ko'], {}]) {
+    assert.equal(validateFrame('host->panel', { ...frame, rows: [{ ...row, lang }] }).ok, false, JSON.stringify(lang));
+  }
+  assert.equal(validateFrame('host->panel', { ...frame, rows: [{ ...row, lang: undefined }] }).ok, true, 'an explicit undefined is no lang');
+  assert.equal(Object.hasOwn(validateFrame('host->panel', { ...frame, rows: [{ ...row, lang: undefined }] }).frame.rows[0], 'lang'), false);
+  // the frame's own lang stays mandatory
+  assert.equal(validateFrame('host->panel', { ...frame, lang: undefined }).ok, false);
+  // six rows with a lang each still fit the frame size cap the host relies on
+  const six = { ...frame, rows: Array.from({ length: 6 }, (_, index) => ({ ...row, id: `t${index}`, text: 'あ'.repeat(400), lang: 'ja' })) };
+  assert.ok(JSON.stringify(six).length <= LIMITS.maxFrameBytes);
+  assert.equal(validateFrame('host->overlay', six).ok, true);
 });
 
 test('makeFrame stamps the version, checks the shape and refuses a frame no receiver accepts', () => {

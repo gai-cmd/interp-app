@@ -9,7 +9,7 @@ import {
 import { validateKey } from '../../app/security/shared-key.js';
 import {
   CAPTION_SIZE, DEFAULT_STYLE, KEY_PATTERN, ORIGINAL_VOLUME, TARGET_LANGUAGES, UI_LANGUAGES, deepFreeze,
-  isPlainObject, normalizeStyle,
+  defaultPartnerLanguage, isPlainObject, normalizeStyle,
 } from './constants.js';
 import { LANES, STORAGE_KEYS } from './protocol.js';
 
@@ -29,16 +29,17 @@ const MIC_TARGET_ORDER = Object.freeze(['en', 'ja', 'ko']);
  */
 export function createDefaultSettings(uiLanguage = 'en') {
   const language = pick(uiLanguage, TARGET_LANGUAGES, 'en');
+  const micTarget = MIC_TARGET_ORDER.find((code) => code !== language);
   return deepFreeze({
     v: 1,
     uiLanguage: 'auto',
     voiceGender: DEFAULT_LIVE_VOICE_GENDER,
     speechMuted: true,     // captions only until the user unmutes
     lanes: {
-      tab: { enabled: true, targetLanguage: language, model: TRANSLATE_LIVE_MODEL,
-        originalVolume: ORIGINAL_VOLUME.initial, captions: true },
+      tab: { enabled: true, targetLanguage: language, twoWay: false, partnerLanguage: defaultPartnerLanguage(language),
+        model: TRANSLATE_LIVE_MODEL, originalVolume: ORIGINAL_VOLUME.initial, captions: true },
       // OFF by default: your own translated speech is drawn into a web page only after an explicit opt-in (F14).
-      mic: { enabled: false, targetLanguage: MIC_TARGET_ORDER.find((code) => code !== language),
+      mic: { enabled: false, targetLanguage: micTarget, twoWay: false, partnerLanguage: defaultPartnerLanguage(micTarget),
         model: DEFAULT_LIVE_MODEL, captions: false },
     },
     captions: { size: DEFAULT_STYLE.size, position: DEFAULT_STYLE.position, display: DEFAULT_STYLE.display,
@@ -57,9 +58,16 @@ function volumeOf(value) {
 function laneOf(raw, lane) {
   const source = isPlainObject(raw) ? raw : {};
   const fallback = DEFAULT_SETTINGS.lanes[lane];
+  const targetLanguage = pick(source.targetLanguage, TARGET_LANGUAGES, fallback.targetLanguage);
+  // A partner equal to the target (or unreadable, or missing in a record from before two-way existed) is repaired
+  // to the default partner OF THE TARGET, never to the lane's static default: the pair must always be two languages.
+  const partner = TARGET_LANGUAGES.includes(source.partnerLanguage) && source.partnerLanguage !== targetLanguage
+    ? source.partnerLanguage : defaultPartnerLanguage(targetLanguage);
   const out = {
     enabled: bool(source.enabled, fallback.enabled),
-    targetLanguage: pick(source.targetLanguage, TARGET_LANGUAGES, fallback.targetLanguage),
+    targetLanguage,
+    twoWay: bool(source.twoWay, fallback.twoWay),
+    partnerLanguage: partner,
     model: pick(source.model, LIVE_MODELS, fallback.model),
   };
   if (lane === 'tab') out.originalVolume = volumeOf(source.originalVolume);
@@ -120,11 +128,17 @@ export function hostSettingsOf(settings) {
   });
 }
 
-/** The per-lane part of a `host/lane-start` request (applies from the next start). */
+/**
+ * The per-lane part of a `host/lane-start` request (applies from the next start). A two-way lane adds
+ * `languages: [target, partner]` and keeps `targetLanguage` (the lane's own language, shown in its state); the model
+ * stays what the user chose, because the engine itself moves a translation-only model to an instruction-driven one
+ * for a pair (the lane then reports the model it really runs, not this one).
+ */
 export function laneRequestOf(settings, lane) {
   if (!LANES.includes(lane)) throw codedError('INVALID_REQUEST');
-  const { targetLanguage, model } = normalizeSettings(settings).lanes[lane];
-  return Object.freeze({ targetLanguage, model });
+  const { targetLanguage, partnerLanguage, twoWay, model } = normalizeSettings(settings).lanes[lane];
+  return Object.freeze({ targetLanguage, model,
+    ...(twoWay && partnerLanguage !== targetLanguage ? { languages: Object.freeze([targetLanguage, partnerLanguage]) } : {}) });
 }
 
 // ---------------------------------------------------------------------------------------------

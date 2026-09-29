@@ -89,7 +89,10 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange } = 
   return Object.freeze({
     /**
      * `key` is the only reference to the API key in the whole host. Returns the engine's { ready, done }.
-     * NO sourceLanguage (always auto), NO languages (no two-way) and NO signal (the lane owns cancellation).
+     * NO sourceLanguage (always auto) and NO signal (the lane owns cancellation). `request.languages` (a two-way pair)
+     * goes to the engine unchanged and only when the request has one; the engine then runs the lane on an
+     * instruction-driven model (it moves a translation-only `request.model` there itself, and reports the model it
+     * really uses in its snapshot, which is what the lane's state shows).
      */
     start({ key, request, voiceGender, muted, sessionId } = {}) {
       if (engine || closing) throw codedError('ALREADY_RUNNING');
@@ -104,6 +107,7 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange } = 
           getAudioContext, resolveFallback: config.resolveFallback('gemini', 'live'), onLevel, ...clock });
         unsubscribe = engine.subscribe(changed);
         const handle = engine.start({ targetLanguage: request.targetLanguage, model: request.model,
+          ...(request.languages === undefined ? {} : { languages: request.languages }),
           ...(muted ? { muted: true } : {}) }, { providerId: 'gemini', keySource: 'personal', sessionId });
         return Object.freeze({ ready: handle.ready, done: handle.done });
       } catch (error) {
@@ -150,7 +154,8 @@ function slimSnapshot(snapshot) {
  * `params` is the validated host/lane-start message plus the host-assigned `epoch`.
  */
 export function createLaneController({ lane, env, deps = {}, timers, onChange, acquire, release = async () => {} } = {}) {
-  const facts = { tabId: null, epoch: 0, targetLanguage: null, hostError: null, stopRequested: false,
+  // `languages` = the two-way pair of the current run (null for a one-way run): it decides how caption rows are labelled.
+  const facts = { tabId: null, epoch: 0, targetLanguage: null, languages: null, hostError: null, stopRequested: false,
     starting: false, stopping: false };
   let run = null, engineLane = null, cached = null, muted = true;
 
@@ -237,7 +242,8 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
       startPending: true, startPromise: null };
     run = current; cached = null; engineLane = null; muted = params.muted === true;
     Object.assign(facts, { tabId: params.tab?.tabId ?? null, epoch: params.epoch,
-      targetLanguage: params.request.targetLanguage, hostError: null, stopRequested: false, starting: true, stopping: false });
+      targetLanguage: params.request.targetLanguage, languages: params.request.languages ?? null, hostError: null,
+      stopRequested: false, starting: true, stopping: false });
     emit('phase');
     current.startPromise = begin(current, params);
     return current.startPromise;

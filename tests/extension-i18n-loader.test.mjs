@@ -151,6 +151,79 @@ test('the keys added for the review fixes resolve through the loader in ko, en a
   assert.equal(ko.t('ext.key.savedBrowser'), '키를 이 브라우저에 저장했어요.');
 });
 
+// Two-way mode: the five ext.twoWay.* strings reach the panel through the loader in every language (the extension had no
+// two-way key before, and a test used to assert exactly that).
+const TWO_WAY = {
+  'ext.twoWay.label': { ko: '양방향 통역', en: 'Two-way interpretation', ja: '双方向通訳' },
+  'ext.twoWay.partner': { ko: '상대 언어', en: 'Other language', ja: '相手の言語' },
+  'ext.twoWay.targetLabel': { ko: '첫 번째 언어', en: 'First language', ja: '1つ目の言語' },
+  'ext.twoWay.hint': {
+    ko: '두 언어를 서로 통역해요. 두 언어로 말이 오가는 자리에 알맞아요.',
+    en: 'Interprets between the two languages in both directions, for a conversation in both.',
+    ja: '2つの言語を相互に通訳します。2つの言語で会話する場面に向いています。',
+  },
+  'ext.twoWay.modelNote': {
+    ko: '양방향은 통역 전용 모델을 쓸 수 없어서 이 레인은 Gemini 3.8 Live를 써요.',
+    en: 'Two-way cannot use the translation-only model, so this lane uses Gemini 3.8 Live.',
+    ja: '双方向では翻訳専用モデルを使えないため、このレーンはGemini 3.8 Liveを使います。',
+  },
+};
+
+test('the two-way keys resolve through the loader in ko, en and ja, are ext.* keys the app does not have, and fall back to English per key', async () => {
+  for (const language of LANGUAGES) {
+    const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });
+    const app = await readJson(new URL(`../app/i18n/${language}.json`, import.meta.url));
+    for (const [key, values] of Object.entries(TWO_WAY)) {
+      assert.equal(i18n.has(key), true, `${language} ${key} is known`);
+      assert.equal(i18n.t(key), values[language], `${language} ${key}`);
+      assert.equal(Object.hasOwn(app, key), false, `${key} is not an app key`);
+    }
+  }
+  const missing = fileFetch({ edit: (path, dictionary) => {
+    if (path !== 'extension/i18n/ja.json') return dictionary;
+    const { 'ext.twoWay.modelNote': _dropped, ...rest } = dictionary;
+    return rest;
+  } });
+  const ja = await loadExtensionI18n({ fetch: missing, language: 'ja' });
+  assert.equal(ja.t('ext.twoWay.modelNote'), TWO_WAY['ext.twoWay.modelNote'].en, 'a missing key falls back to English, never to the raw key');
+  assert.equal(ja.t('ext.twoWay.hint'), TWO_WAY['ext.twoWay.hint'].ja, 'the other keys stay in Japanese');
+});
+
+test('all 122 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
+  const keysOf = async (language) => Object.keys(await readJson(new URL(`../extension/i18n/${language}.json`, import.meta.url)));
+  const reference = (await keysOf('en')).sort();
+  assert.equal(reference.length, 122, '117 + the five two-way keys');
+  for (const language of LANGUAGES) {
+    assert.deepEqual((await keysOf(language)).sort(), reference, `${language} has the key set of en`);
+    const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });
+    for (const key of reference) assert.equal(i18n.has(key), true, `${language} ${key}`);
+  }
+});
+
+test('applyI18n fills the two-way lines of the real panel markup in each language and keeps them through a language change', async () => {
+  const markup = await readFile(new URL('../extension/panel/panel.html', import.meta.url), 'utf8');
+  const document = parseHtml(markup);
+  const i18n = await loadExtensionI18n({ fetch: fileFetch(), language: 'en' });
+  const read = (id) => document.getElementById(id).textContent;
+  applyI18n(document, i18n);
+  for (const lane of ['tab', 'mic']) {
+    assert.equal(read(`${lane}-two-way-hint`), TWO_WAY['ext.twoWay.hint'].en);
+    assert.equal(read(`${lane}-two-way-note`), TWO_WAY['ext.twoWay.modelNote'].en);
+    assert.equal(document.getElementById(`${lane}-two-way`).closest('label').querySelector('span').textContent, TWO_WAY['ext.twoWay.label'].en);
+    assert.equal(document.getElementById(`${lane}-partner`).closest('label').querySelector('span').textContent, TWO_WAY['ext.twoWay.partner'].en);
+  }
+  // The controller puts the two-way key on the first select's label; the binder must then keep it in the right language.
+  document.getElementById('tab-target-label').setAttribute('data-i18n', 'ext.twoWay.targetLabel');
+  for (const language of ['ko', 'ja']) {
+    i18n.setLanguage(language);
+    applyI18n(document, i18n);
+    assert.equal(read('tab-target-label'), TWO_WAY['ext.twoWay.targetLabel'][language], language);
+    assert.equal(read('tab-two-way-hint'), TWO_WAY['ext.twoWay.hint'][language], language);
+    assert.equal(read('mic-two-way-note'), TWO_WAY['ext.twoWay.modelNote'][language], language);
+    assert.equal(read('mic-target-label'), i18n.t('language.target'), 'a label the controller did not switch stays the one-way label');
+  }
+});
+
 const SKELETON = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title data-i18n="ext.name"></title></head><body>
 <h1 id="h" data-i18n="ext.name"></h1>
 <button id="b" type="button" data-i18n-label="permission.request" data-i18n-tip="permission.request"></button>

@@ -58,6 +58,10 @@
 .field-range > span { grid-column: 1 / -1; }
 .field-range output { min-width: 3.5ch; text-align: end; font-variant-numeric: tabular-nums; }
 
+/* Two-way: the other-language select belongs to the checkbox above it, so it is indented under the checkbox text (the
+   checkbox width plus its gap, as in .field-check). Off, the row carries `hidden` (display: none in styles.css). */
+.partner-row { padding-inline-start: calc(1.25rem + var(--space-2)); }
+
 meter { display: block; width: 100%; height: 0.75rem; }
 
 /* Caption preview (8.2.2): the last rows of the lane, newest last, at most 4. Rows are the direct children of the

@@ -12,7 +12,8 @@ import { createDefaultSettings, normalizeSettings } from '../extension/lib/setti
 import { buildUiState, createIdleLaneState } from '../extension/lib/ui-state.js';
 import { PANEL_ELEMENT_IDS, createPanelController } from '../extension/panel/controller.js';
 import { createHostLink } from '../extension/panel/host-link.js';
-import { buildViewModel } from '../extension/panel/view-model.js';
+import { PAIR_MODEL, TRANSLATION_ONLY_MODEL, buildViewModel } from '../extension/panel/view-model.js';
+import { DEFAULT_LIVE_MODEL, LIVE_MODELS, TRANSLATE_LIVE_MODEL, liveRoute } from '../app/providers/gemini/live-config.js';
 
 // Section 11.1 `extension-panel`: the pure view model (8.2.3 rules 1-17, table driven) and the controller run against
 // the PARSED real panel.html, the real dictionaries, the fake browser and a stub service worker. Everything is
@@ -397,6 +398,92 @@ test('rule 13: applyNext is per lane and needs a known difference', () => {
   assert.equal(vmOf({ host: hostUi({ tab: { phase: 'starting', engineStatus: null, targetLanguage: null, model: null } }) }).lanes.tab.applyNext, false);
   assert.equal(vmOf({ settings: both, host: hostUi({ tab: { phase: 'off', targetLanguage: 'ja' } }) }).lanes.tab.applyNext, false);
   assert.equal(vmOf({ settings: both }).lanes.tab.applyNext, false);
+});
+
+// Two-way mode (the panel side). The host reports the model it REALLY runs (a pair moves a translation-only model to the
+// first instruction-driven one) and only the first language, so the panel remembers what it started the lane with.
+const twoWaySettings = (mutate = () => {}) => settingsWith((s) => {
+  bothLanes(s);
+  s.lanes.tab.targetLanguage = 'en'; s.lanes.tab.twoWay = true; s.lanes.tab.partnerLanguage = 'ja';
+  s.lanes.mic.targetLanguage = 'ko'; s.lanes.mic.twoWay = true; s.lanes.mic.partnerLanguage = 'en';
+  mutate(s);
+});
+
+test('two-way: the lane view model carries the choice, the partner options without the first language, the label key and the model note', () => {
+  const off = vmOf({ settings: settingsWith(bothLanes) });
+  for (const lane of ['tab', 'mic']) {
+    assert.equal(off.lanes[lane].twoWay, false, `${lane} starts one-way`);
+    assert.equal(off.lanes[lane].targetLabelKey, 'language.target');
+    assert.equal(off.lanes[lane].modelNote, false);
+  }
+  assert.deepEqual(off.lanes.tab.partnerOptions, ['ko', 'ja'], 'every language but the target (en)');
+
+  const on = vmOf({ settings: twoWaySettings() });
+  assert.equal(on.lanes.tab.twoWay, true);
+  assert.equal(on.lanes.tab.partnerLanguage, 'ja');
+  assert.deepEqual(on.lanes.tab.partnerOptions, ['ko', 'ja']);
+  assert.equal(on.lanes.tab.targetLabelKey, 'ext.twoWay.targetLabel', 'the first select is "First language" while two-way is on');
+  assert.equal(on.lanes.mic.partnerLanguage, 'en');
+  assert.deepEqual(on.lanes.mic.partnerOptions, ['en', 'ja'], 'the mic target is ko');
+  assert.ok(has(on.lanes.tab.targetLabelKey) && has('ext.twoWay.targetLabel'), 'the label key exists in the dictionary');
+
+  // The model note: two-way AND the translation-only model. The tab lane defaults to it, the microphone lane does not.
+  assert.equal(on.lanes.tab.modelNote, true);
+  assert.equal(on.lanes.mic.modelNote, false, 'the microphone lane already uses the instruction-driven model');
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.model = DEFAULT_LIVE_MODEL; }) }).lanes.tab.modelNote, false);
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.mic.model = TRANSLATE_LIVE_MODEL; }) }).lanes.mic.modelNote, true);
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.twoWay = false; }) }).lanes.tab.modelNote, false, 'one-way on the translation model: no note');
+  assert.ok(isDeepFrozen(on.lanes.tab.partnerOptions));
+});
+
+test('two-way: the two model ids the panel pins (it may not import live-config) are the ones the engine uses for a pair', async () => {
+  assert.equal(TRANSLATION_ONLY_MODEL, TRANSLATE_LIVE_MODEL);
+  // The rule of app/engine/sim.js: a pair on a translation-route model moves to the first model that is not one.
+  assert.equal(PAIR_MODEL, LIVE_MODELS.find((model) => liveRoute(model) !== 'translation'));
+  assert.equal(PAIR_MODEL, DEFAULT_LIVE_MODEL);
+  assert.deepEqual(LIVE_MODELS.filter((model) => liveRoute(model) === 'translation'), [TRANSLATION_ONLY_MODEL],
+    'a second translation-only model would need the panel note and the applies-next rule to know about it');
+  // No file of the panel names an app module but the i18n index (build-extension.mjs AREA_APP.panel).
+  const imports = [];
+  for (const file of ['controller', 'view-model', 'host-link', 'panel']) {
+    const source = await readText(`extension/panel/${file}.js`);
+    imports.push(...[...source.matchAll(/from '(\.\.\/\.\.\/app\/[^']+)'/g)].map((match) => match[1]));
+  }
+  assert.deepEqual(imports, ['../../app/i18n/index.js']);
+});
+
+test('two-way rule 13: a two-way run reports the swapped model without a false "applies next", and a changed pair or mode is one', () => {
+  const started = { twoWay: true, partnerLanguage: 'ja' };
+  // Settings say translation-only + two-way; the host reports the model the engine really used.
+  const swapped = running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' });
+  const state = (extra = {}) => ({ host: hostUi({ tab: swapped }), runWith: { tab: started, mic: null }, ...extra });
+  assert.equal(vmOf({ settings: twoWaySettings(), ...state() }).lanes.tab.applyNext, false, 'the swap is not a pending change');
+  // Without the fix the raw setting (translation model) would differ from the reported one for the whole run.
+  assert.notEqual(twoWaySettings().lanes.tab.model, DEFAULT_LIVE_MODEL);
+
+  // The partner changed while running.
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.partnerLanguage = 'ko'; }), ...state() }).lanes.tab.applyNext, true);
+  // Two-way switched off while a two-way lane runs: settings model is the translation one, the run's is not.
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.twoWay = false; }), ...state() }).lanes.tab.applyNext, true);
+  // Two-way switched on while a one-way lane runs (the model differs as well, but the mode alone is enough).
+  const oneWay = running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' });
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.model = DEFAULT_LIVE_MODEL; }),
+    host: hostUi({ tab: oneWay }), runWith: { tab: { twoWay: false, partnerLanguage: 'ko' }, mic: null } }).lanes.tab.applyNext, true);
+  // The partner is irrelevant while both the run and the settings are one-way.
+  assert.equal(vmOf({ settings: settingsWith((s) => { s.lanes.tab.model = DEFAULT_LIVE_MODEL; s.lanes.tab.partnerLanguage = 'ja'; }),
+    host: hostUi({ tab: oneWay }), runWith: { tab: { twoWay: false, partnerLanguage: 'ko' }, mic: null } }).lanes.tab.applyNext, false);
+  // Nothing is known about how the lane was started: no claim (like an unknown host value).
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.partnerLanguage = 'ko'; }), host: hostUi({ tab: swapped }) }).lanes.tab.applyNext, false);
+  // A backup model is expected to differ, and an idle lane never claims a change.
+  assert.equal(vmOf({ settings: twoWaySettings(), host: hostUi({ tab: { ...swapped, fallback: true } }), runWith: { tab: started, mic: null } }).lanes.tab.applyNext, false);
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.tab.partnerLanguage = 'ko'; }), runWith: { tab: started, mic: null } }).lanes.tab.applyNext, false);
+  // The record belongs to its lane: the microphone lane's is not read for the tab lane.
+  assert.equal(vmOf({ settings: twoWaySettings(), host: hostUi({ tab: swapped }), runWith: { tab: null, mic: { twoWay: false, partnerLanguage: 'en' } } }).lanes.tab.applyNext, false);
+  // A two-way microphone lane on the instruction-driven model needs no swap either.
+  const micRun = running('mic', { targetLanguage: 'ko', model: DEFAULT_LIVE_MODEL, route: 'flash' });
+  assert.equal(vmOf({ settings: twoWaySettings(), host: hostUi({ mic: micRun }), runWith: { tab: null, mic: { twoWay: true, partnerLanguage: 'en' } } }).lanes.mic.applyNext, false);
+  assert.equal(vmOf({ settings: twoWaySettings((s) => { s.lanes.mic.partnerLanguage = 'ja'; }), host: hostUi({ mic: micRun }),
+    runWith: { tab: null, mic: { twoWay: true, partnerLanguage: 'en' } } }).lanes.mic.applyNext, true);
 });
 
 test('rule 14: the microphone permission line, its buttons and the attention flag', () => {
@@ -1070,6 +1157,10 @@ test('every control writes exactly one field', async (t) => {
     ['mic-target', async (h) => h.choose('mic-target', 'ko'), 'lanes.mic.targetLanguage'],
     ['tab-captions', async (h) => h.click('tab-captions'), 'lanes.tab.captions'],
     ['mic-captions', async (h) => h.click('mic-captions'), 'lanes.mic.captions'],
+    ['tab-two-way', async (h) => h.click('tab-two-way'), 'lanes.tab.twoWay'],
+    ['mic-two-way', async (h) => h.click('mic-two-way'), 'lanes.mic.twoWay'],
+    ['tab-partner', async (h) => h.choose('tab-partner', 'ja'), 'lanes.tab.partnerLanguage'],
+    ['mic-partner', async (h) => h.choose('mic-partner', 'ko'), 'lanes.mic.partnerLanguage'],
     ['tab-enabled', async (h) => h.click('tab-enabled'), 'lanes.tab.enabled'],
     ['mic-enabled', async (h) => h.click('mic-enabled'), 'lanes.mic.enabled'],
     ['btn-mute', async (h) => h.click('btn-mute'), 'speechMuted'],
@@ -1086,6 +1177,309 @@ test('every control writes exactly one field', async (t) => {
   const h = await harness(t, { settings: settingsWith() });
   await h.choose('tab-target', 'xx');
   assert.ok(['ko', 'en', 'ja'].includes(h.stored().lanes.tab.targetLanguage), 'the stored value is always a valid language');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Two-way mode in the controller (twoWaySettings: tab en <-> ja, microphone ko <-> en)
+// ---------------------------------------------------------------------------------------------
+
+const optionValuesOf = (h, id) => h.el(id).options.map((option) => option.value);
+const TWO_WAY_ELEMENTS = ['tab-two-way', 'tab-partner-row', 'tab-partner', 'tab-two-way-hint', 'tab-two-way-note', 'tab-target-label',
+  'mic-two-way', 'mic-partner-row', 'mic-partner', 'mic-two-way-hint', 'mic-two-way-note', 'mic-target-label'];
+// 8.2.1: nothing that goes hidden -> visible may be live, so these elements never get a role or aria-live from a render.
+const assertNotLive = (h, label) => {
+  for (const id of TWO_WAY_ELEMENTS) {
+    assert.equal(h.attr(id, 'role'), null, `${label}: #${id} has no role`);
+    assert.equal(h.attr(id, 'aria-live'), null, `${label}: #${id} is not aria-live`);
+  }
+};
+
+test('two-way: the panel renders the stored choice (checkbox, partner row, options without the first language, label, model note)', async (t) => {
+  const idle = await harness(t, { settings: settingsWith() });
+  for (const lane of ['tab', 'mic']) {
+    assert.equal(idle.el(`${lane}-two-way`).checked, false, `${lane}: one-way by default`);
+    assert.equal(idle.el(`${lane}-partner-row`).hidden, true, `${lane}: the partner row is hidden while two-way is off`);
+    assert.equal(idle.el(`${lane}-two-way-note`).hidden, true);
+    assert.equal(idle.text(`${lane}-target-label`), T('language.target'));
+    assert.equal(idle.attr(`${lane}-target-label`, 'data-i18n'), 'language.target');
+    assert.equal(idle.text(`${lane}-two-way-hint`), T('ext.twoWay.hint'), 'the hint is always there');
+    assert.equal(idle.el(`${lane}-two-way-hint`).hidden, false);
+  }
+  // Defaults for 'en': the tab lane targets en (partner ko), the microphone lane targets ja (partner en).
+  assert.deepEqual(optionValuesOf(idle, 'tab-partner'), ['ko', 'ja']);
+  assert.equal(idle.el('tab-partner').value, 'ko');
+  assert.deepEqual(optionValuesOf(idle, 'mic-partner'), ['ko', 'en']);
+  assert.equal(idle.el('mic-partner').value, 'en');
+  assert.deepEqual(idle.el('tab-partner').options.map((option) => option.textContent), [T('language.ko'), T('language.ja')]);
+  assertNotLive(idle, 'idle');
+
+  const on = await harness(t, { settings: twoWaySettings() });
+  assert.equal(on.el('tab-two-way').checked, true);
+  assert.equal(on.el('mic-two-way').checked, true);
+  for (const lane of ['tab', 'mic']) {
+    assert.equal(on.el(`${lane}-partner-row`).hidden, false, `${lane}: the partner row shows while two-way is on`);
+    assert.equal(on.text(`${lane}-target-label`), T('ext.twoWay.targetLabel'), `${lane}: the first select is "First language"`);
+    assert.equal(on.attr(`${lane}-target-label`, 'data-i18n'), 'ext.twoWay.targetLabel', 'the binder key follows, so a language change keeps it');
+  }
+  assert.deepEqual(optionValuesOf(on, 'tab-partner'), ['ko', 'ja'], 'the tab target is en');
+  assert.equal(on.el('tab-partner').value, 'ja');
+  assert.deepEqual(optionValuesOf(on, 'mic-partner'), ['en', 'ja'], 'the microphone target is ko');
+  assert.equal(on.el('mic-partner').value, 'en');
+  // The note only where the lane's model is the translation-only one: the tab lane by default, not the microphone lane.
+  assert.equal(on.el('tab-two-way-note').hidden, false);
+  assert.equal(on.text('tab-two-way-note'), T('ext.twoWay.modelNote'));
+  assert.equal(on.el('mic-two-way-note').hidden, true);
+  assertNotLive(on, 'on');
+  // Every language option of a partner select comes from the dictionary (never the bare code).
+  for (const option of on.el('mic-partner').options) assert.equal(option.textContent, T(`language.${option.value}`));
+});
+
+test('two-way: the note follows the lane model, not only the checkbox (the microphone lane on the translation-only model)', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings((s) => { s.lanes.mic.model = TRANSLATE_LIVE_MODEL; s.lanes.tab.model = DEFAULT_LIVE_MODEL; }) });
+  assert.equal(h.el('tab-two-way-note').hidden, true, 'the tab lane already uses the instruction-driven model');
+  assert.equal(h.el('mic-two-way-note').hidden, false);
+  await h.click('mic-two-way');
+  assert.equal(h.el('mic-two-way-note').hidden, true, 'one-way: the translation model is fine');
+  await h.click('mic-two-way');
+  assert.equal(h.el('mic-two-way-note').hidden, false);
+  await h.patchSettings((s) => { s.lanes.mic.model = DEFAULT_LIVE_MODEL; });
+  assert.equal(h.el('mic-two-way-note').hidden, true, 'the model changed on the options page: the panel follows');
+  assertNotLive(h, 'model changes');
+});
+
+test('two-way: toggling saves the setting, shows or hides the partner row and the label wording, and touches nothing else', async (t) => {
+  const h = await harness(t, { settings: settingsWith(), armed: true });
+  const writes = () => h.localSets.filter((entry) => KEYS.settings in entry.items).length;
+  const before = JSON.parse(JSON.stringify(h.stored()));
+  const written = writes();
+  await h.click('tab-two-way');
+  assert.equal(h.stored().lanes.tab.twoWay, true, 'saved');
+  assert.equal(writes() - written, 1, 'exactly one write');
+  assert.deepEqual(changedPaths(before, h.stored()), ['lanes.tab.twoWay']);
+  assert.equal(h.el('tab-partner-row').hidden, false);
+  assert.equal(h.text('tab-target-label'), T('ext.twoWay.targetLabel'));
+  assert.equal(h.el('tab-two-way-note').hidden, false, 'the tab lane defaults to the translation-only model');
+  assert.equal(h.el('mic-partner-row').hidden, true, 'the other lane is untouched');
+  assert.equal(h.text('mic-target-label'), T('language.target'));
+  assert.deepEqual(h.types(), [], 'a setting is not a command: nothing is sent while idle');
+  assertNotLive(h, 'toggled on');
+  await h.click('tab-two-way');
+  assert.equal(h.stored().lanes.tab.twoWay, false);
+  assert.equal(h.el('tab-partner-row').hidden, true);
+  assert.equal(h.text('tab-target-label'), T('language.target'));
+  assert.equal(h.el('tab-two-way-note').hidden, true);
+  assertNotLive(h, 'toggled off');
+  // the partner chosen while on is kept for the next time
+  await h.click('tab-two-way');
+  await h.choose('tab-partner', 'ja');
+  await h.click('tab-two-way');
+  await h.click('tab-two-way');
+  assert.equal(h.stored().lanes.tab.partnerLanguage, 'ja');
+  assert.equal(h.el('tab-partner').value, 'ja');
+});
+
+test('two-way: the partner select saves its choice on its own lane only', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings() });
+  const before = JSON.parse(JSON.stringify(h.stored()));
+  await h.choose('tab-partner', 'ko');
+  assert.equal(h.stored().lanes.tab.partnerLanguage, 'ko');
+  assert.deepEqual(changedPaths(before, h.stored()), ['lanes.tab.partnerLanguage']);
+  assert.equal(h.el('tab-partner').value, 'ko');
+  assert.equal(h.stored().lanes.mic.partnerLanguage, 'en');
+  // a value the select does not offer (the first language itself) never ends up stored as the partner
+  await h.choose('tab-partner', 'en');
+  assert.notEqual(h.stored().lanes.tab.partnerLanguage, h.stored().lanes.tab.targetLanguage, 'the pair stays two different languages');
+  assert.equal(h.stored().lanes.tab.targetLanguage, 'en');
+});
+
+test('two-way: choosing the partner as the first language moves the partner to the language just left, and the pair is saved with it', async (t) => {
+  // ko <-> ja. The default partner of ja would be en, so a swap (ko) is told apart from the settings' own repair.
+  const h = await harness(t, { settings: twoWaySettings((s) => { s.lanes.tab.targetLanguage = 'ko'; s.lanes.tab.partnerLanguage = 'ja'; }) });
+  const writes = () => h.localSets.filter((entry) => KEYS.settings in entry.items).length;
+  const written = writes();
+  const before = JSON.parse(JSON.stringify(h.stored()));
+  await h.choose('tab-target', 'ja');
+  assert.equal(h.stored().lanes.tab.targetLanguage, 'ja');
+  assert.equal(h.stored().lanes.tab.partnerLanguage, 'ko', 'the language just left takes the partner place');
+  assert.deepEqual(changedPaths(before, h.stored()).sort(), ['lanes.tab.partnerLanguage', 'lanes.tab.targetLanguage']);
+  assert.equal(writes() - written, 1, 'one write carries both fields');
+  assert.deepEqual(optionValuesOf(h, 'tab-partner'), ['ko', 'en'], 'the partner select no longer offers the first language');
+  assert.equal(h.el('tab-partner').value, 'ko');
+  assert.equal(h.el('tab-target').value, 'ja');
+  // a first language that is not the partner leaves the partner alone
+  await h.choose('tab-target', 'en');
+  assert.equal(h.stored().lanes.tab.partnerLanguage, 'ko');
+  assert.deepEqual(optionValuesOf(h, 'tab-partner'), ['ko', 'ja']);
+  assert.equal(h.el('tab-partner').value, 'ko');
+  // the same holds while two-way is off (the row is hidden but the pair must stay valid for the next time)
+  const off = await harness(t, { settings: settingsWith((s) => { s.lanes.tab.targetLanguage = 'ko'; s.lanes.tab.partnerLanguage = 'ja'; }) });
+  await off.choose('tab-target', 'ja');
+  assert.deepEqual([off.stored().lanes.tab.targetLanguage, off.stored().lanes.tab.partnerLanguage], ['ja', 'ko']);
+  assert.equal(off.stored().lanes.tab.twoWay, false);
+  // the microphone lane's pair is its own
+  assert.deepEqual([h.stored().lanes.mic.targetLanguage, h.stored().lanes.mic.partnerLanguage], ['ko', 'en']);
+});
+
+test('two-way: a stored pair that is not two languages, or a record from before two-way, is repaired on load', async (t) => {
+  const raw = JSON.parse(JSON.stringify(twoWaySettings()));
+  raw.lanes.tab.partnerLanguage = raw.lanes.tab.targetLanguage;   // hand-edited: partner == target
+  const broken = await harness(t, { settings: raw });
+  assert.notEqual(broken.el('tab-partner').value, broken.el('tab-target').value);
+  assert.ok(!optionValuesOf(broken, 'tab-partner').includes(broken.el('tab-target').value), 'the first language is never a partner choice');
+  assert.equal(broken.el('tab-partner').value, 'ko', 'the default partner of en');
+
+  const legacy = JSON.parse(JSON.stringify(settingsWith()));
+  for (const lane of ['tab', 'mic']) { delete legacy.lanes[lane].twoWay; delete legacy.lanes[lane].partnerLanguage; }
+  const old = await harness(t, { settings: legacy });
+  assert.equal(old.el('tab-two-way').checked, false);
+  assert.equal(old.el('tab-partner-row').hidden, true);
+  assert.equal(old.el('tab-partner').value, 'ko');
+  assert.equal(old.localSets.filter((entry) => KEYS.settings in entry.items).length, 0, 'reading a stored record never rewrites it');
+});
+
+test('two-way: a storage failure snaps the controls back and the partner row stays as stored', async (t) => {
+  const h = await harness(t, { settings: settingsWith() });
+  h.failWrites(true);
+  await h.click('tab-two-way');
+  assert.equal(h.el('tab-two-way').checked, false);
+  assert.equal(h.el('tab-partner-row').hidden, true);
+  assert.equal(h.stored().lanes.tab.twoWay, false);
+  h.failWrites(false);
+  await h.click('tab-two-way');
+  assert.equal(h.el('tab-two-way').checked, true);
+  assert.equal(h.el('tab-partner-row').hidden, false);
+});
+
+test('two-way: another window or the options page changing the setting is followed by the panel', async (t) => {
+  const h = await harness(t, { settings: settingsWith() });
+  await h.patchSettings((s) => { s.lanes.mic.twoWay = true; s.lanes.mic.targetLanguage = 'ko'; s.lanes.mic.partnerLanguage = 'ja'; });
+  assert.equal(h.el('mic-two-way').checked, true);
+  assert.equal(h.el('mic-partner-row').hidden, false);
+  assert.deepEqual(optionValuesOf(h, 'mic-partner'), ['en', 'ja']);
+  assert.equal(h.el('mic-partner').value, 'ja');
+  assert.equal(h.text('mic-target-label'), T('ext.twoWay.targetLabel'));
+});
+
+test('two-way: the labels, the partner options, the hint and the note follow the UI language', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings((s) => { s.uiLanguage = 'ko'; }) });
+  const texts = (language) => ({
+    label: REF[language].t('ext.twoWay.targetLabel'), hint: REF[language].t('ext.twoWay.hint'), note: REF[language].t('ext.twoWay.modelNote'),
+    partner: REF[language].t('ext.twoWay.partner'), options: ['ko', 'ja'].map((code) => REF[language].t(`language.${code}`)),
+  });
+  const read = () => ({ label: h.text('tab-target-label'), hint: h.text('tab-two-way-hint'), note: h.text('tab-two-way-note'),
+    partner: h.el('tab-partner').closest('label').querySelector('span').textContent, options: h.el('tab-partner').options.map((option) => option.textContent) });
+  assert.deepEqual(read(), texts('ko'));
+  assert.match(texts('ko').hint, /요\.$/);
+  await h.patchSettings((s) => { s.uiLanguage = 'ja'; });
+  assert.deepEqual(read(), texts('ja'));
+  assert.equal(h.text('tab-target-label'), REF.ja.t('ext.twoWay.targetLabel'), 'the two-way wording survives the language change');
+  await h.patchSettings((s) => { s.uiLanguage = 'en'; });
+  assert.deepEqual(read(), texts('en'));
+  // ...and turning it off puts the one-way label back in the current language
+  await h.click('tab-two-way');
+  assert.equal(h.text('tab-target-label'), REF.en.t('language.target'));
+  await h.patchSettings((s) => { s.uiLanguage = 'ko'; });
+  assert.equal(h.text('tab-target-label'), REF.ko.t('language.target'));
+});
+
+test('two-way: switching it while a lane runs changes nothing at once and shows the applies-next hint; the swapped model is no false alarm', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings((s) => { s.lanes.mic.enabled = false; }), hostUp: true, armed: true });
+  await h.click('btn-start');   // the tab lane starts with two-way on (translation-only model in the settings)
+  assert.deepEqual(h.types(), ['sw/lane-start']);
+  // The engine runs the pair on the instruction-driven model and reports THAT model.
+  await h.postState({ tab: running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' }) });
+  assert.equal(h.text('tab-apply-next'), '', 'the model swap of a pair is not a pending change');
+  await h.choose('tab-partner', 'ko');
+  assert.equal(h.text('tab-apply-next'), T('ext.applyNext'), 'a changed partner applies from the next start');
+  await h.choose('tab-partner', 'ja');
+  assert.equal(h.text('tab-apply-next'), '', 'back to what runs: the hint goes away');
+  await h.click('tab-two-way');
+  assert.equal(h.text('tab-apply-next'), T('ext.applyNext'), 'switching two-way off is a change for the next start too');
+  assert.equal(h.el('tab-partner-row').hidden, true);
+  await h.click('tab-two-way');
+  assert.equal(h.text('tab-apply-next'), '');
+  assert.equal(h.text('mic-apply-next'), '', 'the other lane is not running');
+  assert.deepEqual(h.types(), ['sw/lane-start'], 'nothing was restarted: the change applies from the next start');
+  assert.equal(h.el('tab-apply-next').hidden, false, 'the live region is never hidden');
+  assert.equal(h.attr('tab-apply-next', 'role'), 'status');
+
+  // A one-way run, then two-way switched on.
+  const oneWay = await harness(t, { settings: settingsWith((s) => { s.lanes.tab.targetLanguage = 'en'; s.lanes.tab.model = DEFAULT_LIVE_MODEL; }), hostUp: true, armed: true });
+  await oneWay.click('btn-start');
+  await oneWay.postState({ tab: running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' }) });
+  assert.equal(oneWay.text('tab-apply-next'), '');
+  await oneWay.click('tab-two-way');
+  assert.equal(oneWay.text('tab-apply-next'), T('ext.applyNext'));
+  // The run ends and a new one starts with two-way: the record is the new start's, so nothing is pending.
+  await oneWay.postState({});
+  assert.equal(oneWay.text('tab-apply-next'), '');
+  await oneWay.click('btn-start');
+  await oneWay.postState({ tab: running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash', epoch: 2 }) });
+  assert.equal(oneWay.text('tab-apply-next'), '', 'the second run started with two-way on');
+  await oneWay.click('tab-two-way');
+  assert.equal(oneWay.text('tab-apply-next'), T('ext.applyNext'), 'and switching it off now is the pending change');
+
+  // A lane this panel did not start says nothing about two-way (it does not know how it was started).
+  const unknown = await harness(t, { settings: twoWaySettings((s) => { s.lanes.mic.enabled = false; }), hostUp: true });
+  await unknown.postState({ tab: running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' }) });
+  await unknown.choose('tab-partner', 'ko');
+  assert.equal(unknown.text('tab-apply-next'), '');
+});
+
+test('two-way: a start that fails leaves no record behind, so a later change is not called pending', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings((s) => { s.lanes.mic.enabled = false; }), hostUp: true, armed: true });
+  h.setHandler(() => ({ ok: false, code: 'TAB_CAPTURE_FAILED' }));
+  await h.click('btn-start');
+  assert.equal(h.text('tab-notice'), T('ext.error.TAB_CAPTURE_FAILED'));
+  h.setHandler(() => ({ ok: true }));
+  await h.postState({ tab: running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' }) });
+  await h.choose('tab-partner', 'ko');
+  assert.equal(h.text('tab-apply-next'), '', 'no accepted start, no record: nothing is claimed');
+});
+
+test('two-way: after a lost connection the panel no longer claims to know how the run was started', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings((s) => { s.lanes.mic.enabled = false; }), hostUp: true, armed: true });
+  h.setHandler((message) => (message.type === 'sw/host-probe' ? { ok: true, up: true } : { ok: true }));
+  await h.click('btn-start');
+  const swapped = running('tab', { targetLanguage: 'en', model: DEFAULT_LIVE_MODEL, route: 'flash' });
+  await h.postState({ tab: swapped });
+  await h.choose('tab-partner', 'ko');
+  assert.equal(h.text('tab-apply-next'), T('ext.applyNext'), 'known start: the changed partner is pending');
+  h.host().port.disconnect();
+  await h.advance(6000);
+  assert.equal(h.ports.length, 2, 'the probe found the host alive and the panel reconnected');
+  await h.postState({ tab: swapped });
+  assert.equal(h.text('tab-apply-next'), '', 'the record went with the connection: no claim until the next start');
+});
+
+test('two-way: the request the panel sends carries no key and no language pair of its own (the worker builds it from the stored settings)', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings(), armed: true, hostUp: true });
+  await h.click('btn-start');
+  assert.deepEqual(h.requests, [
+    { v: 1, target: 'sw', type: 'sw/lane-start', lane: 'tab', tabId: 7 },
+    { v: 1, target: 'sw', type: 'sw/lane-start', lane: 'mic' },
+  ], 'the same two messages as a one-way start');
+  const wire = h.browser.deliveries.filter((entry) => entry.from === 'panel').map((entry) => entry.json).join('\n');
+  assert.doesNotMatch(wire, /languages|partner|twoWay|targetLanguage|request|streamId/, 'no pair, no language, no request body');
+  assert.ok(!wire.includes(FAKE_KEY), 'no key');
+  for (const frame of h.ports.flatMap((port) => port.received)) assert.deepEqual(frame, { v: 1, type: 'hello' });
+  // stored settings hold the pair: that is the worker's input
+  assert.deepEqual([h.stored().lanes.tab.twoWay, h.stored().lanes.tab.targetLanguage, h.stored().lanes.tab.partnerLanguage], [true, 'en', 'ja']);
+});
+
+test('two-way: every rendered two-way string is an i18n result in the three languages', async (t) => {
+  for (const language of ['en', 'ko', 'ja']) {
+    const h = await harness(t, { settings: twoWaySettings((s) => { s.uiLanguage = language; }) });
+    const ref = REF[language];
+    assert.equal(h.text('tab-target-label'), ref.t('ext.twoWay.targetLabel'), language);
+    assert.equal(h.text('tab-two-way-hint'), ref.t('ext.twoWay.hint'), language);
+    assert.equal(h.text('tab-two-way-note'), ref.t('ext.twoWay.modelNote'), language);
+    assert.equal(h.el('tab-two-way').closest('label').querySelector('span').textContent, ref.t('ext.twoWay.label'), language);
+    assert.equal(h.el('mic-partner').closest('label').querySelector('span').textContent, ref.t('ext.twoWay.partner'), language);
+    for (const id of ['tab-partner', 'mic-partner']) {
+      for (const option of h.el(id).options) assert.equal(option.textContent, ref.t(`language.${option.value}`), `${language} ${id}`);
+    }
+  }
 });
 
 test('a storage failure leaves the controls on the stored state and never throws into the page', async (t) => {

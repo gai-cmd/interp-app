@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createSimEngine } from '../app/engine/sim.js';
 import { createServiceWorker } from '../extension/background/sw-core.js';
 import { createLaneHost } from '../extension/engine/lane-host.js';
 import { createChromeAdapter } from '../extension/lib/chrome-adapter.js';
@@ -35,11 +36,26 @@ async function makeWorld({ tabs = [{ id: 5, url: 'https://claude.ai/doc' }], set
   const browser = createFakeBrowser({ messages: { menuOpen: 'Interpret this tab' } });
   const sockets = createSocketFixture();
   const audio = createFakeAudioEnv({ browser, sockets, micPermission });
-  const world = { browser, sockets, audio, clock: browser.clock, hosts: [], overlays: [], attaches: [], swCores: [] };
+  const world = { browser, sockets, audio, clock: browser.clock, hosts: [], overlays: [], attaches: [], swCores: [], engineStarts: [] };
   browser.sw.idleTimeoutMs = 1e12;   // the tests kill the worker explicitly
 
+  // The REAL sim engine, watched at its one entry point: every request the host hands to `engine.start` is recorded (a
+  // copy; the session context has no key in it). The two-way tests read it to see what the engine was really given.
+  const watchedEngine = (options) => {
+    const engine = createSimEngine(options);
+    // A frozen engine cannot sit behind a Proxy that rewrites members, so this is a plain object with the same surface.
+    const watched = Object.create(null);
+    for (const name of Object.keys(engine).filter((key) => key !== 'start')) {
+      const member = Object.getOwnPropertyDescriptor(engine, name);
+      Object.defineProperty(watched, name, member.get ? { get: () => engine[name], enumerable: true }
+        : { value: typeof member.value === 'function' ? member.value.bind(engine) : member.value, enumerable: true });
+    }
+    watched.start = (request, context) => { world.engineStarts.push(JSON.parse(JSON.stringify(request))); return engine.start(request, context); };
+    return Object.freeze(watched);
+  };
   browser.onCreateOffscreen = (context) => {
-    const host = createLaneHost({ adapter: { runtime: context.chrome.runtime }, env: audio.env, timers: browser.clock, hostId: `h-int-${world.hosts.length + 1}` });
+    const host = createLaneHost({ adapter: { runtime: context.chrome.runtime }, env: audio.env, timers: browser.clock, hostId: `h-int-${world.hosts.length + 1}`,
+      deps: { createSimEngine: watchedEngine } });
     host.start();
     world.hosts.push(host);
   };
@@ -405,5 +421,367 @@ test('a quota error on one lane shows its notice and keeps the other lane runnin
   assert.equal(panel.text('mic-notice'), '');
   assert.equal(panel.el('status-pill').getAttribute('data-state'), 'warning', 'one fails while the other runs');
   assert.equal(panel.el('usage-note').getAttribute('data-emphasis'), 'true', 'both lanes on: the doubling note is emphasized');
+  panel.close();
+});
+
+// =============================================================================================
+// Two-way mode (the contract's non-goal D10 was reversed): panel toggle -> stored settings -> worker -> host/lane-start
+// -> lane host -> engine start -> Live setup message, over the real modules and the fake browser. Fake sockets and fake
+// audio only: no sound, no network, no browser. The model's actual two-way OUTPUT is not tested here (checklist 13).
+
+const TRANSLATION_ONLY = 'gemini-3.5-live-translate-preview';
+const INSTRUCTION_MODEL = 'gemini-3.8-live';
+const PAIR_LANGUAGES = ['ko', 'en', 'ja'];
+const setupOf = (socket) => socket.sent[0].setup;
+const instructionOf = (socket) => setupOf(socket).systemInstruction?.parts[0].text ?? '';
+const optionValues = (panel, id) => panel.el(id).options.map((option) => option.value);
+const storedLane = (world, lane) => world.browser.storageData('local')[STORAGE_KEYS.settings].lanes[lane];
+// Every host/lane-start the worker sent, parsed: the only place the key, the stream id and the pair may travel.
+const laneStarts = (world) => world.browser.deliveries
+  .filter((entry) => entry.kind === 'message' && entry.to === 'offscreen')
+  .map((entry) => JSON.parse(entry.json || 'null')).filter((message) => message?.type === 'host/lane-start');
+const startOf = (world, lane) => laneStarts(world).find((message) => message.lane === lane);
+const lastCaptions = (world, lane) => world.hostFrames('captions').filter((frame) => frame.lane === lane).at(-1);
+const langsOf = (frame) => frame.rows.map((row) => row.lang);
+const overlayCaptions = (world, tabId, lane) => world.overlays.find((entry) => entry.tabId === tabId)
+  .frames.filter((frame) => frame.type === 'captions' && frame.lane === lane).at(-1);
+// One finished caption row: the model's output text, the end of its turn, then the frame interval.
+async function say(world, socket, text) {
+  content(socket, { outputTranscription: { text } });
+  content(socket, { turnComplete: true });
+  await tick();
+  await world.clock.advance(LIMITS.frameIntervalMs);
+  await world.settle();
+}
+
+// Whatever the worker sent, a pair is absent or exactly two DISTINCT ko|en|ja languages, the first being the lane's own
+// target language; and no start ever named a pair the engine was not given (and the other way round).
+function assertPairsAreSane(world) {
+  for (const message of laneStarts(world)) {
+    const { request } = message;
+    if (!Object.hasOwn(request, 'languages')) continue;
+    assert.equal(Array.isArray(request.languages) && request.languages.length, 2, `${message.lane}: two languages`);
+    for (const language of request.languages) assert.ok(PAIR_LANGUAGES.includes(language), `${message.lane}: ${language} is a language`);
+    assert.notEqual(request.languages[0], request.languages[1], `${message.lane}: the two languages differ`);
+    assert.equal(request.languages[0], request.targetLanguage, `${message.lane}: the first is the lane's own language`);
+  }
+  for (const request of world.engineStarts) {
+    if (Object.hasOwn(request, 'languages')) assert.notEqual(request.languages[0], request.languages[1]);
+  }
+}
+
+// The key and the pair each cross in the lane-start message and nowhere else: not a port frame, not a response, not
+// storage, not the engine's request.
+function assertNothingLeaks(world) {
+  const starts = laneStarts(world);
+  const carrying = world.browser.deliveries.filter((entry) => entry.json.includes(KEY));
+  assert.equal(carrying.length, starts.length, 'the key is in exactly one message per lane start');
+  for (const entry of carrying) {
+    assert.deepEqual([entry.kind, entry.to, JSON.parse(entry.json).type], ['message', 'offscreen', 'host/lane-start']);
+    assert.equal(entry.json.split(KEY).length, 2, 'and once inside it');
+  }
+  const pairing = world.browser.deliveries.filter((entry) => entry.json.includes('"languages"'));
+  for (const entry of pairing) assert.deepEqual([entry.kind, entry.to, JSON.parse(entry.json).type], ['message', 'offscreen', 'host/lane-start']);
+  assert.equal(pairing.length, starts.filter((message) => Object.hasOwn(message.request, 'languages')).length, 'one pair per two-way start');
+  assert.equal(JSON.stringify(world.browser.storageData('session')).includes(KEY), false);
+  assert.equal(JSON.stringify(world.browser.storageData('local')[STORAGE_KEYS.settings] ?? {}).includes(KEY), false);
+  assert.equal(JSON.stringify(world.engineStarts).includes(KEY), false, 'the engine request carries no key');
+  assert.equal(JSON.stringify(world.browser.storageData('session')).includes('"languages"'), false);
+}
+
+test('TWO-WAY microphone lane: the toggle and the partner are stored, Start sends languages [target, partner] in the one lane-start message, the engine is given it, and the Live setup is one two-way instruction', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await panel.change('tab-enabled', false);
+  await panel.change('mic-enabled', true);
+  assert.equal(panel.el('mic-two-way').checked, false, 'off by default');
+  assert.equal(panel.el('mic-partner-row').hidden, true);
+  const oneWayLabel = panel.text('mic-target-label');
+
+  await panel.change('mic-target', 'ko');
+  await panel.change('mic-two-way', true);
+  assert.equal(panel.el('mic-partner-row').hidden, false, 'the partner row shows while two-way is on');
+  assert.equal(panel.text('mic-target-label'), 'First language');
+  assert.notEqual(panel.text('mic-target-label'), oneWayLabel);
+  assert.deepEqual(optionValues(panel, 'mic-partner'), ['en', 'ja'], 'every language but the first');
+  assert.equal(panel.el('mic-two-way-note').hidden, true, 'the mic model is instruction-driven: nothing to note');
+  await panel.change('mic-partner', 'ja');
+  assert.deepEqual([storedLane(world, 'mic').twoWay, storedLane(world, 'mic').targetLanguage, storedLane(world, 'mic').partnerLanguage],
+    [true, 'ko', 'ja'], 'the panel stored the choice');
+
+  await panel.click('btn-start');
+  const mic = await world.connect({ worklet: 0, socket: 0 });
+  // The worker's message: the pair is exactly [target, partner] and the target stays in the request.
+  assert.deepEqual(startOf(world, 'mic').request, { targetLanguage: 'ko', model: INSTRUCTION_MODEL, languages: ['ko', 'ja'] });
+  // The host handed the engine that same pair (and still no source language).
+  assert.equal(world.engineStarts.length, 1);
+  assert.deepEqual(world.engineStarts[0].languages, ['ko', 'ja']);
+  assert.equal(world.engineStarts[0].targetLanguage, 'ko');
+  assert.equal(Object.hasOwn(world.engineStarts[0], 'sourceLanguage'), false);
+  // The Live setup: one two-way instruction on the instruction-driven model, no single translation target.
+  assert.equal(setupOf(mic.socket).model, `models/${INSTRUCTION_MODEL}`);
+  assert.match(instructionOf(mic.socket), /two-way INTERPRETER between Korean and Japanese/);
+  assert.equal(setupOf(mic.socket).generationConfig?.translationConfig, undefined);
+  assert.equal(world.lastState().lanes.mic.phase, 'running');
+  assert.equal(world.lastState().lanes.mic.targetLanguage, 'ko', 'the lane state keeps the first language');
+  assert.equal(panel.text('mic-apply-next'), '', 'no "applies next" claim for a run that started with the settings it shows');
+
+  // Rows come out in either language of the pair, each with its language.
+  await say(world, mic.socket, '안녕하세요');
+  await say(world, mic.socket, 'こんにちは');
+  const frame = lastCaptions(world, 'mic');
+  assert.deepEqual(frame.rows.map((row) => row.text), ['안녕하세요', 'こんにちは']);
+  assert.deepEqual(langsOf(frame), ['ko', 'ja']);
+  assert.equal(frame.lang, 'ja', 'the frame language is the newest row\'s');
+  assertPairsAreSane(world);
+  assertNothingLeaks(world);
+  assert.equal(laneStarts(world).length, 1);
+  panel.close();
+});
+
+test('TWO-WAY tab lane on the translation-only default: the panel says so, the host moves it to Gemini 3.8 Live, the setup is one two-way instruction and the overlay rows carry their language', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await world.armTab(5);
+  assert.equal(storedLane(world, 'tab').model, TRANSLATION_ONLY, 'the tab lane defaults to the translation-only model');
+  assert.equal(panel.el('tab-two-way-note').hidden, true, 'no note while two-way is off');
+
+  await panel.change('tab-two-way', true);
+  assert.deepEqual([panel.el('tab-target').value, panel.el('tab-partner').value], ['en', 'ko'], 'the default partner: Korean, for an English lane');
+  assert.equal(panel.el('tab-two-way-note').hidden, false, 'two-way on the translation-only model: the panel says which model is used instead');
+  assert.match(panel.text('tab-two-way-note'), /Gemini 3\.8 Live/);
+  assert.equal(panel.el('mic-two-way-note').hidden, true, 'and the note is per lane');
+
+  await panel.click('btn-start');
+  const tab = await world.connect({ worklet: 0, socket: 0 });
+  // The worker still sends the CHOSEN model; the engine is the one that moves it.
+  assert.deepEqual(startOf(world, 'tab').request, { targetLanguage: 'en', model: TRANSLATION_ONLY, languages: ['en', 'ko'] });
+  assert.deepEqual(world.engineStarts.map((request) => [request.model, request.languages]), [[TRANSLATION_ONLY, ['en', 'ko']]]);
+  assert.equal(setupOf(tab.socket).model, `models/${INSTRUCTION_MODEL}`, 'the Live setup names the instruction-driven model');
+  assert.equal(setupOf(tab.socket).generationConfig?.translationConfig, undefined, 'and no single translation target');
+  assert.match(instructionOf(tab.socket), /two-way INTERPRETER between English and Korean/);
+  const lane = world.lastState().lanes.tab;
+  assert.deepEqual([lane.phase, lane.model, lane.route, lane.fallback], ['running', INSTRUCTION_MODEL, 'flash', false], 'the state tells the truth about the model');
+  assert.match(panel.text('tab-route'), /General Live model/);
+  assert.match(panel.text('tab-route'), new RegExp(INSTRUCTION_MODEL.replaceAll('.', '\\.')));
+  assert.equal(panel.text('tab-route').includes('translate-preview'), false, 'the route line names the model really in use');
+  assert.equal(panel.el('tab-two-way-note').hidden, false, 'the note stays while the run uses the substitute');
+  assert.equal(panel.text('tab-apply-next'), '', 'the substitution is not a pending change');
+  assert.equal(panel.el('status-pill').getAttribute('data-state'), 'running');
+
+  // English and Korean rows, each labelled, on the panel and on the page.
+  await say(world, tab.socket, 'Hello everyone, welcome');
+  await say(world, tab.socket, '안녕하세요 여러분');
+  assert.deepEqual(langsOf(lastCaptions(world, 'tab')), ['en', 'ko']);
+  const overlay = overlayCaptions(world, 5, 'tab');
+  assert.deepEqual(overlay.rows.map((row) => row.text), ['Hello everyone, welcome', '안녕하세요 여러분']);
+  assert.deepEqual(langsOf(overlay), ['en', 'ko']);
+  assert.equal(overlay.lang, 'ko');
+  assertPairsAreSane(world);
+  assertNothingLeaks(world);
+  assert.equal(world.overlays.every((entry) => entry.frames.every((frame) => !JSON.stringify(frame).includes('"languages"'))), true, 'the pair never reaches the page');
+  panel.close();
+});
+
+for (const twoWayLane of ['tab', 'mic']) {
+  test(`TWO LANES at once, the ${twoWayLane} lane two-way and the other one-way: each setup is its own, the pair reaches only its lane, the key is in one message per lane`, async () => {
+    const world = await makeWorld();
+    const oneWayLane = twoWayLane === 'tab' ? 'mic' : 'tab';
+    const panel = await world.openPanel();
+    await world.armTab(5);
+    await panel.change('mic-enabled', true);
+    await panel.change(`${twoWayLane}-two-way`, true);
+    assert.notEqual(panel.text('usage-note'), '', 'both lanes on: the doubling note');
+    await panel.click('btn-start');
+    const sockets = { tab: await world.connect({ worklet: 0, socket: 0 }), mic: await world.connect({ worklet: 1, socket: 1 }) };
+
+    const [pairStart, plainStart] = [startOf(world, twoWayLane), startOf(world, oneWayLane)];
+    assert.equal(pairStart.request.languages.length, 2);
+    assert.equal(pairStart.request.languages[0], pairStart.request.targetLanguage);
+    assert.equal(Object.hasOwn(plainStart.request, 'languages'), false, 'the pair of one lane never leaks into the other');
+    assert.match(instructionOf(sockets[twoWayLane].socket), /two-way INTERPRETER between/);
+    assert.equal(setupOf(sockets[twoWayLane].socket).model, `models/${INSTRUCTION_MODEL}`, 'a two-way lane is never on the translation-only model');
+    assert.doesNotMatch(instructionOf(sockets[oneWayLane].socket), /two-way/);
+    if (oneWayLane === 'tab') {
+      assert.equal(setupOf(sockets.tab.socket).model, `models/${TRANSLATION_ONLY}`, 'the one-way tab lane keeps the translation-only model');
+      assert.equal(setupOf(sockets.tab.socket).generationConfig.translationConfig.targetLanguageCode, plainStart.request.targetLanguage);
+    } else {
+      assert.match(instructionOf(sockets.mic.socket), /simultaneous INTERPRETER into/);
+    }
+    assert.equal(world.engineStarts.length, 2);
+    assert.equal(world.engineStarts.filter((request) => Object.hasOwn(request, 'languages')).length, 1);
+    const state = world.lastState();
+    assert.equal(running(state, 'tab') && running(state, 'mic'), true);
+    assert.equal(state.concurrent, 2);
+
+    // Rows: only the two-way lane labels them.
+    for (const lane of ['tab', 'mic']) await say(world, sockets[lane].socket, lane === 'tab' ? '안녕하세요' : 'こんにちは');
+    assert.equal(lastCaptions(world, twoWayLane).rows.every((row) => PAIR_LANGUAGES.includes(row.lang)), true);
+    assert.equal(lastCaptions(world, oneWayLane).rows.some((row) => Object.hasOwn(row, 'lang')), false);
+    assertPairsAreSane(world);
+    assertNothingLeaks(world);
+    assert.equal(laneStarts(world).length, 2);
+    panel.close();
+  });
+}
+
+test('one-way lanes send no pair: defaults, and a two-way switch turned on and off again before Start', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await world.armTab(5);
+  await panel.change('mic-enabled', true);
+  await panel.change('mic-two-way', true);
+  await panel.change('mic-two-way', false);
+  assert.equal(panel.el('mic-partner-row').hidden, true);
+  assert.equal(panel.text('mic-target-label'), panel.text('tab-target-label'), 'the label is back to the one-way wording');
+  assert.equal(panel.el('mic-two-way-note').hidden, true);
+  assert.deepEqual([storedLane(world, 'mic').twoWay, storedLane(world, 'tab').twoWay], [false, false]);
+
+  await panel.click('btn-start');
+  const tab = await world.connect({ worklet: 0, socket: 0 });
+  const mic = await world.connect({ worklet: 1, socket: 1 });
+  for (const lane of ['tab', 'mic']) {
+    const { request } = startOf(world, lane);
+    assert.deepEqual(Object.keys(request).sort(), ['model', 'targetLanguage'], `${lane}: the request is exactly a language and a model`);
+  }
+  assert.equal(world.engineStarts.some((request) => Object.hasOwn(request, 'languages')), false, 'the engine was given no pair');
+  // The one-way setups: the translation-only target for the tab lane, "simultaneous INTERPRETER into" for the mic lane.
+  assert.equal(setupOf(tab.socket).model, `models/${TRANSLATION_ONLY}`);
+  assert.equal(setupOf(tab.socket).generationConfig.translationConfig.targetLanguageCode, startOf(world, 'tab').request.targetLanguage);
+  assert.equal(instructionOf(tab.socket), '');
+  assert.match(instructionOf(mic.socket), /simultaneous INTERPRETER into/);
+  assert.doesNotMatch(instructionOf(mic.socket), /two-way/);
+  assert.match(panel.text('tab-route'), new RegExp(TRANSLATION_ONLY.replaceAll('.', '\\.')), 'a one-way tab lane still reports the translation-only model');
+
+  await say(world, tab.socket, '안녕하세요');
+  await say(world, tab.socket, 'Hello');
+  assert.equal(lastCaptions(world, 'tab').rows.some((row) => Object.hasOwn(row, 'lang')), false, 'one-way rows have no language of their own');
+  assert.equal(overlayCaptions(world, 5, 'tab').rows.some((row) => Object.hasOwn(row, 'lang')), false);
+  assertPairsAreSane(world);
+  assertNothingLeaks(world);
+  panel.close();
+});
+
+test('equal languages are never sent: the panel keeps the pair apart (the partner moves when the first language becomes it) and Start sends the repaired pair', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await panel.change('tab-enabled', false);
+  await panel.change('mic-enabled', true);
+  await panel.change('mic-two-way', true);
+  // Defaults for an English UI: the microphone lane targets Japanese and its partner is English.
+  assert.deepEqual([panel.el('mic-target').value, panel.el('mic-partner').value], ['ja', 'en']);
+
+  for (const target of ['en', 'ko', 'ja', 'en']) {
+    const before = { target: panel.el('mic-target').value, partner: panel.el('mic-partner').value };
+    await panel.change('mic-target', target);
+    const after = { target: panel.el('mic-target').value, partner: panel.el('mic-partner').value };
+    assert.equal(after.target, target);
+    assert.notEqual(after.partner, target, `target ${target}: the partner is never the same language`);
+    assert.equal(optionValues(panel, 'mic-partner').includes(target), false, `target ${target}: the partner select does not offer it`);
+    assert.deepEqual([storedLane(world, 'mic').targetLanguage, storedLane(world, 'mic').partnerLanguage], [after.target, after.partner], 'the repaired pair was saved');
+    if (before.partner === target) assert.equal(after.partner, before.target, 'the language just left takes the partner\'s place');
+  }
+  await panel.click('btn-start');
+  await world.connect({ worklet: 0, socket: 0 });
+  const { request } = startOf(world, 'mic');
+  assert.equal(request.targetLanguage, 'en');
+  assert.equal(request.languages.length, 2);
+  assert.equal(request.languages[0], 'en');
+  assert.notEqual(request.languages[1], 'en');
+  assertPairsAreSane(world);
+  panel.close();
+});
+
+test('equal languages are never sent, whatever is in storage: a partner equal to the target, missing, or not a language is repaired before it reaches the host', async () => {
+  const cases = [
+    { name: 'partner equals target', target: 'ko', partner: 'ko', expected: ['ko', 'en'] },
+    { name: 'partner equals an English target', target: 'en', partner: 'en', expected: ['en', 'ko'] },
+    { name: 'partner is not a language', target: 'ja', partner: 'fr', expected: ['ja', 'en'] },
+    { name: 'partner is missing', target: 'ja', partner: undefined, expected: ['ja', 'en'] },
+    { name: 'partner is a number', target: 'ko', partner: 7, expected: ['ko', 'en'] },
+  ];
+  for (const { name, target, partner, expected } of cases) {
+    const settings = { v: 1, lanes: {
+      tab: { enabled: false, targetLanguage: 'en', model: TRANSLATION_ONLY, originalVolume: 65, captions: true },
+      mic: { enabled: true, targetLanguage: target, twoWay: true, ...(partner === undefined ? {} : { partnerLanguage: partner }), model: INSTRUCTION_MODEL, captions: false } } };
+    const world = await makeWorld({ settings });
+    const panel = await world.openPanel();
+    assert.equal(panel.el('mic-partner').value, expected[1], `${name}: the panel shows the repaired partner`);
+    await panel.click('btn-start');
+    const mic = await world.connect({ worklet: 0, socket: 0 });
+    assert.deepEqual(startOf(world, 'mic').request.languages, expected, name);
+    assert.deepEqual(world.engineStarts.map((request) => request.languages), [expected], name);
+    assert.match(instructionOf(mic.socket), /two-way INTERPRETER between/, name);
+    assertPairsAreSane(world);
+    panel.close();
+  }
+});
+
+test('settings stored before two-way existed stay one-way; switching two-way on keeps every older field and starts with the default partner', async () => {
+  const oldRecord = () => ({ v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: true, lanes: {
+    tab: { enabled: true, targetLanguage: 'ko', model: TRANSLATION_ONLY, originalVolume: 40, captions: true },
+    mic: { enabled: false, targetLanguage: 'en', model: INSTRUCTION_MODEL, captions: false } } });
+
+  const plain = await makeWorld({ settings: oldRecord() });
+  const first = await plain.openPanel();
+  assert.deepEqual([first.el('tab-two-way').checked, first.el('mic-two-way').checked], [false, false]);
+  assert.equal(Object.hasOwn(storedLane(plain, 'tab'), 'twoWay'), false, 'the panel did not rewrite the old record just by opening it');
+  await plain.armTab(5);
+  await first.click('btn-start');
+  await plain.connect({ worklet: 0, socket: 0 });
+  assert.deepEqual(startOf(plain, 'tab').request, { targetLanguage: 'ko', model: TRANSLATION_ONLY });
+  assertPairsAreSane(plain);
+  first.close();
+
+  const switched = await makeWorld({ settings: oldRecord() });
+  const second = await switched.openPanel();
+  await switched.armTab(5);
+  await second.change('tab-two-way', true);
+  assert.deepEqual(storedLane(switched, 'tab'), { enabled: true, targetLanguage: 'ko', twoWay: true, partnerLanguage: 'en',
+    model: TRANSLATION_ONLY, originalVolume: 40, captions: true }, 'the old fields are kept next to the new ones');
+  await second.click('btn-start');
+  const tab = await switched.connect({ worklet: 0, socket: 0 });
+  assert.deepEqual(startOf(switched, 'tab').request, { targetLanguage: 'ko', model: TRANSLATION_ONLY, languages: ['ko', 'en'] });
+  assert.match(instructionOf(tab.socket), /two-way INTERPRETER between Korean and English/);
+  assertPairsAreSane(switched);
+  second.close();
+});
+
+test('changing two-way while a lane runs applies from the next start: the hint appears, the running session is untouched, and the next start uses the new choice', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await panel.change('tab-enabled', false);
+  await panel.change('mic-enabled', true);
+  await panel.click('btn-start');
+  const first = await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(panel.text('mic-apply-next'), '');
+  assert.match(instructionOf(first.socket), /simultaneous INTERPRETER into/, 'the run started one-way');
+
+  await panel.change('mic-two-way', true);
+  assert.notEqual(panel.text('mic-apply-next'), '', 'switching two-way on mid-run: the change applies from the next start');
+  assert.equal(world.sockets.sockets.length, 1, 'no second session, the running one is untouched');
+  assert.equal(laneStarts(world).length, 1);
+  assert.equal(running(world.lastState(), 'mic'), true);
+  await panel.change('mic-two-way', false);
+  assert.equal(panel.text('mic-apply-next'), '', 'back to what the run has: nothing pending');
+  await panel.change('mic-two-way', true);
+  assert.notEqual(panel.text('mic-apply-next'), '');
+
+  await panel.click('btn-start');                 // Stop
+  await world.clock.advance(900);
+  await world.settle();
+  assert.equal(world.lastState().lanes.mic.phase, 'off');
+  await panel.click('btn-start');                 // Start again: the new choice
+  const second = await world.connect({ worklet: 1, socket: 1 });
+  const starts = laneStarts(world);
+  assert.equal(starts.length, 2);
+  assert.equal(Object.hasOwn(starts[0].request, 'languages'), false, 'the first run was one-way');
+  assert.equal(starts[1].request.languages.length, 2, 'the second one carries the pair');
+  assert.equal(starts[1].request.languages[0], starts[1].request.targetLanguage);
+  assert.deepEqual(world.engineStarts.map((engineRequest) => Object.hasOwn(engineRequest, 'languages')), [false, true]);
+  assert.match(instructionOf(second.socket), /two-way INTERPRETER between/);
+  assert.equal(panel.text('mic-apply-next'), '', 'the new run has the choice the settings show');
+  assertPairsAreSane(world);
+  assertNothingLeaks(world);
   panel.close();
 });

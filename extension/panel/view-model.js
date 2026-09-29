@@ -7,7 +7,7 @@ import {
   EXTENSION_ERROR_CODES, OVERRIDDEN_ENGINE_CODES, QUOTA_CODES, TAB_CAPTURE_CODES, errorKeyFor,
 } from '../lib/ui-state.js';
 import { LIMITS } from '../lib/protocol.js';
-import { deepFreeze } from '../lib/constants.js';
+import { TARGET_LANGUAGES, deepFreeze } from '../lib/constants.js';
 
 const LANES = ['tab', 'mic'];
 const ACTIVE = ['starting', 'running', 'reconnecting'];
@@ -42,6 +42,20 @@ const KNOWN_KEYS = new Set([
 ]);
 
 const isActive = (phase) => ACTIVE.includes(phase);
+// A translation-only model cannot interpret in two directions, so the engine runs a two-way lane on the first
+// instruction-driven model instead (app/engine/sim.js). The host reports the model it really runs, so what a start would
+// use now is this one; comparing the raw setting would show "applies next" for the whole run. The panel may import only
+// extension/lib and app/i18n (the build refuses anything else), so it cannot ask app/providers/gemini/live-config.js for
+// these two ids: they are pinned here and tests/extension-panel.test.mjs compares them with live-config.js.
+export const TRANSLATION_ONLY_MODEL = 'gemini-3.5-live-translate-preview';
+export const PAIR_MODEL = 'gemini-3.8-live';
+const swappedForPair = (laneSettings) => laneSettings.twoWay === true && laneSettings.model === TRANSLATION_ONLY_MODEL;
+const effectiveModelOf = (laneSettings) => (swappedForPair(laneSettings) ? PAIR_MODEL : laneSettings.model);
+// What the running lane was started with is not part of LaneState (the host reports only the first language), so the
+// controller remembers the two-way choice of the start it sent; without a record nothing is claimed (rule 13).
+const pairChanged = (started, laneSettings) => started !== null && typeof started === 'object'
+  && (started.twoWay !== (laneSettings.twoWay === true)
+    || (laneSettings.twoWay === true && started.partnerLanguage !== laneSettings.partnerLanguage));
 const bounded = (title) => (typeof title === 'string' && title !== '' ? [...title].slice(0, LIMITS.titleMaxChars).join('') : null);
 
 function laneDraft(lane, input) {
@@ -157,7 +171,7 @@ export function buildViewModel(input) {
   const {
     settings, keyPresent = false, host = null, armed = false, targetTab = null, micPermission = 'unknown',
     pending = { tab: false, mic: false }, stopReason = null, previews = { tab: null, mic: null },
-    capturedTitle = null, language = 'en',
+    capturedTitle = null, language = 'en', runWith = { tab: null, mic: null },
   } = input;
   const has = typeof input.has === 'function' ? input.has : (key) => KNOWN_KEYS.has(key);
   const drafts = LANES.map((lane) => laneDraft(lane, input));
@@ -197,10 +211,20 @@ export function buildViewModel(input) {
       output: running && hostLane?.output ? (OUTPUT_KEY[hostLane.output] ?? null) : null,
       gap: live && hostLane?.gap ? (GAP_KEY[hostLane.gap] ?? null) : null,
       notice: notice ? { key: notice.key, params: notice.params, attention: notice.attention } : null,
-      // Rule 13: a running lane whose language or model differs from the settings applies the change at the next start.
+      // Two-way: the second language, and the choices the panel offers for it (every language but the first).
+      twoWay: laneSettings.twoWay === true,
+      partnerLanguage: laneSettings.partnerLanguage ?? null,
+      partnerOptions: TARGET_LANGUAGES.filter((code) => code !== laneSettings.targetLanguage),
+      // While two-way is on the first select is "First language": the lane no longer interprets INTO one language.
+      targetLabelKey: laneSettings.twoWay === true ? 'ext.twoWay.targetLabel' : 'language.target',
+      // The note is for a lane whose chosen model is swapped for the pair, i.e. two-way on the translation-only model.
+      modelNote: swappedForPair(laneSettings),
+      // Rule 13: a running lane whose language, model or two-way choice differs from the settings applies the change at
+      // the next start.
       applyNext: isActive(draft.phase) && hostLane !== null
         && ((hostLane.targetLanguage !== null && laneSettings.targetLanguage !== hostLane.targetLanguage)
-          || (hostLane.model !== null && laneSettings.model !== hostLane.model && !hostLane.fallback)),
+          || (hostLane.model !== null && effectiveModelOf(laneSettings) !== hostLane.model && !hostLane.fallback)
+          || pairChanged(runWith?.[lane] ?? null, laneSettings)),
       level: live ? (hostLane?.level ?? 0) : 0,
       levelVisible: live,
       preview: previewOf(draft, previews?.[lane] ?? null),

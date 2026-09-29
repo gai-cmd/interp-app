@@ -11,7 +11,7 @@ import { createFakeAudioEnv } from './fixtures/fake-audio.mjs';
 import { createHostRig, fakeKey, STYLE, tick } from './fixtures/extension-lanes.mjs';
 import { createFakeBrowser, createFakeClock } from './fixtures/fake-chrome.mjs';
 import { createSocketFixture } from './fixtures/live.mjs';
-import { content } from './fixtures/sim.mjs';
+import { audioContent, content } from './fixtures/sim.mjs';
 
 // docs/extension.md §11.1 (group B): the lane host with its panel and overlay hubs (5.2, 5.6.3, 5.8, 4.4, 4.5).
 // The hubs are tested alone over plain fake ports; the host over the shared fake browser (message bus, ports,
@@ -1446,4 +1446,141 @@ test('a lane that ends in error keeps its last rows in the panel preview (marked
   await rigH.send(makeMessage('host/lane-stop', { lane: 'tab' }));
   await rigH.clock.advance(300);
   assert.deepEqual(lastCaptions().rows, []);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Two-way mode over the host: the pair comes in with host/lane-start, the rows come out labelled.
+
+const TRANSLATE = 'gemini-3.5-live-translate-preview';
+// One finished caption row: the model's output text, then the end of its turn, then the frame interval.
+const say = async (rigH, socket, text) => {
+  content(socket, { outputTranscription: { text } });
+  content(socket, { turnComplete: true });
+  await tick();
+  await rigH.clock.advance(150);
+};
+const langsOf = (frame) => frame.rows.map((row) => row.lang);
+
+test('two-way over the host: a translation-only model with a pair starts, the panel state names the real model, and rows carry their language to the panel and the overlay', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const tab = await up(rigH, 'tab', { model: TRANSLATE, languages: ['ko', 'en'] });
+  const overlay = rigH.openOverlay(5);
+  await rigH.settle();
+  assert.match(tab.socket.sent[0].setup.systemInstruction.parts[0].text, /two-way INTERPRETER between Korean and English/);
+  assert.equal(rigH.sockets.sockets.length, 1);
+  const lane = panel.last('state').state.lanes.tab;
+  assert.deepEqual([lane.phase, lane.model, lane.route, lane.fallback, lane.targetLanguage, lane.errorCode],
+    ['running', 'gemini-3.8-live', 'flash', false, 'ko', null], 'the state shows the model the engine moved to, not the chosen one');
+  assert.equal(validateFrame('host->panel', panel.last('state')).ok, true);
+
+  await say(rigH, tab.socket, 'Hello everyone, welcome');
+  await say(rigH, tab.socket, '안녕하세요 여러분');
+  for (const target of [panel, overlay]) {
+    const frame = target.last('captions', 'tab');
+    assert.deepEqual(frame.rows.map((row) => row.text), ['Hello everyone, welcome', '안녕하세요 여러분'], target === panel ? 'panel' : 'overlay');
+    assert.deepEqual(langsOf(frame), ['en', 'ko']);
+    assert.equal(frame.lang, 'ko', 'the frame lang is the newest row\'s (Korean)');
+    assert.equal(validateFrame(target === panel ? 'host->panel' : 'host->overlay', frame).ok, true);
+  }
+  await say(rigH, tab.socket, 'Thank you all');
+  assert.equal(panel.last('captions', 'tab').lang, 'en', 'and moves back to English with the next English row');
+  assert.deepEqual(langsOf(overlay.last('captions', 'tab')), ['en', 'ko', 'en']);
+  // a script outside the pair is labelled with the lane's own language, never with a language the lane does not speak
+  await say(rigH, tab.socket, 'こんにちは');
+  assert.equal(langsOf(panel.last('captions', 'tab')).at(-1), 'ko');
+
+  // a panel that opens late gets the labelled rows too
+  const late = rigH.openPanel();
+  await rigH.settle();
+  assert.deepEqual(langsOf(late.last('captions', 'tab')), ['en', 'ko', 'en', 'ko']);
+});
+
+test('two-way over the host: neither the key, the pair machinery, audio nor engine internals cross a port frame', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const key = fakeKey('twoway-host');
+  const tab = await up(rigH, 'tab', { key, model: TRANSLATE, languages: ['ja', 'ko'], targetLanguage: 'ja' });
+  const overlay = rigH.openOverlay(5);
+  await rigH.settle();
+  content(tab.socket, audioContent);                 // synthetic model audio (never played: the fake context is silent)
+  await say(rigH, tab.socket, 'こんにちは、みなさん');
+  await say(rigH, tab.socket, '안녕하세요');
+  tab.socket.json({ error: { code: 401 } });
+  for (let step = 0; step < 100; step += 1) await tick();
+  await rigH.send(makeMessage('host/lane-stop'));
+  await rigH.clock.advance(LIMITS.statusLingerMs);
+  // the two-way session really ran (a guard against passing because the pair was silently dropped)
+  assert.match(tab.socket.sent[0].setup.systemInstruction.parts[0].text, /two-way INTERPRETER between Japanese and Korean/);
+  assert.deepEqual(langsOf(overlay.frames.filter((frame) => frame.type === 'captions').at(-1)), ['ja', 'ko']);
+  const frames = rigH.browser.deliveries.filter((entry) => entry.kind === 'port-frame' || entry.kind === 'response');
+  assert.ok(frames.length > 0 && panel.frames.length > 0 && overlay.frames.length > 0);
+  for (const entry of frames) {
+    assert.doesNotMatch(entry.json, /synthetic-/, `${entry.kind}: no key-shaped text`);
+    assert.doesNotMatch(entry.json, /AQD\/fw==|inlineData|audio\/pcm/, `${entry.kind}: no audio`);
+    assert.doesNotMatch(entry.json, /sessionId|generation|metrics|systemInstruction|"languages"/, `${entry.kind}: no engine internals and no pair (the rows carry a lang, not the pair)`);
+  }
+  assert.deepEqual(rigH.browser.deliveries.filter((entry) => entry.json.includes(key)).map((entry) => entry.kind), ['message'], 'the key: one message delivery');
+});
+
+test('one-way over the host is unchanged: rows have no lang and the frame lang is the lane\'s language', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const tab = await up(rigH, 'tab');
+  const overlay = rigH.openOverlay(5);
+  await rigH.settle();
+  await say(rigH, tab.socket, 'Hello everyone');
+  await say(rigH, tab.socket, '안녕하세요');
+  for (const target of [panel, overlay]) {
+    const frame = target.last('captions', 'tab');
+    assert.equal(frame.rows.length, 2);
+    assert.equal(frame.rows.some((row) => Object.hasOwn(row, 'lang')), false);
+    assert.equal(frame.lang, 'ko');
+  }
+  assert.equal(panel.last('state').state.lanes.tab.model, TRANSLATE, 'and a one-way lane still reports the translation-only model');
+});
+
+test('two-way over the host: only the two-way lane labels its rows; the pair does not leak into the other lane', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const tab = await up(rigH, 'tab', { model: TRANSLATE, languages: ['ko', 'en'] });
+  const mic = await up(rigH, 'mic', { model: 'gemini-3.8-live', targetLanguage: 'en', captions: true });
+  await say(rigH, tab.socket, 'Hello everyone');
+  await say(rigH, mic.socket, 'Hello, can you hear me');
+  assert.deepEqual(langsOf(panel.last('captions', 'tab')), ['en']);
+  assert.deepEqual(langsOf(panel.last('captions', 'mic')), [undefined], 'the one-way microphone lane has no row lang');
+  assert.equal(panel.last('captions', 'mic').lang, 'en');
+  assert.match(mic.socket.sent[0].setup.systemInstruction.parts[0].text, /simultaneous INTERPRETER into English/);
+});
+
+test('a two-way run followed by a one-way run: the new run\'s rows are plain, the old pair is gone', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const first = await up(rigH, 'tab', { model: TRANSLATE, languages: ['ko', 'en'] });
+  await say(rigH, first.socket, 'Hello everyone');
+  assert.deepEqual(langsOf(panel.last('captions', 'tab')), ['en']);
+  await rigH.send(makeMessage('host/lane-stop', { lane: 'tab' }));
+  await rigH.clock.advance(300);
+  const second = await up(rigH, 'tab', { tabId: 6 });
+  await say(rigH, second.socket, 'Hello again');
+  const frame = panel.last('captions', 'tab');
+  assert.equal(frame.epoch, 2);
+  assert.deepEqual(frame.rows.map((row) => row.text), ['Hello again']);
+  assert.equal(Object.hasOwn(frame.rows[0], 'lang'), false);
+  assert.equal(frame.lang, 'ko');
+  assert.doesNotMatch(second.socket.sent[0].setup.systemInstruction?.parts[0].text ?? '', /two-way/);
+});
+
+test('host/lane-start with a pair that is not two distinct ko|en|ja languages is INVALID_MESSAGE: no engine, no epoch, no lane change', async () => {
+  const rigH = await createHostRig();
+  const valid = await rigH.laneStartMessage('mic', { model: 'gemini-3.8-live', targetLanguage: 'ko', languages: ['ko', 'en'] });
+  assert.deepEqual(valid.request.languages, ['ko', 'en']);
+  for (const languages of [['ko', 'ko'], ['ko', 'en', 'ja'], ['ko', 'fr'], ['ko'], 'ko,en', null, [1, 2]]) {
+    const refused = await rigH.send({ ...valid, request: { ...valid.request, languages } });
+    assert.deepEqual(refused, { ok: false, code: 'INVALID_MESSAGE' }, JSON.stringify(languages));
+  }
+  assert.equal(rigH.sockets.sockets.length, 0, 'no Live session was opened');
+  assert.equal(rigH.audio.micStreams.length, 0, 'and no microphone');
+  assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.mic, 'off');
+  assert.deepEqual(await rigH.send(valid), { ok: true, epoch: 1 }, 'the refusals consumed no epoch, and the same message with a good pair starts');
 });

@@ -25,10 +25,15 @@ export const PANEL_ELEMENT_IDS = Object.freeze([
   'tab-arm-note', 'tab-status', 'tab-route', 'tab-route-note', 'tab-output', 'tab-gap', 'tab-level', 'tab-notice',
   'tab-preview', 'mic-enabled', 'mic-target', 'mic-apply-next', 'mic-captions', 'mic-status', 'mic-route',
   'mic-route-note', 'mic-output', 'mic-gap', 'mic-level', 'mic-notice', 'mic-preview',
+  'tab-target-label', 'tab-two-way', 'tab-partner-row', 'tab-partner', 'tab-two-way-note',
+  'mic-target-label', 'mic-two-way', 'mic-partner-row', 'mic-partner', 'mic-two-way-note',
 ]);
 
 const LANES = Object.freeze(['tab', 'mic']);
 const ACTIVE = Object.freeze(['starting', 'running', 'reconnecting']);
+// The partner select is rebuilt (its options are the languages other than the lane's first one), so its options are
+// made here and take their binder key from this table (keys are literals, never built from the language code).
+const LANGUAGE_KEY = Object.freeze({ ko: 'language.ko', en: 'language.en', ja: 'language.ja' });
 const CAPTURABLE_SCHEMES = Object.freeze(['http:', 'https:', 'file:']);
 const PERMISSION_STATES = Object.freeze(['granted', 'denied', 'prompt']);
 const FRESH_STOP_MS = 60_000;          // a lastStop record older than this is history, not news
@@ -70,6 +75,8 @@ export function createPanelController({
     windowId: null, targetTab: null, armed: false, armedRecord: undefined, armedTick: 0, shortcut: null,
     micPermission: 'unknown', micWasGranted: false,
     awaiting: false, inFlight: { tab: false, mic: false }, localErrors: { tab: null, mic: null },
+    // The two-way choice each running lane was started with (LaneState does not carry it); written by startOne.
+    runWith: { tab: null, mic: null },
     stopReason: null, ownStopAt: -Infinity, startRun: 0, capturedTabId: null, capturedTitle: null,
     appliedLanguage: null,
   };
@@ -78,6 +85,7 @@ export function createPanelController({
   const els = new Map();
   const removers = [];
   const previewSignature = { tab: '', mic: '' };
+  const partnerSignature = { tab: '', mic: '' };
   const volume = { timer: null, value: null, writtenAt: -Infinity };
   let retryTimer = null;
   let refreshSerial = 0;
@@ -102,7 +110,7 @@ export function createPanelController({
       settings: S.settings, keyPresent: S.keyPresent, host: S.host, armed: S.armed, targetTab: S.targetTab,
       shortcut: S.shortcut, micPermission: S.micPermission, micWasGranted: S.micWasGranted, pending: pendingOf(),
       localErrors: S.localErrors, stopReason: S.stopReason, previews: S.previews, capturedTitle: S.capturedTitle,
-      language: i18n.current.language, has: (key) => i18n.current.has(key),
+      runWith: S.runWith, language: i18n.current.language, has: (key) => i18n.current.has(key),
     });
   }
 
@@ -155,9 +163,36 @@ export function createPanelController({
     if (el.hidden !== (rows.length === 0)) el.hidden = rows.length === 0;
   }
 
+  // The partner select offers every language but the lane's first one. Rebuilt only when the choices change (a rebuild
+  // closes an open dropdown; a language change needs none, the binder re-translates the options through their data-i18n);
+  // the selection is set again afterwards because a new option list resets it.
+  function renderPartner(lane, vm) {
+    const select = els.get(`${lane}-partner`);
+    if (!select) return;
+    const signature = vm.partnerOptions.join(',');
+    if (partnerSignature[lane] !== signature) {
+      partnerSignature[lane] = signature;
+      select.replaceChildren(...vm.partnerOptions.map((code) => {
+        const option = document.createElement('option');
+        option.setAttribute('value', code);
+        option.setAttribute('data-i18n', LANGUAGE_KEY[code]);   // the binder keeps it in step with a later language change
+        option.textContent = t(LANGUAGE_KEY[code]);
+        return option;
+      }));
+    }
+    setValue(`${lane}-partner`, vm.partnerLanguage ?? vm.partnerOptions[0]);
+  }
+
   function renderLane(lane, vm) {
     setChecked(`${lane}-enabled`, vm.enabled);
     setValue(`${lane}-target`, vm.targetLanguage);
+    setAttr(`${lane}-target-label`, 'data-i18n', vm.targetLabelKey);
+    setText(`${lane}-target-label`, t(vm.targetLabelKey));
+    setChecked(`${lane}-two-way`, vm.twoWay);
+    // A plain non-live row: hidden is fine here (8.2.1 forbids it only on live regions).
+    setHidden(`${lane}-partner-row`, !vm.twoWay);
+    renderPartner(lane, vm);
+    setHidden(`${lane}-two-way-note`, !vm.modelNote);
     setChecked(`${lane}-captions`, vm.captions);
     setText(`${lane}-apply-next`, vm.applyNext ? t('ext.applyNext') : '');
     setText(`${lane}-status`, t('ext.lane.statusLine', {
@@ -302,12 +337,16 @@ export function createPanelController({
     }
     S.inFlight[lane] = true;
     render();
+    // The worker builds the request (language, model and the pair) from the stored settings; the panel only remembers
+    // which two-way choice it started with, so a later change can say "applies from the next start".
+    const started = { twoWay: S.settings.lanes[lane].twoWay === true, partnerLanguage: S.settings.lanes[lane].partnerLanguage ?? null };
     let res;
     try {
       res = await sendToSw(makeMessage('sw/lane-start', lane === 'tab' ? { lane, tabId: S.targetTab.id } : { lane }));
     } catch { res = { ok: false, code: 'INVALID_REQUEST' }; }
     S.inFlight[lane] = false;
     if (res.ok) {
+      S.runWith[lane] = started;
       link.connect();   // (c) a successful start: the host exists now
     } else if (res.code === 'NEEDS_ARM') {
       if (run === S.startRun && lane === 'tab') { S.awaiting = true; S.armed = false; }
@@ -411,6 +450,7 @@ export function createPanelController({
     for (const lane of LANES) {
       const laneState = state.lanes[lane];
       if (laneState.phase !== 'off' && laneState.phase !== 'error') S.localErrors[lane] = null;   // it is running now
+      else S.runWith[lane] = null;   // the run is over: the next start records its own choice
       if (S.previews[lane] && S.previews[lane].epoch !== laneState.epoch) S.previews[lane] = null;
     }
     resolveCapturedTitle(state);
@@ -426,6 +466,7 @@ export function createPanelController({
     S.host = null;
     S.lastActive = false;
     S.previews = { tab: null, mic: null };
+    S.runWith = { tab: null, mic: null };
     S.capturedTabId = null;
     S.capturedTitle = null;
     render();
@@ -583,7 +624,22 @@ export function createPanelController({
       bind(`${lane}-enabled`, 'change', () => onLaneToggled(lane, els.get(`${lane}-enabled`).checked));
       bind(`${lane}-target`, 'change', () => {
         const value = els.get(`${lane}-target`).value;
-        return writeField((settings) => { settings.lanes[lane].targetLanguage = value; });
+        return writeField((settings) => {
+          const laneSettings = settings.lanes[lane];
+          const previous = laneSettings.targetLanguage;
+          laneSettings.targetLanguage = value;
+          // The pair is two DIFFERENT languages: choosing the current partner as the first language sends the language
+          // just left to the partner's place (the swap a user expects), and the repaired pair is saved with the change.
+          if (laneSettings.partnerLanguage === value) laneSettings.partnerLanguage = previous;
+        });
+      });
+      bind(`${lane}-two-way`, 'change', () => {
+        const checked = els.get(`${lane}-two-way`).checked;
+        return writeField((settings) => { settings.lanes[lane].twoWay = checked; });
+      });
+      bind(`${lane}-partner`, 'change', () => {
+        const value = els.get(`${lane}-partner`).value;
+        return writeField((settings) => { settings.lanes[lane].partnerLanguage = value; });
       });
       bind(`${lane}-captions`, 'change', () => {
         const checked = els.get(`${lane}-captions`).checked;

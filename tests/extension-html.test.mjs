@@ -54,9 +54,11 @@ const optionKeys = (name, id) => byId(name, id).options.map((option) => option.g
 const attrs = (name, id) => Object.fromEntries(byId(name, id).attributes.map((attribute) => [attribute.name, attribute.value]));
 
 const PANEL_IDS = ['app', 'panel-title', 'status-pill', 'key-missing', 'key-missing-text', 'btn-key-options', 'stop-note',
-  'card-tab', 'tab-enabled', 'tab-title', 'tab-target', 'tab-apply-next', 'tab-source-note', 'tab-volume', 'tab-volume-value', 'tab-captions',
+  'card-tab', 'tab-enabled', 'tab-title', 'tab-target-label', 'tab-target', 'tab-two-way', 'tab-partner-row', 'tab-partner', 'tab-two-way-hint',
+  'tab-two-way-note', 'tab-apply-next', 'tab-source-note', 'tab-volume', 'tab-volume-value', 'tab-captions',
   'tab-tabline', 'tab-arm-note', 'tab-status', 'tab-route', 'tab-route-note', 'tab-output', 'tab-gap', 'tab-level', 'tab-notice', 'tab-preview',
-  'card-mic', 'mic-enabled', 'mic-title', 'mic-mode', 'mic-target', 'mic-apply-next', 'mic-source-note', 'mic-captions', 'mic-captions-hint',
+  'card-mic', 'mic-enabled', 'mic-title', 'mic-mode', 'mic-target-label', 'mic-target', 'mic-two-way', 'mic-partner-row', 'mic-partner',
+  'mic-two-way-hint', 'mic-two-way-note', 'mic-apply-next', 'mic-source-note', 'mic-captions', 'mic-captions-hint',
   'mic-permission-status', 'btn-mic-allow', 'mic-status', 'mic-route', 'mic-route-note', 'mic-output', 'mic-gap', 'mic-level', 'mic-notice', 'mic-preview',
   'no-lane-note', 'mute-note', 'echo-note', 'close-note', 'howto', 'howto-steps', 'usage-note',
   'btn-start', 'btn-mic-permission', 'btn-mute', 'btn-options'];
@@ -225,8 +227,9 @@ test('panel: the lane status lines are plain text (not live, never hidden): the 
 
 test('panel: hidden is used only on non-live elements, and every one of them is listed', () => {
   const hidden = elementsOf('panel').filter((element) => element.hidden).map((element) => element.id).sort();
-  assert.deepEqual(hidden, ['btn-key-options', 'btn-mic-allow', 'close-note', 'mic-level', 'mic-preview', 'mic-route', 'tab-level', 'tab-preview',
-    'tab-route', 'tab-tabline'].sort());
+  // The two-way rows (the partner row and the model note of each lane) are plain elements that start hidden: two-way is off.
+  assert.deepEqual(hidden, ['btn-key-options', 'btn-mic-allow', 'close-note', 'mic-level', 'mic-partner-row', 'mic-preview', 'mic-route',
+    'mic-two-way-note', 'tab-level', 'tab-partner-row', 'tab-preview', 'tab-route', 'tab-tabline', 'tab-two-way-note'].sort());
   for (const id of [...STATUS_REGIONS, ...ALERT_REGIONS]) assert.equal(byId('panel', id).hidden, false);
 });
 
@@ -469,10 +472,10 @@ test('permission: ids, keys and the persistent status region', () => {
 
 const placeholdersOf = (value) => [...new Set([...value.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)].map((match) => match[1]))].sort().join(',');
 
-test('dictionaries: 117 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
+test('dictionaries: 122 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
   const keys = Object.keys(dictionaries.en.ext);
-  assert.equal(keys.length, 117, '113 + ext.status.off, ext.route.fallbackNote, ext.key.savedBrowser, ext.options.modelLive');
-  assert.equal(new Set(keys).size, 117);
+  assert.equal(keys.length, 122, '117 + the five ext.twoWay.* keys of the two-way mode');
+  assert.equal(new Set(keys).size, 122);
   for (const language of LANGUAGES) {
     const dictionary = dictionaries[language].ext;
     assert.deepEqual(Object.keys(dictionary).sort(), [...keys].sort(), `${language} has the same keys as en`);
@@ -492,7 +495,7 @@ test('dictionaries: 117 ext.* keys with identical key sets and placeholders in k
   for (const key of keys.filter((name) => name.startsWith('ext.error.'))) assert.match(key, /^ext\.error\.[A-Z][A-Z0-9_]+$/, 'error keys are ext.error.<CODE>');
 });
 
-test('dictionaries: the wording promises of 9.2 hold (limits, estimate marker, mute hint names the button, no two-way key)', () => {
+test('dictionaries: the wording promises of 9.2 hold (limits, estimate marker, mute hint names the button, the two-way keys)', () => {
   const markers = { ko: '측정', en: 'estimate', ja: '実測' };
   for (const language of LANGUAGES) {
     const dictionary = dictionaries[language].ext;
@@ -501,7 +504,9 @@ test('dictionaries: the wording promises of 9.2 hold (limits, estimate marker, m
     assert.ok(dictionary['ext.usage.twoSessions'].includes(markers[language]), `${language} says the doubling is not measured`);
     assert.ok(dictionary['ext.mic.mutedHint'].includes(dictionary['ext.sound.on']), `${language} mute hint names the button label exactly`);
     assert.notEqual(dictionary['ext.sound.on'], dictionary['ext.sound.off']);
-    assert.equal(Object.keys(dictionary).some((key) => /twoWay|languages/i.test(key)), false, 'the extension offers no two-way mode');
+    // The reverse of the former "no two-way key" promise (D10 was reversed): the extension offers a two-way mode, in five keys.
+    assert.deepEqual(Object.keys(dictionary).filter((key) => /twoWay/i.test(key)).sort(),
+      ['ext.twoWay.hint', 'ext.twoWay.label', 'ext.twoWay.modelNote', 'ext.twoWay.partner', 'ext.twoWay.targetLabel'], `${language} offers the two-way mode`);
     assert.doesNotMatch(Object.values(dictionary).join('\n'), /<[a-z][^>]*>|&[a-z]+;/i, 'no markup in a dictionary value');
   }
   assert.equal(dictionaries.en.ext['ext.name'], 'Live Interpreter');
@@ -553,6 +558,98 @@ test('dictionaries: the strings of the review fixes carry the agreed wording in 
     const tagged = dictionaries[language].app['sim.model0'];
     assert.ok(tagged.startsWith(plain) && tagged !== plain, `${language}: ${plain} is sim.model0 without its tag`);
     assert.doesNotMatch(plain, /[()（）]/);
+  }
+});
+
+test('dictionaries: the two-way strings carry the agreed wording in ko, en and ja (ko in the polite 해요체, the model note names Gemini 3.8 Live)', () => {
+  const agreed = {
+    'ext.twoWay.label': { ko: '양방향 통역', en: 'Two-way interpretation', ja: '双方向通訳' },
+    'ext.twoWay.partner': { ko: '상대 언어', en: 'Other language', ja: '相手の言語' },
+    'ext.twoWay.targetLabel': { ko: '첫 번째 언어', en: 'First language', ja: '1つ目の言語' },
+    'ext.twoWay.hint': {
+      ko: '두 언어를 서로 통역해요. 두 언어로 말이 오가는 자리에 알맞아요.',
+      en: 'Interprets between the two languages in both directions, for a conversation in both.',
+      ja: '2つの言語を相互に通訳します。2つの言語で会話する場面に向いています。',
+    },
+    'ext.twoWay.modelNote': {
+      ko: '양방향은 통역 전용 모델을 쓸 수 없어서 이 레인은 Gemini 3.8 Live를 써요.',
+      en: 'Two-way cannot use the translation-only model, so this lane uses Gemini 3.8 Live.',
+      ja: '双方向では翻訳専用モデルを使えないため、このレーンはGemini 3.8 Liveを使います。',
+    },
+  };
+  assert.deepEqual(Object.keys(agreed).sort(), Object.keys(dictionaries.en.ext).filter((key) => key.startsWith('ext.twoWay.')).sort(), 'every two-way key is pinned');
+  for (const [key, byLanguage] of Object.entries(agreed)) {
+    for (const language of LANGUAGES) assert.equal(dictionaries[language].ext[key], byLanguage[language], `${language} ${key}`);
+  }
+  for (const key of ['ext.twoWay.hint', 'ext.twoWay.modelNote']) assert.match(dictionaries.ko.ext[key], /요\.$/, `${key} is in the 해요체 like every other ext.* sentence`);
+  // The first-language label is a label (no full stop) and differs from the one-way "Target language" label it replaces.
+  for (const language of LANGUAGES) {
+    assert.doesNotMatch(dictionaries[language].ext['ext.twoWay.targetLabel'], /[.。]/);
+    assert.notEqual(dictionaries[language].ext['ext.twoWay.targetLabel'], dictionaries[language].app['language.target']);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Two-way mode (panel): markup contract of the ids the controller wires
+
+for (const lane of ['tab', 'mic']) {
+  test(`panel (${lane} card): the two-way checkbox, the partner row, the hint and the model note`, () => {
+    const card = byId('panel', `card-${lane}`);
+    // The checkbox is named by its label and points at the static hint as its description.
+    const box = byId('panel', `${lane}-two-way`);
+    assert.equal(box.type, 'checkbox');
+    assert.equal(box.closest('label').querySelector('span').getAttribute('data-i18n'), 'ext.twoWay.label', 'the label is the checkbox name');
+    assert.equal(box.getAttribute('aria-describedby'), `${lane}-two-way-hint`);
+    assert.equal(box.hasAttribute('checked'), false, 'two-way starts off');
+
+    // The first select's label carries an id so the controller can swap its wording; it starts as the one-way label.
+    const targetLabel = byId('panel', `${lane}-target-label`);
+    assert.equal(targetLabel.getAttribute('data-i18n'), 'language.target');
+    assert.equal(targetLabel.closest('label'), byId('panel', `${lane}-target`).closest('label'), 'the label wraps the select it names');
+
+    // The partner row: hidden while two-way is off, a label wrapping the select, options = the languages but the first one.
+    const row = byId('panel', `${lane}-partner-row`);
+    assert.equal(row.hidden, true, 'the partner row starts hidden (two-way is off)');
+    assert.equal(row.hasAttribute('role'), false, 'a plain row, not a live region');
+    assert.equal(row.hasAttribute('aria-live'), false);
+    const partner = byId('panel', `${lane}-partner`);
+    assert.equal(partner.localName, 'select');
+    assert.equal(row.contains(partner), true);
+    assert.equal(partner.closest('label').querySelector('span').getAttribute('data-i18n'), 'ext.twoWay.partner');
+    assert.equal(row.querySelectorAll('label').length, 1);
+    const firstTarget = optionValues('panel', `${lane}-target`)[0];
+    assert.deepEqual(optionValues('panel', `${lane}-partner`), ['ko', 'en', 'ja'].filter((code) => code !== firstTarget), 'the markup lists every language but the one the target select starts on');
+    assert.deepEqual(optionKeys('panel', `${lane}-partner`), optionValues('panel', `${lane}-partner`).map((code) => `language.${code}`));
+
+    // The hint and the note are plain <p> lines: no role, no aria-live (8.2.1: nothing that goes hidden -> visible is live).
+    for (const [suffix, key] of [['hint', 'ext.twoWay.hint'], ['note', 'ext.twoWay.modelNote']]) {
+      const line = byId('panel', `${lane}-two-way-${suffix}`);
+      assert.equal(line.localName, 'p');
+      assert.equal(line.getAttribute('data-i18n'), key);
+      assert.equal(line.hasAttribute('role'), false, `#${line.id} has no role`);
+      assert.equal(line.hasAttribute('aria-live'), false, `#${line.id} is not aria-live`);
+      assert.ok(line.classList.contains('text-sub'));
+    }
+    assert.equal(byId('panel', `${lane}-two-way-hint`).hidden, false, 'the hint always explains the checkbox');
+    assert.equal(byId('panel', `${lane}-two-way-note`).hidden, true, 'the model note starts hidden');
+    assert.equal(byId('panel', `${lane}-two-way-note`).getAttribute('aria-describedby'), null);
+    assert.ok(![...card.querySelectorAll('[aria-describedby]')].some((element) => element.getAttribute('aria-describedby').includes('note')),
+      'the note is never a description: a hidden element would still be read');
+
+    // Every control of the card stays wrapped by a label, and DOM order = tab order: target, checkbox, partner.
+    for (const control of card.querySelectorAll('input, select')) assert.ok(control.closest('label'), `#${control.id} is wrapped by a label`);
+    assertIncreasing('panel', [`${lane}-target`, `${lane}-two-way`, `${lane}-partner`, `${lane}-two-way-hint`, `${lane}-two-way-note`, `${lane}-apply-next`, `${lane}-source-note`]);
+    assert.ok(position('panel', `card-${lane}`) < position('panel', `${lane}-two-way`));
+  });
+}
+
+test('panel: the two-way controls sit inside their own lane cards and the tab order of 8.2.6 still holds', () => {
+  assertIncreasing('panel', ['tab-enabled', 'tab-target', 'tab-two-way', 'tab-partner', 'tab-volume', 'tab-captions', 'mic-enabled', 'mic-target',
+    'mic-two-way', 'mic-partner', 'mic-captions', 'btn-start']);
+  for (const lane of ['tab', 'mic']) {
+    for (const id of ['target-label', 'two-way', 'partner-row', 'partner', 'two-way-hint', 'two-way-note']) {
+      assert.equal(byId('panel', `${lane}-${id}`).closest('section').id, `card-${lane}`, `#${lane}-${id} is in the ${lane} card`);
+    }
   }
 });
 
@@ -699,6 +796,21 @@ test('panel.css: layout facts of 8.2.2 (sticky opaque row, 44 px icon buttons, a
   assert.equal(declarationsFor(rules, '.panel main > .button-row')['margin-inline'], 'calc(-1 * var(--page-x))');
   assert.equal(declarationsFor(rules, '.panel main')['padding'], 'var(--page-x)');
   assert.equal(sheets.panel.css.includes('min-width: 320') || sheets.panel.css.includes('width: 320'), false, 'no fixed panel width');
+});
+
+test('panel.css: the partner row is indented under the checkbox text and the sheet never overrides its hidden attribute', () => {
+  const row = declarationsFor(sheets.panel.rules, '.partner-row');
+  assert.equal(row['padding-inline-start'], 'calc(1.25rem + var(--space-2))', 'the checkbox width plus its gap, as in .field-check');
+  assert.equal(row.display, undefined, 'no display of its own: the hidden attribute of the markup hides it');
+  // The hidden attribute wins because the shared stylesheet says so (`.partner-row` and `.field` would otherwise be laid out).
+  assert.match(stylesText, /\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+  assert.equal(byId('panel', 'tab-partner-row').classList.contains('partner-row'), true);
+  assert.equal(byId('panel', 'mic-partner-row').classList.contains('partner-row'), true);
+  for (const rule of sheets.panel.rules) {
+    for (const selector of rule.selectors.filter((name) => /partner|two-way/.test(name))) {
+      assert.equal(rule.declarations.display, undefined, `${selector}: no display override that could show a hidden row`);
+    }
+  }
 });
 
 test('panel.css and pages.css: every id and class the selectors name exists in the markup they style', () => {

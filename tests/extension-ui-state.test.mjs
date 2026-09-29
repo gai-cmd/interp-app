@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { createCaptionStore } from '../app/engine/caption-store.js';
 import { createListenState } from '../app/engine/listen-state.js';
 import { ERROR_CODES } from '../app/providers/contract.js';
+import { DEFAULT_LIVE_MODEL, TRANSLATE_LIVE_MODEL } from '../app/providers/gemini/live-config.js';
 import { simFixture, tick, deferred } from './fixtures/sim.mjs';
 import { GAP_KINDS, OUTPUT_STATES } from '../extension/lib/constants.js';
 import { LANES, LIMITS, validateFrame, validateLaneState, validateUiState } from '../extension/lib/protocol.js';
-import { buildCaptionFrame, buildStyleFrame, createFrameCoalescer } from '../extension/lib/caption-frames.js';
+import { buildCaptionFrame, buildStyleFrame, createFrameCoalescer, guessRowLanguage } from '../extension/lib/caption-frames.js';
 import {
   ACTIVE_PHASES, EXTENSION_ERROR_CODES, KEY_FAILURE_CODES, LANE_PHASES, OVERRIDDEN_ENGINE_CODES, QUOTA_CODES, TAB_CAPTURE_CODES,
   buildUiState, createIdleLaneState, errorKeyFor, laneStateFromSnapshot,
@@ -312,6 +313,34 @@ test('real engine snapshots: a requested stop is off, the same stop without a re
   assert.equal(laneStateFromSnapshot({ lane: 'tab', snapshot: state.snapshot(), facts: facts() }).phase, 'starting', 'a bare listen-state snapshot maps too');
 });
 
+test('real engine snapshots: a two-way lane on the translation-only model reports the model it really runs (instruction route, no fallback)', async (t) => {
+  const map = (f) => laneStateFromSnapshot({ lane: 'mic', snapshot: f.engine.snapshot(), facts: facts({ tabId: null, languages: ['ko', 'en'] }), level: 30 });
+  // one-way control: the translation-only model is what runs and what the state says
+  const single = simFixture();
+  await single.running({ model: TRANSLATE_LIVE_MODEL });
+  const oneWay = validated(map(single));
+  assert.deepEqual([oneWay.model, oneWay.route, oneWay.fallback], [TRANSLATE_LIVE_MODEL, 'translation', false]);
+  assert.ok(single.sockets[0].sent[0].setup.generationConfig.translationConfig, 'the translation setup carries one target language');
+  await single.close();   // the Live slot is shared by every fixture in this realm
+
+  // two-way on the SAME chosen model: the engine moves to the first instruction-driven model, and the lane state shows THAT model
+  const pair = simFixture(); t.after(() => pair.close());
+  const handle = pair.start({ model: TRANSLATE_LIVE_MODEL, languages: ['ko', 'en'] });
+  const preparing = validated(map(pair));
+  assert.deepEqual([preparing.phase, preparing.model, preparing.route], ['starting', DEFAULT_LIVE_MODEL, 'flash'], 'already from the first snapshot');
+  await tick(); pair.frame(); await tick(); await pair.open(); await handle.ready;
+  const running = validated(map(pair));
+  assert.deepEqual([running.phase, running.model, running.route, running.fallback, running.targetLanguage], ['running', DEFAULT_LIVE_MODEL, 'flash', false, 'ko']);
+  assert.match(pair.sockets[0].sent[0].setup.systemInstruction.parts[0].text, /two-way INTERPRETER between Korean and English/);
+  assert.equal(pair.sockets[0].sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
+  assert.equal(pair.sockets[0].sent[0].setup.generationConfig.translationConfig, undefined);
+  // the pair is a fact of the lane, not of the state: the state of a two-way lane has exactly the one-way fields
+  assert.deepEqual(Object.keys(running), LANE_KEYS);
+  assert.equal(JSON.stringify(running).includes('languages'), false);
+  const result = await pair.engine.stop();
+  assert.equal(result.model, DEFAULT_LIVE_MODEL, 'and the finished run remembers it');
+});
+
 // ---------------------------------------------------------------------------------------------
 // buildUiState
 test('buildUiState assembles the envelope, derives concurrency from the lanes and keeps every string bounded', () => {
@@ -583,6 +612,108 @@ test('buildCaptionFrame properties over random stores: valid, bounded, chronolog
       assert.deepEqual(frame.rows.map((row) => row.id), expected.map((row) => row.segmentId), 'the selection rule of 4.6.3 rule 4');
     }
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Two-way rows: the row language is guessed from the script, inside the pair.
+test('guessRowLanguage: the script decides (Hangul ko, kana ja, Latin en, Han alone ja) and the answer is always one of the pair', () => {
+  const ko = ['ko', 'en'], ja = ['ja', 'en'], kj = ['ko', 'ja'];
+  for (const [text, pair, target, expected] of [
+    ['안녕하세요, 여러분', ko, 'en', 'ko'], ['Hello everyone', ko, 'ko', 'en'], ['Thank you very much', ja, 'ja', 'en'],
+    ['こんにちは', ja, 'en', 'ja'], ['カタカナ', ja, 'en', 'ja'], ['東京タワーに行きます', ja, 'en', 'ja'], ['ありがとうございます', kj, 'ko', 'ja'],
+    ['감사합니다', kj, 'ja', 'ko'],
+    // Han letters alone: Japanese when the pair has Japanese, else the lane's own language
+    ['東京', ja, 'en', 'ja'], ['東京', ja, 'ja', 'ja'], ['東京', kj, 'ko', 'ja'], ['東京', ko, 'ko', 'ko'], ['東京', ko, 'en', 'en'],
+    // a script whose language is not in the pair, or no letter at all: the lane's own language
+    ['안녕하세요', ja, 'ja', 'ja'], ['안녕하세요', ja, 'en', 'en'], ['こんにちは', ko, 'en', 'en'], ['Hello', kj, 'ko', 'ko'], ['Hello', kj, 'ja', 'ja'],
+    ['12:30 ...', ko, 'ko', 'ko'], ['12:30 ...', ko, 'en', 'en'], ['', ko, 'ko', 'ko'], ['   ', ja, 'en', 'en'], ['?!', kj, 'ja', 'ja'],
+  ]) assert.equal(guessRowLanguage(text, pair, target), expected, `${JSON.stringify(text)} in ${pair} (lane ${target})`);
+  // Latin names and loanwords never flip a Korean or Japanese line to English; the larger of Hangul and kana wins a mixed row
+  assert.equal(guessRowLanguage('iPhone을 샀어요', ko, 'ko'), 'ko');
+  assert.equal(guessRowLanguage('Googleで検索してください', ja, 'ja'), 'ja');
+  assert.equal(guessRowLanguage('안녕하세요 여러분 こんにちは', kj, 'ja'), 'ko', 'more Hangul than kana');
+  assert.equal(guessRowLanguage('안녕 こんにちは世界', kj, 'ko'), 'ja', 'more kana than Hangul');
+  // the target may lie outside the pair (a caller bug): the pair's first language is the safe answer
+  assert.equal(guessRowLanguage('12', ko, 'ja'), 'ko');
+  assert.equal(guessRowLanguage('12', ko, undefined), 'ko');
+  for (const notText of [undefined, null, 4, {}, ['a']]) assert.equal(guessRowLanguage(notText, ko, 'en'), 'en');
+  // whatever the input, the answer is in the pair
+  const samples = ['', 'x', '안', 'あ', '東', '1', 'Ünï', '😀', '안녕 hello こんにちは 東京', '́'];
+  for (const pair of [['ko', 'en'], ['en', 'ko'], ['ko', 'ja'], ['ja', 'ko'], ['en', 'ja'], ['ja', 'en']]) {
+    for (const text of samples) for (const target of ['ko', 'en', 'ja']) assert.ok(pair.includes(guessRowLanguage(text, pair, target)), `${text} ${pair} ${target}`);
+  }
+});
+
+test('buildCaptionFrame two-way: every row carries its own lang, the frame lang is the newest row\'s, and only lang is added', () => {
+  const store = newStore();
+  say(store, { id: 'a', text: 'Hello everyone, thanks for coming' });
+  say(store, { id: 'b', text: '안녕하세요, 와 주셔서 감사합니다' });
+  say(store, { id: 'c', text: 'The meeting starts now', status: 'partial' });
+  const oneWay = frameOf(store);
+  const twoWay = frameOf(store, { languages: ['ko', 'en'] });
+  assert.deepEqual(twoWay.rows.map((row) => [row.id, row.lang]), [['a', 'en'], ['b', 'ko'], ['c', 'en']]);
+  assert.equal(twoWay.lang, 'en', 'the frame is labelled with the newest row (what is being spoken now)');
+  assert.deepEqual(Object.keys(twoWay.rows[0]), ['id', 'role', 'status', 'text', 'skipped', 'lang']);
+  assert.deepEqual(twoWay.rows.map(({ lang, ...rest }) => rest), oneWay.rows, 'apart from lang, the rows are the one-way rows');
+  assert.deepEqual({ ...twoWay, rows: undefined, lang: undefined }, { ...oneWay, rows: undefined, lang: undefined }, 'and so is the rest of the frame');
+  assert.ok(isDeepFrozen(twoWay));
+  for (const direction of ['host->panel', 'host->overlay']) {
+    const checked = validateFrame(direction, twoWay);
+    assert.equal(checked.ok, true, direction);
+    assert.deepEqual(checked.frame, twoWay, 'the validator keeps every row lang');
+  }
+  say(store, { id: 'd', text: '회의를 시작할게요' });
+  assert.equal(frameOf(store, { languages: ['ko', 'en'] }).lang, 'ko', 'a newer Korean row moves the frame to Korean');
+  assert.equal(frameOf(store, { languages: ['ko', 'en'], maxRows: 1 }).lang, 'ko', 'the newest row is the one that survives a cut');
+
+  // source rows are labelled the same way
+  const both = newStore();
+  say(both, { id: 's1', role: 'source', text: 'こんにちは' });
+  say(both, { id: 't1', text: 'Hello' });
+  assert.deepEqual(frameOf(both, { showSource: true, languages: ['ja', 'en'], lang: 'en' }).rows.map((row) => [row.role, row.lang]), [['source', 'ja'], ['translation', 'en']]);
+  // a row that is cut to its newest 400 characters is labelled by what is drawn, not by the words that were cut off
+  const cut = newStore();
+  say(cut, { id: 'long', text: `안녕하세요 ${'x'.repeat(500)}` });
+  const drawn = frameOf(cut, { languages: ['ko', 'en'] }).rows[0];
+  assert.deepEqual([drawn.text.startsWith('\u2026'), drawn.text.includes('안'), drawn.lang], [true, false, 'en']);
+  // no rows: the lane's own language, as in one-way
+  const empty = frameOf(null, { languages: ['ja', 'ko'], lang: 'ja' });
+  assert.deepEqual([empty.rows, empty.lang], [[], 'ja']);
+  assert.equal(frameOf(null, { languages: ['ja', 'ko'], lang: 'fr' }).lang, 'en', 'an unknown lane language is still emitted as en');
+});
+
+test('buildCaptionFrame one-way is unchanged: no lang on a row, the frame lang is the lane\'s, and an invalid pair means one-way', () => {
+  const store = newStore();
+  say(store, { id: 'a', text: 'Hello everyone' });
+  say(store, { id: 'b', text: '안녕하세요' });
+  const expected = { v: 1, type: 'captions', epoch: 3, seq: 41, lane: 'tab', lang: 'ko', rows: [
+    { id: 'a', role: 'translation', status: 'final', text: 'Hello everyone', skipped: false },
+    { id: 'b', role: 'translation', status: 'final', text: '안녕하세요', skipped: false }],
+  gaps: { input: false, audio: false, reception: false }, live: true };
+  assert.deepEqual(frameOf(store), expected);
+  const sparse = new Array(2); sparse[0] = 'ko';
+  for (const languages of [undefined, null, [], ['ko'], ['ko', 'ko'], ['ko', 'fr'], ['ko', 'en', 'ja'], 'ko,en', sparse, { 0: 'ko', 1: 'en' }, false]) {
+    assert.deepEqual(frameOf(store, { languages }), expected, JSON.stringify(languages));
+  }
+  assert.equal(frameOf(store).rows.some((row) => Object.hasOwn(row, 'lang')), false);
+});
+
+test('buildCaptionFrame two-way stays within the frame cap and keeps the frame lang equal to its newest row after rows are dropped', () => {
+  const heavy = newStore();
+  for (let i = 1; i <= 8; i += 1) say(heavy, { id: `h${i}`, text: i % 2 === 0 ? '\u0001안'.repeat(200) : '\u0001a'.repeat(200) });
+  const frame = frameOf(heavy, { maxRows: 6, languages: ['ko', 'en'], lang: 'ko' });
+  assert.ok(JSON.stringify(frame).length <= LIMITS.maxFrameBytes, `${JSON.stringify(frame).length} bytes`);
+  assert.ok(frame.rows.length >= 1 && frame.rows.length < 6, 'rows had to be dropped');
+  assert.equal(frame.rows.every((row) => row.lang === 'ko' || row.lang === 'en'), true);
+  assert.equal(frame.lang, frame.rows.at(-1).lang);
+  assert.equal(frame.rows.at(-1).id, 'h8');
+  assert.equal(validateFrame('host->overlay', frame).ok, true);
+  // six long Japanese rows: the row labels do not push a normal frame over the cap
+  const long = newStore();
+  for (let i = 1; i <= 6; i += 1) say(long, { id: `j${i}`, text: 'あ'.repeat(400) });
+  const six = frameOf(long, { maxRows: 6, languages: ['ja', 'en'], lang: 'ja' });
+  assert.equal(six.rows.length, 6);
+  assert.ok(JSON.stringify(six).length <= LIMITS.maxFrameBytes);
 });
 
 test('buildStyleFrame refuses a style the host would never hold', () => {

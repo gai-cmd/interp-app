@@ -122,11 +122,30 @@ test('lane engine start: one fresh isolated config, key via setPersonal + select
   for (const name of ['now', 'setTimeout', 'clearTimeout', 'random']) assert.equal(typeof options[name], 'function', name);
 
   const start = log.find((entry) => entry[0] === 'engine.start');
-  assert.deepEqual(start[1], { targetLanguage: 'ja', model: 'a-model' }, 'NO sourceLanguage, NO languages, and muted only when muted');
+  // `languages` is no longer forbidden (two-way mode); a one-way request still has none, see the two-way test below.
+  assert.deepEqual(start[1], { targetLanguage: 'ja', model: 'a-model' }, 'NO sourceLanguage, no languages for a one-way request, and muted only when muted');
   assert.deepEqual(start[2], { providerId: 'gemini', keySource: 'personal', sessionId: 'tab-3' }, 'NO signal: the lane owns cancellation');
   for (const forbidden of ['sourceLanguage', 'languages', 'signal', 'muted']) {
     assert.equal(Object.hasOwn(start[1], forbidden) || Object.hasOwn(start[2], forbidden), false, forbidden);
   }
+});
+
+test('lane engine start: a two-way request hands its pair to the engine unchanged, next to targetLanguage and model; sourceLanguage stays out', () => {
+  const pair = Object.freeze(['ja', 'ko']);
+  const { deps, env, log } = stubbed();
+  const engine = createLaneEngine({ lane: 'tab', deps, env, platform: {}, onChange() {} });
+  engine.start(startArgs({ request: { targetLanguage: 'ja', model: 'a-model', languages: pair, sourceLanguage: 'ko' } }));
+  const start = log.find((entry) => entry[0] === 'engine.start');
+  assert.deepEqual(start[1], { targetLanguage: 'ja', model: 'a-model', languages: ['ja', 'ko'] });
+  assert.equal(start[1].languages, pair, 'unchanged: the same pair, not a rewritten one');
+  assert.equal(Object.hasOwn(start[1], 'sourceLanguage'), false, 'the source language is still always auto');
+  assert.deepEqual(start[2], { providerId: 'gemini', keySource: 'personal', sessionId: 'tab-3' });
+  // with the muted flag as well, and the pair does not appear anywhere else
+  const second = stubbed();
+  createLaneEngine({ lane: 'mic', deps: second.deps, env: second.env, platform: {}, onChange() {} })
+    .start(startArgs({ muted: true, request: { targetLanguage: 'en', model: 'gemini-3.8-live', languages: ['en', 'ko'] } }));
+  assert.deepEqual(second.log.find((entry) => entry[0] === 'engine.start')[1], { targetLanguage: 'en', model: 'gemini-3.8-live', languages: ['en', 'ko'], muted: true });
+  assert.equal(second.log.filter((entry) => JSON.stringify(entry).includes('"languages"')).length, 1, 'only the engine start names the pair');
 });
 
 test('lane engine start: muted:true only when muted; a new config for every start', async () => {
@@ -280,7 +299,8 @@ test('tab lane start: getUserMedia, then the ended listener and the graph contex
     'the ended listener and the graph context/resume follow getUserMedia without a gap');
   assert.equal(TAB_CAPTURE_INCLUDE_VIDEO, false);
   assert.equal(lane.phase(), 'starting');
-  assert.deepEqual(lane.facts(), { tabId: 5, epoch: 1, targetLanguage: 'ko', hostError: null, stopRequested: false,
+  // `languages` (the two-way pair of the run, null when one-way) joined the facts with two-way mode.
+  assert.deepEqual(lane.facts(), { tabId: 5, epoch: 1, targetLanguage: 'ko', languages: null, hostError: null, stopRequested: false,
     starting: false, stopping: false });
 });
 
@@ -793,4 +813,152 @@ test('the API key never shows up in a lane\'s facts, snapshot or state', async (
     assert.equal(shown.includes(key), false, name);
     assert.equal(shown.includes('synthetic-'), false, `${name}: no key-shaped text at all`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Two-way mode (the D10 "no two-way" non-goal was reversed): the pair travels from the start parameters to the Live setup.
+
+const setupOf = (socket) => socket.sent[0].setup;
+const instructionOf = (socket) => setupOf(socket).systemInstruction?.parts[0].text ?? '';
+
+test('TWO-WAY tab lane: a translation-only model with a pair still starts (on the instruction route) and the lane reports the model it really runs', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await tabParams(rig, { model: TRANSLATE_LIVE_MODEL, languages: ['ko', 'en'] }));
+  // truthful from the very first snapshot, before any socket exists
+  assert.deepEqual([lane.snapshot().model, lane.snapshot().route], [DEFAULT_LIVE_MODEL, 'flash']);
+  const { socket } = await rig.connect(before);
+  assert.equal(lane.phase(), 'running', 'the translation-only default and a pair is not a refusal: the engine switches');
+  assert.equal(setupOf(socket).model, `models/${DEFAULT_LIVE_MODEL}`, 'the Live setup names the instruction-driven model');
+  assert.equal(setupOf(socket).generationConfig.translationConfig, undefined, 'and carries no single translation target');
+  assert.match(instructionOf(socket), /two-way INTERPRETER between Korean and English/, 'the pair is one instruction');
+  const snapshot = lane.snapshot();
+  assert.deepEqual([snapshot.model, snapshot.route, snapshot.fallback], [DEFAULT_LIVE_MODEL, 'flash', false], 'a chosen switch is not a fallback');
+  const state = stateOf(lane, 'tab');
+  assert.deepEqual([state.model, state.route, state.fallback, state.targetLanguage], [DEFAULT_LIVE_MODEL, 'flash', false, 'ko']);
+  assert.deepEqual(lane.facts().languages, ['ko', 'en']);
+  await lane.stop();
+  assert.equal(lane.phase(), 'off');
+  assert.equal(lane.snapshot().model, DEFAULT_LIVE_MODEL, 'the finished run remembers the model it ran');
+});
+
+test('one-way control: the same translation-only model without a pair keeps the single-target translation setup', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await tabParams(rig, { model: TRANSLATE_LIVE_MODEL }));
+  const { socket } = await rig.connect(before);
+  assert.equal(setupOf(socket).model, `models/${TRANSLATE_LIVE_MODEL}`);
+  assert.deepEqual(setupOf(socket).generationConfig.translationConfig, { targetLanguageCode: 'ko', echoTargetLanguage: false });
+  assert.equal(instructionOf(socket), '');
+  assert.deepEqual([lane.snapshot().model, lane.snapshot().route], [TRANSLATE_LIVE_MODEL, 'translation']);
+});
+
+test('TWO-WAY mic lane: the pair reaches the setup on the instruction-driven default model, the order [target, partner] is kept', async (t) => {
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await rig.laneParams('mic', { model: DEFAULT_LIVE_MODEL, targetLanguage: 'ja', languages: ['ja', 'en'] }));
+  const { socket } = await rig.connect(before);
+  assert.equal(lane.phase(), 'running');
+  assert.equal(setupOf(socket).model, `models/${DEFAULT_LIVE_MODEL}`);
+  assert.match(instructionOf(socket), /two-way INTERPRETER between Japanese and English/);
+  assert.equal(stateOf(lane, 'mic').targetLanguage, 'ja', 'the lane\'s own language stays the first of the pair');
+  assert.deepEqual(lane.facts().languages, ['ja', 'en']);
+  assert.equal(rig.audio.micStreams.length, 1, 'a two-way mic lane opens the microphone like any other');
+});
+
+test('TWO-WAY: a replacement session after a failure is two-way as well, and the lane reports the model it moved to', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await tabParams(rig, { model: TRANSLATE_LIVE_MODEL, languages: ['ko', 'ja'] }));
+  const { socket, worklet } = await rig.connect(before);
+  socket.json({ error: { code: 503 } });   // UNAVAILABLE: the engine replaces the session
+  await until(() => lane.phase() === 'reconnecting', 'the failure');
+  const sockets = rig.sockets.sockets.length;
+  for (let elapsed = 0; rig.sockets.sockets.length === sockets && elapsed < 6000; elapsed += 250) {
+    worklet.emitFrames(0.25);
+    await rig.clock.advance(250);
+  }
+  const replacement = rig.sockets.sockets.at(-1);
+  assert.notEqual(replacement, socket, 'a replacement session was opened');
+  replacement.open(); replacement.json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'the replacement to run');
+  assert.match(instructionOf(replacement), /two-way INTERPRETER between Korean and Japanese/, 'the pair is part of every session, not only the first');
+  assert.equal(setupOf(replacement).generationConfig.translationConfig, undefined);
+  const state = stateOf(lane, 'tab');
+  assert.equal(setupOf(replacement).model, `models/${state.model}`, 'the state names the model the replacement really uses');
+  assert.equal(state.fallback, true, 'a switch the engine had to make IS reported as a fallback');
+});
+
+test('TWO-WAY: a pair the engine refuses fails the lane with the engine\'s code, releases the capture and opens no session', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  await assert.rejects(lane.start(await tabParams(rig, { languages: ['ko', 'ko'] })), code('INVALID_REQUEST'));
+  assert.equal(lane.phase(), 'error');
+  assert.equal(stateOf(lane, 'tab').errorCode, 'INVALID_REQUEST');
+  assert.equal(rig.sockets.sockets.length, 0, 'no Live session for a pair that is no pair');
+  assert.equal(rig.browser.captures.size, 0, 'the tab capture was released');
+  // the lane is not stuck: a one-way start works afterwards, and the refused pair is not remembered
+  const before = rig.counts();
+  assert.deepEqual(await lane.start(await tabParams(rig, { epoch: 2 })), { epoch: 2 });
+  await rig.connect(before);
+  assert.equal(lane.phase(), 'running');
+  assert.equal(lane.facts().languages, null);
+});
+
+test('TWO-WAY then one-way on the same lane: the second run is a plain one-way session and the pair is forgotten', async (t) => {
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  let before = rig.counts();
+  await lane.start(await rig.laneParams('mic', { model: DEFAULT_LIVE_MODEL, languages: ['ko', 'en'] }));
+  const first = await rig.connect(before);
+  assert.match(instructionOf(first.socket), /two-way/);
+  await lane.stop();
+  before = rig.counts();
+  await lane.start(await rig.laneParams('mic', { epoch: 2, model: DEFAULT_LIVE_MODEL, targetLanguage: 'en' }));
+  const second = await rig.connect(before);
+  assert.doesNotMatch(instructionOf(second.socket), /two-way/);
+  assert.match(instructionOf(second.socket), /simultaneous INTERPRETER into English/);
+  assert.equal(lane.facts().languages, null);
+  assert.equal(lane.facts().targetLanguage, 'en');
+});
+
+test('TWO LANES: one lane two-way and the other one-way run side by side, each with its own setup and captions', async (t) => {
+  const rig = createRig();
+  const { tab, mic, tabUp, micUp } = await bothRunning(t, rig, {
+    tabOptions: { params: { model: TRANSLATE_LIVE_MODEL, languages: ['ko', 'ja'] } }, micOptions: { params: { targetLanguage: 'en' } } });
+  assert.equal(rig.sockets.sockets.length, 2);
+  assert.match(instructionOf(tabUp.socket), /two-way INTERPRETER between Korean and Japanese/);
+  assert.match(instructionOf(micUp.socket), /simultaneous INTERPRETER into English/);
+  assert.doesNotMatch(instructionOf(micUp.socket), /two-way/, 'the pair of one lane never leaks into the other');
+  assert.deepEqual([tab.facts().languages, mic.facts().languages], [['ko', 'ja'], null]);
+  assert.deepEqual([tab.snapshot().model, mic.snapshot().model], [DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL]);
+  assert.deepEqual([tab.phase(), mic.phase()], ['running', 'running']);
+  content(tabUp.socket, { outputTranscription: { text: 'to-tab' } });
+  content(micUp.socket, { outputTranscription: { text: 'to-mic' } });
+  await tick();
+  assert.deepEqual(texts(tab), ['to-tab']);
+  assert.deepEqual(texts(mic), ['to-mic']);
+});
+
+test('the API key never shows up in a two-way lane\'s facts, snapshot, state or Live setup', async (t) => {
+  const rig = createRig();
+  const key = fakeKey('twoway-secret');
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await tabParams(rig, { key, model: TRANSLATE_LIVE_MODEL, languages: ['en', 'ja'], targetLanguage: 'en' }));
+  const { socket } = await rig.connect(before);
+  const shown = JSON.stringify({ facts: lane.facts(), snapshot: lane.snapshot(), state: stateOf(lane, 'tab'), sent: socket.sent });
+  assert.equal(shown.includes(key), false);
+  assert.equal(shown.includes('synthetic-'), false, 'no key-shaped text at all');
 });
