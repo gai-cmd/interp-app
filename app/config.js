@@ -67,8 +67,10 @@ function assertAllowed(descriptors) {
  * Without it the P1/P2 router contract is unchanged (module tests, fixtures).
  * usage (P3-30) is an optional { begin, end } observer handed to the router so
  * real call spans reach the estimate; it never receives a key or any content.
+ * isolated (extension lanes) gives this config its own Live slot instead of the
+ * module-wide one; default false keeps the single shared slot.
  */
-export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, clearTimeout, now, policy = null, usage = null } = {}) {
+export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, clearTimeout, now, policy = null, usage = null, isolated = false } = {}) {
   if (policy !== null && typeof policy?.assertRoute !== 'function') throw new ProviderError('INVALID_REQUEST');
   const registry = createRegistry();
   const keyStore = createKeyStore({ registry, storage, now, setTimeout, clearTimeout });
@@ -79,7 +81,7 @@ export function createAppConfig({ fetch, WebSocket, Blob, storage, setTimeout, c
   const router = createRouter({ registry, usage,
     getCredentialRef: (address, options) => keyStore.getCredentialRef(address, options),
     ...(policy ? { policy } : {}) });
-  const sessionManager = createSessionManager({ timeoutMs: VOICE_POLICY.turnTimeoutMs, setTimeout, clearTimeout });
+  const sessionManager = createSessionManager({ timeoutMs: VOICE_POLICY.turnTimeoutMs, isolated: isolated === true, setTimeout, clearTimeout });
   const fallbacks = Object.freeze({ [GEMINI_PROVIDER_ID]: resolveGeminiFallback });
   return Object.freeze({
     registry, keyStore, router, sessionManager, providers, hubs: REGISTERED_HUBS, policy,

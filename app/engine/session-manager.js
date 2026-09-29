@@ -3,16 +3,15 @@ import { ProviderError, assertActive, normalizeError } from '../providers/contra
 import { isPolicyError, PolicyError } from '../policy/errors.js';
 import { withDeadline } from './retry.js';
 
-// Shared by all managers in this app module instance, across providers/modes.
+// Shared by all managers in this app module instance, across providers/modes,
+// unless a manager is created with { isolated: true } (own private slot).
 // This is not a cross-tab, cross-device, or quota security boundary.
-let current = null;
-let generation = 0;
-let queue = Promise.resolve();
-const listeners = new Set();
-function notify() {
-  const state = Object.freeze({ generation, occupied: current !== null,
-    active: current !== null && !current.controller.signal.aborted });
-  for (const listener of [...listeners]) {
+const createSlot = () => ({ current: null, generation: 0, queue: Promise.resolve(), listeners: new Set() });
+const sharedSlot = createSlot();
+function notify(slot) {
+  const state = Object.freeze({ generation: slot.generation, occupied: slot.current !== null,
+    active: slot.current !== null && !slot.current.controller.signal.aborted });
+  for (const listener of [...slot.listeners]) {
     try { listener(state); } catch { /* Consumer-owned failure. */ }
   }
 }
@@ -21,24 +20,28 @@ function sessionError(entry, raw) {
   // Shutdown uses abort internally, but a peer close is not user cancellation.
   return entry.remoteClosed && error.code === 'ABORTED' ? new ProviderError('SESSION_CLOSED') : error;
 }
-const serialize = (work) => {
-  const result = queue.then(work);
-  queue = result.catch(() => {});
+const serialize = (slot, work) => {
+  const result = slot.queue.then(work);
+  slot.queue = result.catch(() => {});
   return result;
 };
 
 /** open(context) must reject only after cleanup; a resolved session's close()
  * must resolve only after socket shutdown (P1-02). Never pass a raw socket here.
- * Instantiate once at app composition; extra instances share the same slot.
+ * Instantiate once at app composition; extra instances share the same slot,
+ * unless created with { isolated: true }: a private slot for an independent
+ * Live lane (each lane also needs its own Gemini live client, i.e. its own
+ * createAppConfig). Isolation is opt-in; the default never changes.
  * Route voice, simultaneous interpretation, and preview through replace().
  */
-export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
+export function createSessionManager({ timeoutMs = 10000, isolated = false, ...timing } = {}) {
+  const slot = isolated === true ? createSlot() : sharedSlot;
   const deadline = (work) => withDeadline(work, { ...timing, timeoutMs });
   async function shutdown(entry) {
     if (!entry) return;
     entry.controller.abort();
     entry.detach();
-    notify();
+    notify(slot);
     if (!entry.closing) {
       entry.closing = entry.opening.then(async (session) => {
         if (typeof session?.close !== 'function') throw new ProviderError('INVALID_RESULT');
@@ -46,7 +49,7 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
         catch (error) { throw normalizeError(error); }
       }, () => {
         // Rejection means adapter cleanup has completed, per the open contract.
-      }).then(() => { if (current === entry) { current = null; notify(); } });
+      }).then(() => { if (slot.current === entry) { slot.current = null; notify(slot); } });
       entry.closing.catch(() => {});
     }
     // Preserve the occupied slot on timeout or failed close. Never fail open.
@@ -55,30 +58,30 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
   return Object.freeze({
     subscribe(listener) {
       if (typeof listener !== 'function') throw new ProviderError('INVALID_REQUEST');
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+      slot.listeners.add(listener);
+      return () => slot.listeners.delete(listener);
     },
-    get generation() { return generation; },
-    get occupied() { return current !== null; },
-    isCurrent(value) { return current?.generation === value && !current.controller.signal.aborted; },
+    get generation() { return slot.generation; },
+    get occupied() { return slot.current !== null; },
+    isCurrent(value) { return slot.current?.generation === value && !slot.current.controller.signal.aborted; },
     replace(open, context = {}) {
       if (typeof open !== 'function' || !context.signal) return Promise.reject(new ProviderError('INVALID_REQUEST'));
       // Retire events immediately, even while an earlier open is pending.
-      if (!context.signal.aborted && current) {
-        current.controller.abort(); current.detach(); notify();
+      if (!context.signal.aborted && slot.current) {
+        slot.current.controller.abort(); slot.current.detach(); notify(slot);
       }
-      return serialize(async () => {
+      return serialize(slot, async () => {
         assertActive(context.signal);
-        await shutdown(current);
+        await shutdown(slot.current);
         assertActive(context.signal);
         const controller = new AbortController();
-        const entry = { controller, generation: ++generation, detach: () => {} };
-        current = entry;
+        const entry = { controller, generation: ++slot.generation, detach: () => {} };
+        slot.current = entry;
         const abort = () => { shutdown(entry).catch(() => {}); };
         context.signal.addEventListener('abort', abort, { once: true });
         entry.detach = () => context.signal.removeEventListener('abort', abort);
         const onEvent = (event) => {
-          if (current !== entry || controller.signal.aborted) return;
+          if (slot.current !== entry || controller.signal.aborted) return;
           if (event?.type === 'closed') { entry.remoteClosed = true; shutdown(entry).catch(() => {}); }
           try { context.onEvent?.({ ...event, generation: entry.generation }); } catch { /* Consumer-owned failure. */ }
         };
@@ -86,7 +89,7 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
           assertActive(controller.signal);
           return open({ ...context, signal: controller.signal, generation: entry.generation, onEvent });
         }).catch((error) => { throw sessionError(entry, error); });
-        notify();
+        notify(slot);
         try {
           const session = await withDeadline(() => entry.opening, { ...timing, timeoutMs, signal: controller.signal });
           if (typeof session?.close !== 'function') throw new ProviderError('INVALID_RESULT');
@@ -95,7 +98,7 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
           for (const method of ['speak', 'cancel', 'sendAudio', 'finishInput']) {
             if (typeof session[method] !== 'function') continue;
             lease[method] = (...args) => {
-              if (current !== entry || controller.signal.aborted) return Promise.reject(new ProviderError('SESSION_CLOSED'));
+              if (slot.current !== entry || controller.signal.aborted) return Promise.reject(new ProviderError('SESSION_CLOSED'));
               // One invocation only: text is never automatically resent.
               if (method === 'cancel') return shutdown(entry);
               return withDeadline(() => session[method](...args), { ...timing, timeoutMs, signal: controller.signal })
@@ -111,8 +114,8 @@ export function createSessionManager({ timeoutMs = 10000, ...timing } = {}) {
     },
     close() {
       // Abort immediately, including an opening connection, before queueing.
-      if (current) { current.controller.abort(); current.detach(); notify(); }
-      return serialize(() => shutdown(current));
+      if (slot.current) { slot.current.controller.abort(); slot.current.detach(); notify(slot); }
+      return serialize(slot, () => shutdown(slot.current));
     },
   });
 }
