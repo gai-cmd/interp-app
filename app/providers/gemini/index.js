@@ -1,7 +1,7 @@
 // New implementation of design-v0.6 §20 (provider registration) for Gemini.
 // Composition only: models, limits, prompts and transports live in sibling files.
 import { createGeminiLive } from './live.js';
-import { DEFAULT_LIVE_MODEL, LIVE_MODELS } from './live-config.js';
+import { DEFAULT_LIVE_MODEL, LIVE_MODEL_CONFIG, LIVE_MODELS } from './live-config.js';
 import { normalizeGeminiError } from './errors.js';
 import { DEFAULT_MODEL, FALLBACK_MODEL, MODELS, REST_ENDPOINT } from './config.js';
 import { createGeminiRest } from './rest.js';
@@ -26,10 +26,22 @@ const liveFallback = Object.freeze(LIVE_MODELS.slice(1).map((model, index) => Ob
 })));
 
 // Live candidates move forward only; REST quality fallback never enters this path.
+// A two-way pair (`languages`) cannot run on the translation route: buildLiveSetup refuses it with
+// MODEL_UNSUPPORTED before any socket, after the router has already charged the budget. Offering that
+// candidate to a pair would only spend one recovery attempt and one backoff before the next model, so
+// the pair takes the step that refusal would have caused (the next transition, on MODEL_UNSUPPORTED)
+// without the attempt. A one-way request walks the registered chain exactly as before.
 export function resolveGeminiLiveFallback(error, request) {
-  const current = request.model ?? DEFAULT_LIVE_MODEL;
-  const candidate = liveFallback[LIVE_MODELS.indexOf(current)];
-  return candidate?.on.includes(error.code) ? { ...request, model: candidate.model } : null;
+  const pair = request.languages !== undefined && request.languages !== null;
+  let index = LIVE_MODELS.indexOf(request.model ?? DEFAULT_LIVE_MODEL);
+  let code = error.code;
+  for (;;) {
+    const candidate = liveFallback[index];
+    if (!candidate?.on.includes(code)) return null;
+    if (!pair || LIVE_MODEL_CONFIG[candidate.model].setup !== 'translation') return { ...request, model: candidate.model };
+    index += 1;
+    code = 'MODEL_UNSUPPORTED';
+  }
 }
 const capability = (implementation, inputFormats, outputFormats, models = [], voices = []) => Object.freeze({
   implementation, transports: Object.freeze(['direct']), inputFormats: Object.freeze(inputFormats),

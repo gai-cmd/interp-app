@@ -9,7 +9,7 @@ import { createChromeAdapter } from '../extension/lib/chrome-adapter.js';
 import { createFallbackI18n, loadExtensionI18n } from '../extension/lib/i18n.js';
 import { KEY_GUIDE_URL, KEY_USAGE_URL } from '../extension/lib/links.js';
 import { STYLE_LIMITS } from '../extension/lib/constants.js';
-import { createDefaultSettings } from '../extension/lib/settings.js';
+import { createDefaultSettings, laneRequestOf } from '../extension/lib/settings.js';
 import { OPTIONS_ELEMENT_IDS, createOptionsController } from '../extension/options/controller.js';
 import { FakeEvent, parseHtml } from './fixtures/extension-dom.mjs';
 import { createFakeBrowser } from './fixtures/fake-chrome.mjs';
@@ -201,6 +201,64 @@ for (const [id, kind, input, path, expected] of FIELD_CASES) {
     assert.equal(page.$('opt-saved').hidden, false, 'the live region is never hidden');
   });
 }
+
+// Two-way is chosen in the panel; this page shows no two-way control, but it does change the first language of a lane.
+// It must give the pair the panel gives: before, the settings' repair replaced the partner with the default partner of
+// the new target (ja<->en set to en became en<->ko, a language the user never chose).
+test('a target change keeps a stored two-way pair to the user\'s own languages: ja<->en set to en is en<->ja, as in the panel', async (t) => {
+  const browser = createFakeBrowser();
+  const seeded = structuredClone(createDefaultSettings('en'));
+  Object.assign(seeded.lanes.tab, { twoWay: true, targetLanguage: 'ja', partnerLanguage: 'en' });
+  await browser.createContext('panel').chrome.storage.local.set({ [SETTINGS]: seeded });
+  const page = await openPage(t, { browser });
+  assert.equal(page.$('opt-target-tab').value, 'ja');
+  const before = page.stored();
+  const sets = page.log.filter(([kind]) => kind === 'set').length;
+  await page.fire('opt-target-tab', 'change', { value: 'en' });
+  const tab = page.stored().lanes.tab;
+  assert.deepEqual([tab.targetLanguage, tab.partnerLanguage, tab.twoWay], ['en', 'ja', true]);
+  assert.deepEqual(laneRequestOf(page.stored(), 'tab').languages, ['en', 'ja'], 'the next start interprets between en and ja');
+  assert.deepEqual(changedPaths(before, page.stored()).sort(), ['lanes.tab.partnerLanguage', 'lanes.tab.targetLanguage']);
+  assert.equal(page.log.filter(([kind]) => kind === 'set').length - sets, 1, 'one write carries both fields');
+  assert.equal(page.$('opt-target-tab').value, 'en');
+  assert.equal(page.$('opt-saved').textContent, page.text('ext.options.saved'));
+  // A first language that is not the partner leaves the partner alone.
+  await page.fire('opt-target-tab', 'change', { value: 'ko' });
+  assert.deepEqual([page.stored().lanes.tab.targetLanguage, page.stored().lanes.tab.partnerLanguage], ['ko', 'ja']);
+});
+
+test('a target change on the options page never puts a language the user did not choose into the pair (both lanes, every pair)', async (t) => {
+  const page = await openPage(t);
+  const other = page.browser.createContext('panel');
+  const languages = ['ko', 'en', 'ja'];
+  for (const lane of ['tab', 'mic']) {
+    for (const target of languages) {
+      for (const partner of languages.filter((code) => code !== target)) {
+        for (const value of languages) {
+          const seeded = structuredClone(page.stored());
+          Object.assign(seeded.lanes[lane], { twoWay: true, targetLanguage: target, partnerLanguage: partner });
+          await other.chrome.storage.local.set({ [SETTINGS]: seeded });
+          await page.browser.settle();
+          await page.fire(`opt-target-${lane}`, 'change', { value });
+          const result = page.stored().lanes[lane];
+          const label = `${lane} ${target}<->${partner} set to ${value}: ${result.targetLanguage}<->${result.partnerLanguage}`;
+          assert.equal(result.targetLanguage, value, label);
+          assert.notEqual(result.partnerLanguage, value, label);
+          assert.ok([target, partner].includes(result.partnerLanguage), label);
+          assert.equal(result.partnerLanguage, value === partner ? target : partner, label);
+        }
+      }
+    }
+  }
+});
+
+test('the options page and the panel change the first language through the one shared settings helper', () => {
+  for (const file of ['extension/options/controller.js', 'extension/panel/controller.js']) {
+    const source = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
+    assert.match(source, /import \{[^}]*\bsetLaneTargetLanguage\b[^}]*\} from '\.\.\/lib\/settings\.js'/, `${file} imports the helper`);
+    assert.doesNotMatch(source, /\.targetLanguage = /, `${file} does not set a target language on its own`);
+  }
+});
 
 test('the confirmation is the localized ext.options.saved text', async (t) => {
   const page = await openPage(t);

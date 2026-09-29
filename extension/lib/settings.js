@@ -141,6 +141,22 @@ export function laneRequestOf(settings, lane) {
     ...(twoWay && partnerLanguage !== targetLanguage ? { languages: Object.freeze([targetLanguage, partnerLanguage]) } : {}) });
 }
 
+/**
+ * Sets a lane's first language on a MUTABLE settings draft (the copy an updateSettings mutator gets). The pair is two
+ * DIFFERENT languages: choosing the current partner as the first language sends the language just left to the
+ * partner's place (the swap a user expects). Left to normalization, the pair would be repaired to the default partner
+ * OF THE NEW TARGET instead, which can be a language the user never chose (ja<->en set to en became en<->ko). The panel
+ * and the options page both change the target through this one helper, so the same choice gives the same pair on
+ * either page. Returns nothing: the caller's draft is the result.
+ */
+export function setLaneTargetLanguage(settings, lane, value) {
+  if (!LANES.includes(lane)) throw codedError('INVALID_REQUEST');
+  const laneSettings = settings.lanes[lane];
+  const previous = laneSettings.targetLanguage;
+  laneSettings.targetLanguage = value;
+  if (laneSettings.partnerLanguage === value) laneSettings.partnerLanguage = previous;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Storage. `area` = adapter.storage.local. Rejections propagate: the caller decides how to show them
 // (`ext.error.STORAGE_FAILED`). Writers to the same area run one after another, so two overlapping read-modify-write

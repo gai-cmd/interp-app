@@ -15,7 +15,7 @@
   "ext.twoWay.partner": "相手の言語",
   "ext.twoWay.targetLabel": "1つ目の言語",
   "ext.twoWay.hint": "2つの言語を相互に通訳します。2つの言語で会話する場面に向いています。",
-  "ext.twoWay.modelNote": "双方向では翻訳専用モデルを使えないため、このレーンはGemini 3.8 Liveを使います。",
+  "ext.twoWay.modelNote": "双方向では翻訳専用モデルを使えないため、この通訳はGemini 3.8 Liveを使います。",
   "ext.tab.originalVolume": "通訳中に残す元の音声の音量",
   "ext.volume.value": "{percent}%",
   "ext.captions.show": "ページに字幕を表示",

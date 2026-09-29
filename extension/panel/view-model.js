@@ -218,7 +218,9 @@ export function buildViewModel(input) {
       // While two-way is on the first select is "First language": the lane no longer interprets INTO one language.
       targetLabelKey: laneSettings.twoWay === true ? 'ext.twoWay.targetLabel' : 'language.target',
       // The note is for a lane whose chosen model is swapped for the pair, i.e. two-way on the translation-only model.
-      modelNote: swappedForPair(laneSettings),
+      // It names the model a start uses, so it is hidden while the lane runs on a backup model: the route line then
+      // names the model really in use, and the two lines would contradict each other.
+      modelNote: swappedForPair(laneSettings) && !(isActive(draft.phase) && hostLane?.fallback === true),
       // Rule 13: a running lane whose language, model or two-way choice differs from the settings applies the change at
       // the next start.
       applyNext: isActive(draft.phase) && hostLane !== null

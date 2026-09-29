@@ -13,7 +13,8 @@ import { createFallbackI18n } from '../lib/i18n.js';
 import { KEY_GUIDE_URL } from '../lib/links.js';
 import { STORAGE_KEYS } from '../lib/protocol.js';
 import {
-  createDefaultSettings, deleteKey, hasKey, normalizeSettings, readSettings, updateSettings, writeKey, writeSettings,
+  createDefaultSettings, deleteKey, hasKey, normalizeSettings, readSettings, setLaneTargetLanguage, updateSettings, writeKey,
+  writeSettings,
 } from '../lib/settings.js';
 
 const SAVED_FLASH_MS = 2_000;
@@ -30,8 +31,9 @@ const MODEL_KEYS = Object.freeze({
 // The range is checked here because normalizeStyle would quietly turn an out-of-range integer into the DEFAULT.
 const FIELDS = Object.freeze([
   ['opt-ui-language', 'value', (s) => s.uiLanguage, (s, v) => { s.uiLanguage = v; }],
-  ['opt-target-tab', 'value', (s) => s.lanes.tab.targetLanguage, (s, v) => { s.lanes.tab.targetLanguage = v; }],
-  ['opt-target-mic', 'value', (s) => s.lanes.mic.targetLanguage, (s, v) => { s.lanes.mic.targetLanguage = v; }],
+  // The page shows no two-way control, but a stored pair must survive a target change here exactly as in the panel.
+  ['opt-target-tab', 'value', (s) => s.lanes.tab.targetLanguage, (s, v) => { setLaneTargetLanguage(s, 'tab', v); }],
+  ['opt-target-mic', 'value', (s) => s.lanes.mic.targetLanguage, (s, v) => { setLaneTargetLanguage(s, 'mic', v); }],
   ['opt-model-tab', 'value', (s) => s.lanes.tab.model, (s, v) => { s.lanes.tab.model = v; }],
   ['opt-model-mic', 'value', (s) => s.lanes.mic.model, (s, v) => { s.lanes.mic.model = v; }],
   ['opt-voice', 'value', (s) => s.voiceGender, (s, v) => { s.voiceGender = v; }],

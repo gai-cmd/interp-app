@@ -385,6 +385,55 @@ test('two-way live request: a malformed pair is refused before any socket, a bad
   await h.dispose();
 });
 
+// A pair cannot run on the translation-only model (the adapter refuses it after the router charged the budget), so a
+// two-way fallback that stopped there spent one of the operation's Live attempts on a refusal and waited one extra
+// backoff before the model that could run it.
+test('two-way live fallback skips the translation-only model; one-way keeps the registered order', async () => {
+  const h = harness({ key: null });
+  const live = h.resolveFallback('gemini', 'live');
+  const pair = { input: { format: 'pcm16' }, targetLanguage: 'ja', languages: ['ko', 'ja'], model: DEFAULT_LIVE_MODEL };
+  for (const value of ['UNAVAILABLE', 'NETWORK_ERROR', 'MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED']) {
+    const next = live(new ProviderError(value), pair);
+    assert.equal(next.model, LIVE_MODELS[2], `${value}: straight to the native-audio model`);
+    assert.equal(next.languages, pair.languages, 'the pair travels with the replacement');
+  }
+  // An absent model is the default model; a pair on it moves the same way.
+  const { model, ...noModel } = pair;
+  assert.equal(model, DEFAULT_LIVE_MODEL);
+  assert.equal(live(new ProviderError('UNAVAILABLE'), noModel).model, LIVE_MODELS[2]);
+  // One-way (no pair, or an explicit undefined/null pair) still tries the translation-only model first.
+  for (const oneWay of [{ ...pair, languages: undefined }, { ...pair, languages: null }, { input: pair.input, targetLanguage: 'ja' }]) {
+    assert.equal(live(new ProviderError('UNAVAILABLE'), oneWay).model, LIVE_MODELS[1]);
+    assert.equal(live(new ProviderError('NETWORK_ERROR'), oneWay).model, LIVE_MODELS[1]);
+  }
+  // No instruction-driven candidate left, or a code that never falls back: no replacement.
+  assert.equal(live(new ProviderError('UNAVAILABLE'), { ...pair, model: LIVE_MODELS[2] }), null);
+  for (const value of ['INVALID_KEY', 'PERMISSION_DENIED', 'DAILY_LIMIT', 'RATE_LIMITED', 'INVALID_RESULT']) {
+    assert.equal(live(new ProviderError(value), pair), null, value);
+  }
+  await h.dispose();
+});
+
+test('two-way live fallback end to end: the replacement is the second budget charge and opens a two-way socket', async () => {
+  const h = harness();
+  const live = h.resolveFallback('gemini', 'live');
+  const budget = createBudget({ limit: 4 });
+  const request = { input: { format: 'pcm16' }, targetLanguage: 'ja', languages: ['ko', 'ja'], model: DEFAULT_LIVE_MODEL };
+  const first = await openLive(h, request, context({ budget }));
+  assert.equal(first.ws.sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
+  await first.session.close();
+  // The failed default model is replaced once: no MODEL_UNSUPPORTED attempt in between, no budget spent on one.
+  const replacement = live(new ProviderError('UNAVAILABLE'), request);
+  const second = await openLive(h, replacement, context({ budget, generation: 2 }));
+  assert.equal(budget.used, 2);
+  assert.equal(h.sockets.length, 2);
+  assert.equal(second.ws.sent[0].setup.model, `models/${LIVE_MODELS[2]}`);
+  assert.match(second.ws.sent[0].setup.systemInstruction.parts[0].text, /two-way INTERPRETER between Korean and Japanese/);
+  assert.equal(second.ws.sent[0].setup.generationConfig.translationConfig, undefined);
+  await second.session.close();
+  await h.dispose();
+});
+
 test('the pair is live-only: other capabilities ignore it as before, and the forwarded copy is frozen', async () => {
   const h = harness();
   const result = await h.router.call('translate', textRequest({ languages: ['ko', 'ja'] }), context());

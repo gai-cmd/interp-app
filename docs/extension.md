@@ -2,12 +2,14 @@
 
 ## Status
 
-IMPLEMENTED on 2026-09-29 and committed in three steps:
-- `2f6901a` session: the opt-in isolated Live slot (`isolated` on `createSessionManager` and `createAppConfig`; `app/config.js`, `app/engine/session-manager.js`, `tests/session-isolated.test.mjs`). These are the only edits under `app/`.
+IMPLEMENTED on 2026-09-29 in six commits (all pushed to `origin/main` with the owner's approval), plus a verification round after them:
+- `2f6901a` session: the opt-in isolated Live slot (`isolated` on `createSessionManager` and `createAppConfig`; `app/config.js`, `app/engine/session-manager.js`, `tests/session-isolated.test.mjs`). The only `app/` edits apart from the router fix `540c7fc` below.
 - `43febec` extension: `extension/**` (46 files, 3.1), `scripts/build-extension.mjs`, the repo-gate edits of section 12, 23 test files and 4 fixtures under `tests/`, and this document.
 - `7773fbc` test hardening: a mutation study of the 12 MUST rules found 13 real test gaps; tests only, no source change.
+- `bccfe96` docs: this document reconciled with the delivered code.
 - `540c7fc` router: `app/providers/router.js` passes the two-way `languages` pair through to the provider (the known defect K21; a shape check and a forwarded copy of the pair plus real-stack tests; the only `app/` edit after `2f6901a`).
-- The commit after `540c7fc`: TWO-WAY MODE in the extension (added after the first delivery). The owner asked for it on 2026-09-29 ("양방향 모드 넣어"), which REVERSES the non-goal D10 ("no two-way"; 14.4 change 3). A lane can interpret in both directions between its first language and a partner language; it is off by default and per lane. What changed: `twoWay` and `partnerLanguage` per lane in the settings (7.1, 7.2); an optional `request.languages` pair in `host/lane-start` (4.2.1); the panel's two-way checkbox, partner select, hint and model note (8.2.1, 8.2.3); a per-row `lang` in caption frames (4.6.3); 5 new dictionary keys, 117 -> 122 (9.2); nine end-to-end tests (11.1) and six new checklist rows (13.52-13.57). Unchanged: `overlay.js`, the options page, everything else under `app/`.
+- Verification round with a fresh model (2026-09-29, after the push; committed separately): four independent lenses plus a skeptic per serious finding. No blocker; one confirmed major, fixed: the build replaced ANY folder whose manifest had the common `__MSG_extName__`/`en` fingerprint, so `--out <another extension project>` wiped it (now an ownership marker, 10.2 step 4); the out-path rules are also checked on resolved paths (symlinked ancestor, `/tmp` alias, letter case). Minors fixed: a two-way Live fallback skips the translation-only model (`resolveGeminiLiveFallback` in `app/providers/gemini/index.js`, shared with the web app); the two-way model note hides while a backup model runs and uses the product term (ko '양방 통역', '번역 전용 모델'); the options page swaps the partner like the panel (`setLaneTargetLanguage` in `lib/settings.js`). Pre-existing and left alone: `tests/sim.test.mjs` can time out under heavy concurrent load (real 50 ms fixture deadline).
+- `a7a96a5`: TWO-WAY MODE in the extension (added after the first delivery). The owner asked for it on 2026-09-29 ("양방향 모드 넣어"), which REVERSES the non-goal D10 ("no two-way"; 14.4 change 3). A lane can interpret in both directions between its first language and a partner language; it is off by default and per lane. What changed: `twoWay` and `partnerLanguage` per lane in the settings (7.1, 7.2); an optional `request.languages` pair in `host/lane-start` (4.2.1); the panel's two-way checkbox, partner select, hint and model note (8.2.1, 8.2.3); a per-row `lang` in caption frames (4.6.3); 5 new dictionary keys, 117 -> 122 (9.2); nine end-to-end tests (11.1) and six new checklist rows (13.52-13.57). Unchanged: `overlay.js`, the options page, everything else under `app/`.
 
 Verification state:
 - The whole suite (`node --test tests/*.test.mjs`) was green at delivery: 1789 tests, 1789 pass (orchestrator run of 2026-09-29 20:22, after the last source change) and again after this docs polish; the 24 extension-related files alone counted 778 tests (11.1). After the two-way mode the 24 files count 844 tests and the whole suite 1858 tests, 1858 pass (run of 2026-09-29 after the last source change: 1792 before the mode plus 66 new; 11.1 has the per-file numbers).
@@ -897,8 +899,8 @@ identity of `snapshot.captions` (memoised per publish); state changes are dedupe
 
 | Item | Allowed only | Never |
 |---|---|---|
-| API key | inside one `host/lane-start` message (SW -> host); held in the host's per-lane config until the lane ends | any frame, any `content/*` message, `tabs.sendMessage`, `storage.session`, `UiState`, `LaneState`, response objects, error codes/messages, logs, DOM, `localStorage`, any file written by the build unless the explicit key flag is used (10.6) |
-| Tab stream id | one `host/lane-start` message, consumed immediately by `getUserMedia` | stored, logged, re-sent, cached, sent to the panel |
+| API key | inside one `host/lane-start` message (SW -> host; a second copy of the same message only on the single `HOST_UNAVAILABLE` retry of 6.3 step 6); held in the host's per-lane config until the lane ends | any frame, any `content/*` message, `tabs.sendMessage`, `storage.session`, `UiState`, `LaneState`, response objects, error codes/messages, logs, DOM, `localStorage`, any file written by the build unless the explicit key flag is used (10.6) |
+| Tab stream id | one `host/lane-start` message, consumed immediately by `getUserMedia` (a second copy of the same message only on the single `HOST_UNAVAILABLE` retry of 6.3 step 6, when the first was not received) | stored, logged, re-sent in any other case, cached, sent to the panel |
 | Audio (PCM, `MediaStream`, `Float32Array`) | inside the host realm only | any message or frame (typed arrays do not survive JSON) |
 | Raw engine snapshot / caption store snapshot | inside the host | any message or frame (only `LaneState` and `CaptionFrame`) |
 | Provider/raw error text | never leaves the engine | anything (only machine codes cross) |
@@ -1545,7 +1547,7 @@ Only the side panel sends SW-bound messages; its `sendToSw` (in `panel/controlle
    `captions: settings.lanes[lane].captions`, `style: hostSettingsOf(settings).style`; tab lane: `tab: { tabId, originalVolume: settings.lanes.tab.originalVolume }` and `streamId` added in step 6).
 6. Tab lane only: `streamId = await mintStreamId(tabId, lane)` (6.4). This is the LAST awaited step before the send: the id
    is single-use and "expires after a few seconds" `[verified-doc]` (exact TTL unknown), so nothing slow may sit between
-   mint and consume, and nothing may store or re-send it. A Stop that lands DURING the mint strands that single-use id until it expires (nothing is sent: sending it would break "stop wins"); a Start inside the id's lifetime then goes through the recovery of 6.4 and can end in `TAB_CAPTURE_BUSY` (rare; unmeasured in a real browser).
+   mint and consume, and nothing may store it. The one exception to 'sent once' is the single `HOST_UNAVAILABLE` retry below: that send was not received by any host (no listener yet), so the same, still unconsumed id and the key travel in a second copy of the SAME message to the host just (re)created. A Stop that lands DURING the mint strands that single-use id until it expires (nothing is sent: sending it would break "stop wins"); a Start inside the id's lifetime then goes through the recovery of 6.4 and can end in `TAB_CAPTURE_BUSY` (rare; unmeasured in a real browser).
    `res = await sendToHost(message)`. Exactly ONE retry, only for `HOST_UNAVAILABLE` (the document was not listening yet):
    `await ensureOffscreen()` (then the cancel check) and send the same message again.
 7. "Stop wins": after the answer, `if (run.cancelled)` -> `sendToHost('host/lane-stop', { lane })` (idempotent; this covers a stop
@@ -2528,11 +2530,11 @@ INTERPRETED speech, not the tab's sound). It was revised once more after the rev
 | `ext.lane.statusLine` | {lane} · {status} | {lane} · {status} | {lane} · {status} |
 | `ext.mic.mode` | 동시통역 — 말하는 동안 바로 | Simultaneous — as you speak | 同時通訳 — 話している間にすぐ |
 | `ext.source.auto` | 말하는 언어는 자동으로 찾아요. | The spoken language is detected automatically. | 話されている言語は自動で検出します。 |
-| `ext.twoWay.label` | 양방향 통역 | Two-way interpretation | 双方向通訳 |
+| `ext.twoWay.label` | 양방 통역 | Two-way interpretation | 双方向通訳 |
 | `ext.twoWay.partner` | 상대 언어 | Other language | 相手の言語 |
 | `ext.twoWay.targetLabel` | 첫 번째 언어 | First language | 1つ目の言語 |
 | `ext.twoWay.hint` | 두 언어를 서로 통역해요. 두 언어로 말이 오가는 자리에 알맞아요. | Interprets between the two languages in both directions, for a conversation in both. | 2つの言語を相互に通訳します。2つの言語で会話する場面に向いています。 |
-| `ext.twoWay.modelNote` | 양방향은 통역 전용 모델을 쓸 수 없어서 이 레인은 Gemini 3.8 Live를 써요. | Two-way cannot use the translation-only model, so this lane uses Gemini 3.8 Live. | 双方向では翻訳専用モデルを使えないため、このレーンはGemini 3.8 Liveを使います。 |
+| `ext.twoWay.modelNote` | 양방 통역은 번역 전용 모델을 쓸 수 없어서 이 통역은 Gemini 3.8 Live를 써요. | Two-way cannot use the translation-only model, so this interpretation uses Gemini 3.8 Live. | 双方向では翻訳専用モデルを使えないため、この通訳はGemini 3.8 Liveを使います。 |
 | `ext.tab.originalVolume` | 통역하는 동안 남겨 둘 원래 소리 크기 | Original audio volume while interpreting | 通訳中に残す元の音声の音量 |
 | `ext.volume.value` | {percent}% | {percent}% | {percent}% |
 | `ext.captions.show` | 페이지에 자막 표시 | Show captions on the page | ページに字幕を表示 |
@@ -2936,7 +2938,7 @@ export async function buildExtension({ root = projectRoot, out = join(root, 'dis
     builtinKeys: number, zip: string | null }>>
 export async function computeImportClosure({ root, entries, classicScripts = [] }) -> Promise<Readonly<{ files: string[] /* the app/ subset */, graph: Map<string, string[]> /* every walked file -> its sorted dependencies */ }>>
 export function lintManifest(manifest, { fileExists, messages }) -> string[]   // list of EXTENSION_MANIFEST_* reasons, [] = ok; `messages` = { en, ko, ja }, the parsed _locales files
-export async function isOwnOutput(out) -> Promise<boolean>              // 10.2 step 4
+export async function isOwnOutput(out, { legacy = false } = {}) -> Promise<boolean>   // 10.2 step 4 (OUTPUT_MARKER, exported)
 export function parseArguments(args) -> Readonly<{ out, clean, zip, builtinKeyFile }>   // throws EXTENSION_ARGUMENT_INVALID
 export async function runCli(args, { stdout, stderr, build }) -> Promise<number>        // the exit code; prints only the lines below
 export async function decodePng(bytes) / encodePng({ width, height, rgb }) / downscale4(image)    // icons, exported for tests
@@ -2960,9 +2962,13 @@ CLI flags: each flag once; `--out`, `--builtin-key-file` take a value; `--clean`
    b. `computeImportClosure` (10.3) from all JS and HTML entries -> the `app/` subset;
    c. fixed extras (`EXTRA_FILES`): `styles.css`, `app/audio/capture-worklet.js`, `app/i18n/ko.json`, `app/i18n/en.json`, `app/i18n/ja.json`.
    Everything is read into memory (and the icons are built) BEFORE the output directory is touched, so a refusal leaves the previous build alone.
-4. Prepare `out`: absent -> create; present and empty -> use it; present and non-empty -> if `isOwnOutput(out)` (a `manifest.json` whose `name` is
-   `__MSG_extName__` and `default_locale` is `en`) remove ONLY that directory tree and recreate it (no flag needed); else if `clean === true` and `out`
-   is inside `<root>/dist/` do the same; otherwise `EXTENSION_OUT_EXISTS`.
+4. Prepare `out`: absent -> create; present and empty -> use it; present and non-empty -> if `isOwnOutput(out, { legacy: insideDist })` remove ONLY
+   that directory tree and recreate it (no flag needed); else if `clean === true` and `out` is inside `<root>/dist/` do the same; otherwise
+   `EXTENSION_OUT_EXISTS`. Ownership is the marker file `OUTPUT_MARKER` (`.interp-extension-build`, text `interp-extension-build/1`) that every build
+   writes LAST into `out` (build metadata: not in `files`, not zipped). The manifest fingerprint (`name` `__MSG_extName__`, `default_locale` `en`) is
+   accepted only as `legacy` inside the repository's own `dist/` (builds made before the marker); it is the common i18n convention of other extensions,
+   so elsewhere it would let `--out <another extension project>` wipe that project (verification round 2026-09-29, test 'ownership: another extension
+   project ... is never wiped').
 5. Write files in sorted order, bytes verbatim, mirroring the repo layout (3.2). Write `manifest.json` re-serialized:
    `JSON.stringify(manifest, null, 2) + '\n'`. Write the four icons (10.4).
 6. Key handling (10.6) when `builtinKeyFile !== null`; in EVERY build the slot `KEY_SLOT` must occur exactly once in the output copy of `KEY_FILE`, else `EXTENSION_KEY_SLOT_INVALID` (so an unkeyed build can never ship a list someone filled in the source).

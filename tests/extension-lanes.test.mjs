@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionManager } from '../app/engine/session-manager.js';
-import { DEFAULT_LIVE_MODEL, TRANSLATE_LIVE_MODEL, liveVoicePreference } from '../app/providers/gemini/live-config.js';
+import { DEFAULT_LIVE_MODEL, LIVE_MODELS, TRANSLATE_LIVE_MODEL, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { createLaneEngine } from '../extension/engine/lane-engine.js';
 import { createMicLane } from '../extension/engine/mic-lane.js';
 import { TAB_CAPTURE_INCLUDE_VIDEO, createTabLane } from '../extension/engine/tab-lane.js';
@@ -819,6 +819,7 @@ test('the API key never shows up in a lane\'s facts, snapshot or state', async (
 // Two-way mode (the D10 "no two-way" non-goal was reversed): the pair travels from the start parameters to the Live setup.
 
 const setupOf = (socket) => socket.sent[0].setup;
+const NATIVE_AUDIO_MODEL = LIVE_MODELS[2];
 const instructionOf = (socket) => setupOf(socket).systemInstruction?.parts[0].text ?? '';
 
 test('TWO-WAY tab lane: a translation-only model with a pair still starts (on the instruction route) and the lane reports the model it really runs', async (t) => {
@@ -895,6 +896,38 @@ test('TWO-WAY: a replacement session after a failure is two-way as well, and the
   const state = stateOf(lane, 'tab');
   assert.equal(setupOf(replacement).model, `models/${state.model}`, 'the state names the model the replacement really uses');
   assert.equal(state.fallback, true, 'a switch the engine had to make IS reported as a fallback');
+});
+
+test('TWO-WAY: the replacement after a failure opens at the first backoff on the native-audio model, never via the translation-only one', async (t) => {
+  const rig = createRig();
+  const seen = [];
+  let lane;
+  // Every state the lane publishes while it recovers: a two-way lane must never claim the translation-only model.
+  ({ lane } = newTab(rig, { onChange: () => { if (lane) seen.push(stateOf(lane, 'tab').model); } }));
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await tabParams(rig, { model: DEFAULT_LIVE_MODEL, languages: ['ko', 'ja'] }));
+  const { socket, worklet } = await rig.connect(before);
+  const failedAt = rig.clock.now();
+  socket.json({ error: { code: 503 } });   // UNAVAILABLE: the default model failed
+  await until(() => lane.phase() === 'reconnecting', 'the failure');
+  const sockets = rig.sockets.sockets.length;
+  for (let elapsed = 0; rig.sockets.sockets.length === sockets && elapsed < 6000; elapsed += 250) {
+    worklet.emitFrames(0.25);
+    await rig.clock.advance(250);
+  }
+  // One backoff (1 s plus at most 25 % jitter), not two: no attempt was spent on a model that refuses a pair.
+  assert.ok(rig.clock.now() - failedAt <= 1250, `replacement opened after ${rig.clock.now() - failedAt} ms`);
+  const replacement = rig.sockets.sockets.at(-1);
+  assert.notEqual(replacement, socket);
+  replacement.open(); replacement.json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'the replacement to run');
+  assert.equal(setupOf(replacement).model, `models/${NATIVE_AUDIO_MODEL}`);
+  assert.match(instructionOf(replacement), /two-way INTERPRETER between Korean and Japanese/);
+  const state = stateOf(lane, 'tab');
+  assert.deepEqual([state.model, state.route, state.fallback], [NATIVE_AUDIO_MODEL, 'flash', true]);
+  assert.equal(lane.snapshot().retries, 1);
+  assert.equal(seen.includes(TRANSLATE_LIVE_MODEL), false, `states seen: ${[...new Set(seen)].join(', ')}`);
 });
 
 test('TWO-WAY: a pair the engine refuses fails the lane with the engine\'s code, releases the capture and opens no session', async (t) => {

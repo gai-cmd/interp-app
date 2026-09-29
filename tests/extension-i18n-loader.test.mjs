@@ -154,7 +154,7 @@ test('the keys added for the review fixes resolve through the loader in ko, en a
 // Two-way mode: the five ext.twoWay.* strings reach the panel through the loader in every language (the extension had no
 // two-way key before, and a test used to assert exactly that).
 const TWO_WAY = {
-  'ext.twoWay.label': { ko: '양방향 통역', en: 'Two-way interpretation', ja: '双方向通訳' },
+  'ext.twoWay.label': { ko: '양방 통역', en: 'Two-way interpretation', ja: '双方向通訳' },
   'ext.twoWay.partner': { ko: '상대 언어', en: 'Other language', ja: '相手の言語' },
   'ext.twoWay.targetLabel': { ko: '첫 번째 언어', en: 'First language', ja: '1つ目の言語' },
   'ext.twoWay.hint': {
@@ -163,9 +163,9 @@ const TWO_WAY = {
     ja: '2つの言語を相互に通訳します。2つの言語で会話する場面に向いています。',
   },
   'ext.twoWay.modelNote': {
-    ko: '양방향은 통역 전용 모델을 쓸 수 없어서 이 레인은 Gemini 3.8 Live를 써요.',
-    en: 'Two-way cannot use the translation-only model, so this lane uses Gemini 3.8 Live.',
-    ja: '双方向では翻訳専用モデルを使えないため、このレーンはGemini 3.8 Liveを使います。',
+    ko: '양방 통역은 번역 전용 모델을 쓸 수 없어서 이 통역은 Gemini 3.8 Live를 써요.',
+    en: 'Two-way cannot use the translation-only model, so this interpretation uses Gemini 3.8 Live.',
+    ja: '双方向では翻訳専用モデルを使えないため、この通訳はGemini 3.8 Liveを使います。',
   },
 };
 

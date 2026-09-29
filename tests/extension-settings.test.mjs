@@ -10,7 +10,8 @@ import {
 import { STORAGE_KEYS, validateMessage } from '../extension/lib/protocol.js';
 import {
   CAPTION_SIZE, DEFAULT_SETTINGS, MIGRATIONS, createDefaultSettings, deleteKey, hasKey, hostSettingsOf, laneRequestOf,
-  migrateSettings, normalizeSettings, readKey, readSettings, resolveKey, updateSettings, writeKey, writeSettings,
+  migrateSettings, normalizeSettings, readKey, readSettings, resolveKey, setLaneTargetLanguage, updateSettings, writeKey,
+  writeSettings,
 } from '../extension/lib/settings.js';
 
 // A Map-backed storage area with the promise shape of the platform's (get(key) resolves { [key]: value }), JSON
@@ -450,6 +451,40 @@ test('writeSettings normalizes, stores under the one key and returns the stored 
   assertNormalized(await writeSettings(area, 'garbage'));
   assert.deepEqual(area.read(STORAGE_KEYS.settings), createDefaultSettings('en'));
   await assert.rejects(writeSettings({ set: async () => { throw new Error('quota'); } }, DEFAULT_SETTINGS), /quota/);
+});
+
+test('setLaneTargetLanguage: the partner is swapped only when it is the new target, and the pair keeps the user\'s languages', async () => {
+  const draftOf = (lane, targetLanguage, partnerLanguage) => {
+    const draft = structuredClone(createDefaultSettings('en'));
+    Object.assign(draft.lanes[lane], { twoWay: true, targetLanguage, partnerLanguage });
+    return draft;
+  };
+  const draft = draftOf('tab', 'ja', 'en');
+  const untouched = structuredClone(draft.lanes.mic);
+  assert.equal(setLaneTargetLanguage(draft, 'tab', 'en'), undefined, 'the draft is the result');
+  assert.deepEqual([draft.lanes.tab.targetLanguage, draft.lanes.tab.partnerLanguage], ['en', 'ja']);
+  assert.deepEqual(draft.lanes.mic, untouched, 'the other lane is not touched');
+  // Normalization keeps the swapped pair (without the swap it would repair ja<->en set to en to en<->ko).
+  assert.deepEqual(laneRequestOf(normalizeSettings(draft), 'tab').languages, ['en', 'ja']);
+  for (const lane of ['tab', 'mic']) {
+    for (const target of TARGET_LANGUAGES) {
+      for (const partner of TARGET_LANGUAGES.filter((code) => code !== target)) {
+        for (const value of TARGET_LANGUAGES) {
+          const next = draftOf(lane, target, partner);
+          setLaneTargetLanguage(next, lane, value);
+          const { targetLanguage, partnerLanguage } = normalizeSettings(next).lanes[lane];
+          const label = `${lane} ${target}<->${partner} -> ${value}`;
+          assert.deepEqual([targetLanguage, partnerLanguage], [value, value === partner ? target : partner], label);
+        }
+      }
+    }
+  }
+  assert.throws(() => setLaneTargetLanguage(draftOf('tab', 'ko', 'en'), 'other', 'ja'), { code: 'INVALID_REQUEST' });
+  // Through updateSettings, as both pages call it: one write carries both fields.
+  const area = fakeArea({ [STORAGE_KEYS.settings]: draftOf('mic', 'ko', 'ja') });
+  const saved = await updateSettings(area, (settings) => { setLaneTargetLanguage(settings, 'mic', 'ja'); });
+  assert.deepEqual([saved.lanes.mic.targetLanguage, saved.lanes.mic.partnerLanguage], ['ja', 'ko']);
+  assert.equal(area.log.filter(([kind]) => kind === 'set').length, 1);
 });
 
 test('updateSettings is read -> mutate -> write with a private mutable copy, and returns the new settings', async () => {

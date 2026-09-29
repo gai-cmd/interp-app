@@ -563,7 +563,7 @@ test('dictionaries: the strings of the review fixes carry the agreed wording in 
 
 test('dictionaries: the two-way strings carry the agreed wording in ko, en and ja (ko in the polite 해요체, the model note names Gemini 3.8 Live)', () => {
   const agreed = {
-    'ext.twoWay.label': { ko: '양방향 통역', en: 'Two-way interpretation', ja: '双方向通訳' },
+    'ext.twoWay.label': { ko: '양방 통역', en: 'Two-way interpretation', ja: '双方向通訳' },
     'ext.twoWay.partner': { ko: '상대 언어', en: 'Other language', ja: '相手の言語' },
     'ext.twoWay.targetLabel': { ko: '첫 번째 언어', en: 'First language', ja: '1つ目の言語' },
     'ext.twoWay.hint': {
@@ -572,9 +572,9 @@ test('dictionaries: the two-way strings carry the agreed wording in ko, en and j
       ja: '2つの言語を相互に通訳します。2つの言語で会話する場面に向いています。',
     },
     'ext.twoWay.modelNote': {
-      ko: '양방향은 통역 전용 모델을 쓸 수 없어서 이 레인은 Gemini 3.8 Live를 써요.',
-      en: 'Two-way cannot use the translation-only model, so this lane uses Gemini 3.8 Live.',
-      ja: '双方向では翻訳専用モデルを使えないため、このレーンはGemini 3.8 Liveを使います。',
+      ko: '양방 통역은 번역 전용 모델을 쓸 수 없어서 이 통역은 Gemini 3.8 Live를 써요.',
+      en: 'Two-way cannot use the translation-only model, so this interpretation uses Gemini 3.8 Live.',
+      ja: '双方向では翻訳専用モデルを使えないため、この通訳はGemini 3.8 Liveを使います。',
     },
   };
   assert.deepEqual(Object.keys(agreed).sort(), Object.keys(dictionaries.en.ext).filter((key) => key.startsWith('ext.twoWay.')).sort(), 'every two-way key is pinned');
@@ -586,6 +586,23 @@ test('dictionaries: the two-way strings carry the agreed wording in ko, en and j
   for (const language of LANGUAGES) {
     assert.doesNotMatch(dictionaries[language].ext['ext.twoWay.targetLabel'], /[.。]/);
     assert.notEqual(dictionaries[language].ext['ext.twoWay.targetLabel'], dictionaries[language].app['language.target']);
+  }
+});
+
+test('dictionaries: the two-way strings use the product terms of the app and the rest of the extension, never the internal word "lane"', () => {
+  for (const language of LANGUAGES) {
+    const { ext, app } = dictionaries[language];
+    // One feature, one name: the panel checkbox reads like the web app's two-way toggle.
+    assert.equal(ext['ext.twoWay.label'], app['sim.twoWay'], `${language}: ext.twoWay.label is the app's sim.twoWay`);
+    // The note names the translation-only model the way the route line (sim.route.translation) and the options hint do.
+    const term = { ko: '번역 전용 모델', en: 'translation-only model', ja: '翻訳専用モデル' }[language];
+    for (const text of [ext['ext.twoWay.modelNote'], app['sim.route.translation'], ext['ext.options.modelTabHint']]) {
+      assert.ok(String(text).toLowerCase().includes(term), `${language}: "${text}" says ${term}`);
+    }
+    // The cards are "Tab audio" and "Microphone": "lane" is a code word, not a product term (placeholders aside).
+    for (const [key, value] of Object.entries(ext)) {
+      assert.doesNotMatch(value.replace(/\{[^}]*\}/g, ''), /lane|레인|レーン/i, `${language} ${key}`);
+    }
   }
 });
 

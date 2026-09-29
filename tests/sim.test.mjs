@@ -178,6 +178,35 @@ test('registered model fallback and goAway share three additional connections', 
   assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().fallback], [TRANSLATE, true]);
 });
 
+test('two-way fallback reaches the native-audio model on the second connection and keeps all three replacements', async t => {
+  const f = simFixture(); t.after(() => f.close());
+  const NATIVE = LIVE_MODELS[2];
+  const h = f.start({ targetLanguage: 'ja', sourceLanguage: 'ko', languages: ['ko', 'ja'] }); await tick(); f.frame(); await tick();
+  f.sockets[0].open();
+  assert.equal(f.sockets[0].sent[0].setup.model, `models/${DEFAULT_LIVE_MODEL}`);
+  f.sockets[0].json({ error: { code: 503 } }); await tick();
+  // The first backoff opens the replacement: the translation-only model, which cannot carry a pair, is never tried.
+  await advanceInput(f, 1125);
+  assert.equal(f.sockets.length, 2);
+  assert.deepEqual(f.calls, ['live', 'live']);
+  assert.equal(f.engine.snapshot().model, NATIVE);
+  await f.open(); await h.ready;
+  assert.equal(f.sockets[1].sent[0].setup.model, `models/${NATIVE}`);
+  assert.match(f.sockets[1].sent[0].setup.systemInstruction.parts[0].text, /two-way INTERPRETER between Korean and Japanese/);
+  assert.deepEqual([f.engine.snapshot().model, f.engine.snapshot().route, f.engine.snapshot().fallback, f.engine.snapshot().retries],
+    [NATIVE, 'flash', true, 1]);
+  // The budget is the one-way budget: two more replacements before BUDGET_EXHAUSTED, four sessions in all.
+  for (const delay of [2250, 4500]) {
+    f.sockets.at(-1).json({ goAway: { timeLeft: '10s' } }); await tick();
+    await advanceInput(f, delay); await f.open();
+  }
+  assert.equal(f.sockets.length, 4);
+  f.sockets.at(-1).json({ goAway: { timeLeft: '10s' } });
+  assert.equal((await h.done).errorCode, 'BUDGET_EXHAUSTED');
+  assert.deepEqual(f.calls, ['live', 'live', 'live', 'live']);
+  for (const socket of f.sockets.slice(1)) assert.equal(socket.sent[0].setup.model, `models/${NATIVE}`);
+});
+
 test('general Live model is the default and corrupted selections recover to it', async t => {
   const f = simFixture(); t.after(() => f.close());
   assert.equal(LIVE_MODELS[0], DEFAULT_LIVE_MODEL); assert.equal(DEFAULT_LIVE_MODEL, FLASH);

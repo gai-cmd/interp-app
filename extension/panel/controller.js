@@ -12,7 +12,7 @@ import { applyI18n } from '../lib/dom-i18n.js';
 import { createFallbackI18n } from '../lib/i18n.js';
 import { LIMITS, STORAGE_KEYS, makeMessage } from '../lib/protocol.js';
 import {
-  createDefaultSettings, hasKey, normalizeSettings, readSettings, updateSettings, writeSettings,
+  createDefaultSettings, hasKey, normalizeSettings, readSettings, setLaneTargetLanguage, updateSettings, writeSettings,
 } from '../lib/settings.js';
 import { createHostLink } from './host-link.js';
 import { LANE_TITLE_KEY, buildViewModel } from './view-model.js';
@@ -624,14 +624,9 @@ export function createPanelController({
       bind(`${lane}-enabled`, 'change', () => onLaneToggled(lane, els.get(`${lane}-enabled`).checked));
       bind(`${lane}-target`, 'change', () => {
         const value = els.get(`${lane}-target`).value;
-        return writeField((settings) => {
-          const laneSettings = settings.lanes[lane];
-          const previous = laneSettings.targetLanguage;
-          laneSettings.targetLanguage = value;
-          // The pair is two DIFFERENT languages: choosing the current partner as the first language sends the language
-          // just left to the partner's place (the swap a user expects), and the repaired pair is saved with the change.
-          if (laneSettings.partnerLanguage === value) laneSettings.partnerLanguage = previous;
-        });
+        // Choosing the current partner as the first language swaps the pair; the repaired pair is saved with the change
+        // (the same helper as the options page, so both pages give the same pair).
+        return writeField((settings) => { setLaneTargetLanguage(settings, lane, value); });
       });
       bind(`${lane}-two-way`, 'change', () => {
         const checked = els.get(`${lane}-two-way`).checked;

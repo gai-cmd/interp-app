@@ -436,6 +436,25 @@ test('two-way: the lane view model carries the choice, the partner options witho
   assert.ok(isDeepFrozen(on.lanes.tab.partnerOptions));
 });
 
+test('two-way model note: hidden while the lane runs or reconnects on a backup model, so it never contradicts the route line', () => {
+  const settings = twoWaySettings();   // the tab lane is two-way on the translation-only model: the note is due
+  const backup = 'gemini-2.5-flash-native-audio-latest';
+  const onBackup = running('tab', { targetLanguage: 'en', model: backup, route: 'flash', fallback: true });
+  const vm = vmOf({ settings, host: hostUi({ tab: onBackup }) });
+  assert.deepEqual([vm.lanes.tab.route.textKey, vm.lanes.tab.route.model], ['ext.route.fallback', backup]);
+  assert.equal(vm.lanes.tab.modelNote, false, 'the route line names the backup model; the note would name Gemini 3.8 Live');
+  const reconnecting = { phase: 'reconnecting', engineStatus: 'reconnecting', targetLanguage: 'en', model: backup, route: 'flash', fallback: true };
+  assert.equal(vmOf({ settings, host: hostUi({ tab: reconnecting }) }).lanes.tab.modelNote, false);
+  // On the pair model itself (no fallback) the note is true; so it is for a lane that is not running (the next start
+  // uses Gemini 3.8 Live again), and for the other lane, which does not run on this lane's backup model.
+  assert.equal(vmOf({ settings, host: hostUi({ tab: running('tab', { targetLanguage: 'en', model: PAIR_MODEL }) }) }).lanes.tab.modelNote, true);
+  assert.equal(vmOf({ settings, host: hostUi({ tab: { ...reconnecting, fallback: false, model: PAIR_MODEL } }) }).lanes.tab.modelNote, true);
+  assert.equal(vmOf({ settings, host: hostUi({ tab: failed('BUDGET_EXHAUSTED', { model: backup, fallback: true }) }) }).lanes.tab.modelNote, true);
+  assert.equal(vmOf({ settings, host: hostUi({ tab: { phase: 'off', model: backup, fallback: true } }) }).lanes.tab.modelNote, true);
+  const both = twoWaySettings((s) => { s.lanes.mic.model = TRANSLATE_LIVE_MODEL; });
+  assert.equal(vmOf({ settings: both, host: hostUi({ tab: onBackup }) }).lanes.mic.modelNote, true);
+});
+
 test('two-way: the two model ids the panel pins (it may not import live-config) are the ones the engine uses for a pair', async () => {
   assert.equal(TRANSLATION_ONLY_MODEL, TRANSLATE_LIVE_MODEL);
   // The rule of app/engine/sim.js: a pair on a translation-route model moves to the first model that is not one.
@@ -1245,6 +1264,18 @@ test('two-way: the note follows the lane model, not only the checkbox (the micro
   await h.patchSettings((s) => { s.lanes.mic.model = DEFAULT_LIVE_MODEL; });
   assert.equal(h.el('mic-two-way-note').hidden, true, 'the model changed on the options page: the panel follows');
   assertNotLive(h, 'model changes');
+});
+
+test('two-way: the model note goes away while the lane runs on a backup model and comes back when it stops', async (t) => {
+  const h = await harness(t, { settings: twoWaySettings(), hostUp: true, armed: true });
+  const backup = 'gemini-2.5-flash-native-audio-latest';
+  await h.postState({ tab: running('tab', { targetLanguage: 'en', model: PAIR_MODEL, route: 'flash' }) });
+  assert.equal(h.el('tab-two-way-note').hidden, false, 'running on the pair model: the note is true');
+  await h.postState({ tab: running('tab', { targetLanguage: 'en', model: backup, route: 'flash', fallback: true }) });
+  assert.equal(h.text('tab-route'), `${T('ext.route.fallback')} · ${backup}`);
+  assert.equal(h.el('tab-two-way-note').hidden, true, 'the route line names the backup model, the note must not say otherwise');
+  await h.postState({});
+  assert.equal(h.el('tab-two-way-note').hidden, false, 'stopped: the next start uses the pair model again');
 });
 
 test('two-way: toggling saves the setting, shows or hides the partner row and the label wording, and touches nothing else', async (t) => {
