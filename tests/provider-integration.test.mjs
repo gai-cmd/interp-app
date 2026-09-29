@@ -346,3 +346,54 @@ test('fallback resolver selection separates Live, REST and voice', async () => {
   }
   await h.dispose();
 });
+
+// Two-way pair: the router used to drop `languages`, so a two-way request always ran as a one-way session.
+async function openLive(h, request, ctx = context()) {
+  const opening = h.router.call('live', request, ctx);
+  await tick(); await tick();
+  const ws = h.sockets.at(-1);
+  ws.open(); ws.json({ setupComplete: {} });
+  return { session: await opening, ws };
+}
+
+test('two-way live request: the pair reaches the provider setup as one two-way instruction', async () => {
+  const h = harness();
+  const { session, ws } = await openLive(h, { input: { format: 'pcm16' }, targetLanguage: 'ja', languages: ['ko', 'ja'], model: DEFAULT_LIVE_MODEL });
+  const text = ws.sent[0].setup.systemInstruction.parts[0].text;
+  assert.match(text, /two-way INTERPRETER between Korean and Japanese/);
+  assert.doesNotMatch(text, /simultaneous INTERPRETER/);
+  await session.close();
+  // The same request without a pair is still one-way.
+  const one = await openLive(h, { input: { format: 'pcm16' }, targetLanguage: 'ja', model: DEFAULT_LIVE_MODEL });
+  assert.match(one.ws.sent[0].setup.systemInstruction.parts[0].text, /simultaneous INTERPRETER into Japanese/);
+  await one.session.close();
+  await h.dispose();
+});
+
+test('two-way live request: a malformed pair is refused before any socket, a bad pair by the adapter', async () => {
+  const h = harness();
+  const base = { input: { format: 'pcm16' }, targetLanguage: 'ja', model: DEFAULT_LIVE_MODEL };
+  for (const languages of [['ko'], ['ko', 'ja', 'en'], 'ko,ja', { 0: 'ko', 1: 'ja', length: 2 }, [1, 2], null]) {
+    await assert.rejects(h.router.call('live', { ...base, languages }, context()), code('INVALID_REQUEST'), inspect(languages));
+  }
+  assert.equal(h.sockets.length, 0);
+  for (const languages of [['ko', 'ko'], ['ko', 'fr']]) {
+    await assert.rejects(h.router.call('live', { ...base, languages }, context()), code('INVALID_REQUEST'), inspect(languages));
+  }
+  // The translation-only model cannot switch direction: refused, never interpreted one way.
+  await assert.rejects(h.router.call('live', { ...base, model: LIVE_MODELS[1], languages: ['ko', 'ja'] }, context()), code('MODEL_UNSUPPORTED'));
+  await h.dispose();
+});
+
+test('the pair is live-only: other capabilities ignore it as before, and the forwarded copy is frozen', async () => {
+  const h = harness();
+  const result = await h.router.call('translate', textRequest({ languages: ['ko', 'ja'] }), context());
+  assert.deepEqual(result, { ...output(), model: DEFAULT_MODEL });
+  assert.equal(h.calls.length, 1);
+  const pair = ['ko', 'ja'];
+  const { session, ws } = await openLive(h, { input: { format: 'pcm16' }, targetLanguage: 'ja', languages: pair, model: DEFAULT_LIVE_MODEL });
+  pair[0] = 'en'; // the caller's array is copied, not shared
+  assert.match(ws.sent[0].setup.systemInstruction.parts[0].text, /between Korean and Japanese/);
+  await session.close();
+  await h.dispose();
+});

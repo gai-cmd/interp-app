@@ -101,6 +101,13 @@ export function createRouter({ registry, getCredentialRef, hub, policy, usage = 
       if (!request?.input || !cap.inputFormats.includes(request.input.format)) throw new ProviderError('INPUT_UNSUPPORTED');
       if (request.model !== undefined && !cap.models.includes(request.model)) throw new ProviderError('INVALID_REQUEST');
       if (request.voice !== undefined && !cap.voices.includes(request.voice)) throw new ProviderError('INVALID_REQUEST');
+      // Two-way pair (live only): the router guarantees the shape and forwards a frozen copy; the adapter
+      // validates the values (known, distinct languages, an instruction-driven model). Before this it was
+      // silently dropped here, so a two-way request always ran one-way.
+      const pair = capability === 'live' ? request.languages : undefined;
+      if (pair !== undefined && !(Array.isArray(pair) && pair.length === 2 && pair.every((lang) => typeof lang === 'string'))) {
+        throw new ProviderError('INVALID_REQUEST');
+      }
       if (!context.signal || typeof context.signal.addEventListener !== 'function'
         || !Number.isSafeInteger(context.generation) || context.generation < 0
         || typeof context.turnId !== 'string' || typeof context.sessionId !== 'string') throw new ProviderError('INVALID_REQUEST');
@@ -110,6 +117,7 @@ export function createRouter({ registry, getCredentialRef, hub, policy, usage = 
       const adapterRequest = Object.freeze({
         ...Object.fromEntries(['sourceLanguage', 'targetLanguage', 'language', 'voice', 'model']
           .filter((key) => request[key] !== undefined).map((key) => [key, request[key]])),
+        ...(pair === undefined ? {} : { languages: Object.freeze([...pair]) }),
         input: Object.freeze(Object.fromEntries(['format', 'text', 'audio']
           .filter((key) => request.input[key] !== undefined).map((key) => [key, request.input[key]]))),
       });
