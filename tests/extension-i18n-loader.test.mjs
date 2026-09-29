@@ -1,0 +1,204 @@
+// New implementation of docs/extension.md §11.1 (extension-i18n-loader); no legacy code is ported.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { applyI18n } from '../extension/lib/dom-i18n.js';
+import { createFallbackI18n, loadExtensionI18n } from '../extension/lib/i18n.js';
+import { parseHtml } from './fixtures/extension-dom.mjs';
+
+// Section 9.5: the loader merges app and ext dictionaries per language over an INJECTED fetch (here: file: URLs of the
+// real dictionaries), negotiates the language without reading a global, and fails with a bare I18N_LOAD_FAILED.
+
+const readJson = async (url) => JSON.parse(await readFile(fileURLToPath(url), 'utf8'));
+const LANGUAGES = ['ko', 'en', 'ja'];
+
+// A fetch over the real files; `edit(path, dictionary)` may change a parsed dictionary, `fail(path)` may break a request.
+function fileFetch({ edit = (_path, dictionary) => dictionary, fail = () => null } = {}) {
+  const requests = [];
+  const fetcher = async (url, init) => {
+    requests.push({ url: String(url), init });
+    const path = String(url).replace(/^.*\/(app\/i18n|extension\/i18n)\//, '$1/');
+    const broken = fail(path);
+    if (broken === 'reject') throw new Error('network down');
+    if (broken === 'status') return { ok: false, status: 404, json: async () => ({}) };
+    if (broken === 'json') return { ok: true, json: async () => { throw new SyntaxError('bad json'); } };
+    if (broken === 'array') return { ok: true, json: async () => [] };
+    return { ok: true, json: async () => edit(path, await readJson(url)) };
+  };
+  return Object.assign(fetcher, { requests });
+}
+
+test('loadExtensionI18n merges the app and extension dictionaries and requests all six files without credentials', async () => {
+  const fetcher = fileFetch();
+  const i18n = await loadExtensionI18n({ fetch: fetcher, language: 'ko' });
+  assert.equal(i18n.language, 'ko');
+  assert.equal(fetcher.requests.length, 6);
+  for (const language of LANGUAGES) {
+    assert.ok(fetcher.requests.some((r) => r.url.endsWith(`/app/i18n/${language}.json`)), `app ${language}`);
+    assert.ok(fetcher.requests.some((r) => r.url.endsWith(`/extension/i18n/${language}.json`)), `ext ${language}`);
+  }
+  for (const request of fetcher.requests) assert.equal(request.init.credentials, 'omit');
+  const ko = await readJson(new URL('../extension/i18n/ko.json', import.meta.url));
+  const app = await readJson(new URL('../app/i18n/ko.json', import.meta.url));
+  assert.equal(i18n.t('ext.name'), ko['ext.name']);
+  assert.equal(i18n.t('common.start'), app['common.start']);
+  assert.ok(i18n.has('ext.lane.tab.title'));
+  assert.ok(i18n.has('sim.status.idle'));
+  assert.equal(i18n.setLanguage('en'), 'en');
+  assert.notEqual(i18n.t('ext.name'), ko['ext.name']);
+});
+
+test('language negotiation: language beats languages, an invalid language falls back to languages, then English', async () => {
+  assert.equal((await loadExtensionI18n({ fetch: fileFetch(), language: 'ja', languages: ['ko'] })).language, 'ja');
+  assert.equal((await loadExtensionI18n({ fetch: fileFetch(), language: 'fr', languages: ['ko-KR', 'en'] })).language, 'ko');
+  assert.equal((await loadExtensionI18n({ fetch: fileFetch(), languages: ['de', 'ja-JP'] })).language, 'ja');
+  assert.equal((await loadExtensionI18n({ fetch: fileFetch(), languages: ['de'] })).language, 'en');
+  assert.equal((await loadExtensionI18n({ fetch: fileFetch() })).language, 'en');
+});
+
+test('per key the chain is current language, then English, then error.unknown; unknown keys are never echoed', async () => {
+  const fetcher = fileFetch({ edit: (path, dictionary) => {
+    if (path === 'extension/i18n/ko.json') { const { 'ext.arm.ready': _dropped, ...rest } = dictionary; return rest; }
+    return dictionary;
+  } });
+  const i18n = await loadExtensionI18n({ fetch: fetcher, language: 'ko' });
+  const en = await readJson(new URL('../extension/i18n/en.json', import.meta.url));
+  assert.equal(i18n.t('ext.arm.ready'), en['ext.arm.ready'], 'falls back to English for that key only');
+  const app = await readJson(new URL('../app/i18n/ko.json', import.meta.url));
+  assert.equal(i18n.t('ext.no.such.key'), app['error.unknown'], 'in the current language');
+  assert.equal(i18n.has('ext.no.such.key'), false);
+  assert.equal(i18n.t('../../etc/passwd').includes('passwd'), false);
+});
+
+test('I18N_LOAD_FAILED for every kind of broken input, and the error retains no cause, URL or body', async () => {
+  const breakers = {
+    'http error': fileFetch({ fail: (path) => (path === 'extension/i18n/ja.json' ? 'status' : null) }),
+    'invalid JSON': fileFetch({ fail: (path) => (path === 'app/i18n/en.json' ? 'json' : null) }),
+    'not an object': fileFetch({ fail: (path) => (path === 'app/i18n/ko.json' ? 'array' : null) }),
+    'fetch rejects': fileFetch({ fail: (path) => (path === 'extension/i18n/en.json' ? 'reject' : null) }),
+    'blank value': fileFetch({ edit: (path, dictionary) => (path === 'extension/i18n/ko.json' ? { ...dictionary, 'ext.name': '   ' } : dictionary) }),
+    'non-string value': fileFetch({ edit: (path, dictionary) => (path === 'app/i18n/ja.json' ? { ...dictionary, 'common.start': 7 } : dictionary) }),
+    'missing error.unknown': fileFetch({ edit: (path, dictionary) => {
+      if (path !== 'app/i18n/en.json') return dictionary;
+      const { 'error.unknown': _dropped, ...rest } = dictionary;
+      return rest;
+    } }),
+    'key without the ext. prefix': fileFetch({ edit: (path, dictionary) => (path === 'extension/i18n/en.json' ? { ...dictionary, 'common.start': 'x' } : dictionary) }),
+    'no fetch at all': undefined,
+  };
+  for (const [name, fetcher] of Object.entries(breakers)) {
+    const error = await loadExtensionI18n({ fetch: fetcher ?? null, language: 'en' }).then(() => null, (thrown) => thrown);
+    assert.ok(error instanceof Error, name);
+    assert.equal(error.message, 'I18N_LOAD_FAILED', name);
+    assert.equal(error.cause, undefined, `${name}: no cause`);
+    assert.equal(Object.keys(error).length, 0, `${name}: no extra fields`);
+  }
+});
+
+test('an abort rejects the whole load the same way, before and during the fetches', async () => {
+  const before = new AbortController();
+  before.abort();
+  await assert.rejects(loadExtensionI18n({ fetch: fileFetch(), signal: before.signal }), { message: 'I18N_LOAD_FAILED' });
+
+  const during = new AbortController();
+  const held = () => new Promise(() => {});   // a fetch that never answers, and ignores its signal
+  const pending = loadExtensionI18n({ fetch: held, signal: during.signal });
+  during.abort();
+  await assert.rejects(pending, { message: 'I18N_LOAD_FAILED' });
+});
+
+test('createFallbackI18n renders the three-key English boot dictionary and never a blank', () => {
+  const i18n = createFallbackI18n({ language: 'ko' });
+  assert.equal(i18n.language, 'ko');
+  assert.equal(i18n.has('error.unknown'), true);
+  assert.equal(i18n.has('ext.name'), false);
+  assert.ok(i18n.t('ext.name').length > 0, 'an unknown key renders error.unknown');
+  assert.equal(i18n.t('ext.name'), i18n.t('error.unknown'));
+  assert.equal(createFallbackI18n().language, 'en');
+});
+
+// The strings added for the review fixes must reach the pages THROUGH the loader (the merged app + ext dictionaries),
+// in every language, from the extension file and not from an app key of the same idea.
+test('the keys added for the review fixes resolve through the loader in ko, en and ja, and are ext.* keys the app does not have', async () => {
+  const added = {
+    'ext.status.off': { ko: '꺼져 있어요', en: 'Off', ja: 'オフ' },
+    'ext.route.fallbackNote': {
+      ko: '예비 모델이 통역 중이에요. 들리는 말에 통역 대신 대답할 수 있어요.',
+      en: 'A backup model is interpreting. It may answer what it hears instead of translating.',
+      ja: '予備モデルが通訳しています。聞こえた内容を通訳せずに返答することがあります。',
+    },
+    'ext.key.savedBrowser': { ko: '키를 이 브라우저에 저장했어요.', en: 'Key saved in this browser.', ja: 'キーをこのブラウザに保存しました。' },
+    'ext.options.modelLive': { ko: 'Gemini 3.8 Live', en: 'Gemini 3.8 Live', ja: 'Gemini 3.8 Live' },
+  };
+  for (const language of LANGUAGES) {
+    const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });
+    const app = await readJson(new URL(`../app/i18n/${language}.json`, import.meta.url));
+    for (const [key, values] of Object.entries(added)) {
+      assert.equal(i18n.has(key), true, `${language} ${key} is known`);
+      assert.equal(i18n.t(key), values[language], `${language} ${key}`);
+      assert.equal(Object.hasOwn(app, key), false, `${key} is not an app key`);
+    }
+  }
+  // A dictionary that lacks one of them falls back to English for that key only, never to the raw key.
+  const missing = fileFetch({ edit: (path, dictionary) => {
+    if (path !== 'extension/i18n/ko.json') return dictionary;
+    const { 'ext.status.off': _dropped, ...rest } = dictionary;
+    return rest;
+  } });
+  const ko = await loadExtensionI18n({ fetch: missing, language: 'ko' });
+  assert.equal(ko.t('ext.status.off'), 'Off');
+  assert.equal(ko.t('ext.key.savedBrowser'), '키를 이 브라우저에 저장했어요.');
+});
+
+const SKELETON = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title data-i18n="ext.name"></title></head><body>
+<h1 id="h" data-i18n="ext.name"></h1>
+<button id="b" type="button" data-i18n-label="permission.request" data-i18n-tip="permission.request"></button>
+<input id="i" type="text" data-i18n-hint="settings.keyPlaceholder">
+<select id="s"><option id="o" value="ko" data-i18n="language.ko"></option></select>
+<p id="plain">unbound</p></body></html>`;
+
+test('applyI18n sets text, aria-label, title, placeholder, document title and html lang, and is idempotent', async () => {
+  const document = parseHtml(SKELETON);
+  const fetcher = fileFetch();
+  const i18n = await loadExtensionI18n({ fetch: fetcher, language: 'ko' });
+  applyI18n(document, i18n);
+  const ko = await readJson(new URL('../extension/i18n/ko.json', import.meta.url));
+  const app = await readJson(new URL('../app/i18n/ko.json', import.meta.url));
+  assert.equal(document.getElementById('h').textContent, ko['ext.name']);
+  assert.equal(document.getElementById('b').getAttribute('aria-label'), app['permission.request']);
+  assert.equal(document.getElementById('b').getAttribute('title'), app['permission.request']);
+  assert.equal(document.getElementById('i').getAttribute('placeholder'), app['settings.keyPlaceholder']);
+  assert.equal(document.getElementById('o').textContent, app['language.ko']);
+  assert.equal(document.title, ko['ext.name']);
+  assert.equal(document.documentElement.getAttribute('lang'), 'ko');
+  assert.equal(document.getElementById('plain').textContent, 'unbound');
+
+  applyI18n(document, i18n);   // idempotent
+  assert.equal(document.getElementById('h').textContent, ko['ext.name']);
+  assert.equal(document.documentElement.getAttribute('lang'), 'ko');
+
+  i18n.setLanguage('ja');
+  applyI18n(document, i18n);   // a language change is just another call
+  const ja = await readJson(new URL('../extension/i18n/ja.json', import.meta.url));
+  assert.equal(document.getElementById('h').textContent, ja['ext.name']);
+  assert.equal(document.documentElement.getAttribute('lang'), 'ja');
+  assert.equal(document.title, ja['ext.name']);
+});
+
+test('applyI18n on an element root binds only its subtree and leaves the document title alone; bad input is ignored', async () => {
+  const document = parseHtml(SKELETON);
+  const i18n = await loadExtensionI18n({ fetch: fileFetch(), language: 'en' });
+  const section = document.createElement('section');
+  const label = document.createElement('span');
+  label.setAttribute('data-i18n', 'common.start');
+  section.append(label);
+  document.body.append(section);
+  const before = document.title;
+  applyI18n(section, i18n);
+  assert.equal(label.textContent, i18n.t('common.start'));
+  assert.equal(document.title, before);
+  assert.doesNotThrow(() => applyI18n(null, i18n));
+  assert.doesNotThrow(() => applyI18n(document, null));
+  assert.doesNotThrow(() => applyI18n({}, i18n));
+});

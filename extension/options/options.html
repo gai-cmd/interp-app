@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- New implementation of docs/extension.md 7.3 and 8.3; no legacy code is ported. Ids are the contract with the options controller (group C); inside a section the DOM order is the row order of the 7.3 table. The model selects are filled by the controller from LIVE_MODELS and #opt-key-guide gets its href from links.js (a remote URL may not appear in markup, R12). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="ext.options.title"></title>
+  <link rel="stylesheet" href="../../styles.css">
+  <link rel="stylesheet" href="../pages.css">
+</head>
+<body class="page options-page">
+  <main id="app">
+    <h1 id="opt-title" data-i18n="ext.options.title"></h1>
+    <p id="opt-lead" class="text-sub" data-i18n="ext.options.lead"></p>
+
+    <section class="card" aria-labelledby="opt-h-key">
+      <h2 id="opt-h-key" data-i18n="settings.key"></h2>
+      <label class="field"><span data-i18n="settings.key"></span>
+        <input id="opt-key" type="password" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n-hint="settings.keyPlaceholder"></label>
+      <div class="button-row">
+        <button id="opt-key-toggle" type="button" class="btn" aria-controls="opt-key" data-i18n="ext.options.keyShow"></button>
+        <button id="opt-key-save" type="button" class="btn btn-primary" data-i18n="common.save"></button>
+        <button id="opt-key-delete" type="button" class="btn" data-i18n="settings.deleteKey"></button>
+      </div>
+      <p id="opt-key-status" class="text-sub" role="status"></p><!-- live: settings.keyStored, settings.noKey, ext.key.savedBrowser, settings.keyDeleted, ext.key.builtin or an error -->
+      <a id="opt-key-guide" target="_blank" rel="noopener noreferrer"><span data-i18n="keyGuide.createLink"></span> <span class="link-note" data-i18n="keyGuide.newTab"></span></a>
+      <p id="opt-key-note" class="text-sub"><span data-i18n="ext.keyStorage"></span> <span data-i18n="settings.keyStorageWarning"></span></p>
+    </section>
+
+    <section class="card" aria-labelledby="opt-h-lanes">
+      <h2 id="opt-h-lanes" data-i18n="ext.options.section.lanes"></h2>
+      <label class="field"><span data-i18n="language.ui"></span>
+        <select id="opt-ui-language">
+          <option value="auto" data-i18n="language.auto"></option>
+          <option value="ko" data-i18n="language.ko"></option>
+          <option value="en" data-i18n="language.en"></option>
+          <option value="ja" data-i18n="language.ja"></option>
+        </select></label>
+      <p id="opt-ui-language-hint" class="text-sub" data-i18n="ext.options.uiLanguageHint"></p>
+      <label class="field"><span data-i18n="ext.lane.tab.title"></span> <span data-i18n="language.target"></span>
+        <select id="opt-target-tab">
+          <option value="ko" data-i18n="language.ko"></option>
+          <option value="en" data-i18n="language.en"></option>
+          <option value="ja" data-i18n="language.ja"></option>
+        </select></label>
+      <label class="field"><span data-i18n="ext.lane.mic.title"></span> <span data-i18n="language.target"></span>
+        <select id="opt-target-mic">
+          <option value="ko" data-i18n="language.ko"></option>
+          <option value="en" data-i18n="language.en"></option>
+          <option value="ja" data-i18n="language.ja"></option>
+        </select></label>
+      <label class="field"><span data-i18n="ext.options.modelTab"></span>
+        <select id="opt-model-tab"></select></label>
+      <p id="opt-model-tab-hint" class="text-sub" data-i18n="ext.options.modelTabHint"></p>
+      <label class="field"><span data-i18n="ext.options.modelMic"></span>
+        <select id="opt-model-mic"></select></label>
+      <p id="opt-model-mic-hint" class="text-sub" data-i18n="ext.options.modelMicHint"></p>
+      <label class="field"><span data-i18n="sim.voice"></span>
+        <select id="opt-voice">
+          <option value="female" data-i18n="sim.voice.female"></option>
+          <option value="male" data-i18n="sim.voice.male"></option>
+        </select></label>
+      <p id="opt-voice-hint" class="text-sub" data-i18n="sim.voiceRestart"></p>
+      <label class="field field-range"><span data-i18n="ext.tab.originalVolume"></span>
+        <input id="opt-volume" type="range" min="0" max="100" step="5">
+        <output id="opt-volume-value" for="opt-volume"></output></label>
+      <label class="field field-check"><input id="opt-captions-tab" type="checkbox"><span data-i18n="ext.lane.tab.title"></span> <span data-i18n="ext.captions.show"></span></label>
+      <label class="field field-check"><input id="opt-captions-mic" type="checkbox"><span data-i18n="ext.lane.mic.title"></span> <span data-i18n="ext.captions.show"></span></label>
+      <p id="opt-captions-mic-hint" class="text-sub" data-i18n="ext.captions.micHint"></p>
+      <p id="opt-defaults-hint" class="text-sub" data-i18n="ext.options.defaultsHint"></p>
+    </section>
+
+    <section class="card" aria-labelledby="opt-h-captions">
+      <h2 id="opt-h-captions" data-i18n="ext.options.section.captions"></h2>
+      <label class="field field-range"><span data-i18n="display.captions.size"></span>
+        <input id="opt-caption-size" type="range" min="1" max="2" step="0.125">
+        <output id="opt-caption-size-value" for="opt-caption-size"></output></label>
+      <p id="opt-caption-size-hint" class="text-sub" data-i18n="display.captions.range"></p>
+      <label class="field"><span data-i18n="ext.options.captionPosition"></span>
+        <select id="opt-caption-position">
+          <option value="top" data-i18n="ext.options.position.top"></option>
+          <option value="bottom" data-i18n="ext.options.position.bottom"></option>
+        </select></label>
+      <label class="field"><span data-i18n="captionOnly.display"></span>
+        <select id="opt-caption-display">
+          <option value="dark" data-i18n="captionOnly.display.dark"></option>
+          <option value="light" data-i18n="captionOnly.display.light"></option>
+          <option value="mono" data-i18n="captionOnly.display.mono"></option>
+        </select></label>
+      <label class="field field-check"><input id="opt-caption-source" type="checkbox"><span data-i18n="sim.captions.showSource"></span></label>
+      <label class="field"><span data-i18n="ext.options.captionLines"></span>
+        <input id="opt-caption-lines" type="number" min="1" max="6" step="1"></label>
+      <label class="field"><span data-i18n="ext.options.autoHide"></span>
+        <input id="opt-caption-hide" type="number" min="0" max="60" step="1"></label>
+    </section>
+
+    <section class="card" aria-labelledby="opt-h-privacy">
+      <h2 id="opt-h-privacy" data-i18n="ext.options.section.privacy"></h2>
+      <p id="opt-privacy-audio" data-i18n="ext.privacy.audio"></p>
+      <p id="opt-privacy-free" data-i18n="ext.privacy.freeTier"></p>
+      <p id="opt-privacy-page" data-i18n="ext.privacy.page"></p>
+    </section>
+
+    <p id="opt-saved" class="notice" role="status"></p><!-- live: ext.options.saved for 2 s after a write, or ext.error.STORAGE_FAILED -->
+  </main>
+  <script type="module" src="./options.js"></script>
+</body>
+</html>

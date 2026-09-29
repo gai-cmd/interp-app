@@ -1,0 +1,50 @@
+{
+  "extName": {
+    "message": "リアルタイム通訳",
+    "description": "Extension name shown in Chrome."
+  },
+  "extDescription": {
+    "message": "タブの音声と自分のマイクをGemini Liveでその場で通訳し、字幕をページに表示します。",
+    "description": "Extension description shown in Chrome (max 132 characters)."
+  },
+  "actionTitle": {
+    "message": "通訳パネルを開く",
+    "description": "Toolbar icon tooltip."
+  },
+  "commandOpen": {
+    "message": "このタブで通訳パネルを開く",
+    "description": "Description of the keyboard shortcut."
+  },
+  "menuOpen": {
+    "message": "このタブで通訳パネルを開く",
+    "description": "Context menu item title."
+  },
+  "overlayRegion": {
+    "message": "通訳字幕",
+    "description": "Accessible name of the caption overlay."
+  },
+  "overlayHide": {
+    "message": "字幕を隠す",
+    "description": "Accessible name of the overlay close button."
+  },
+  "overlayLaneTab": {
+    "message": "タブの音声",
+    "description": "Label chip of the tab-audio caption lane."
+  },
+  "overlayLaneMic": {
+    "message": "マイク",
+    "description": "Label chip of the microphone caption lane."
+  },
+  "overlayGap": {
+    "message": "一部の字幕が欠けている可能性があります。",
+    "description": "Shown when some captions may be missing."
+  },
+  "overlayReconnecting": {
+    "message": "再接続しています…",
+    "description": "Shown on the page while the interpretation session reconnects."
+  },
+  "overlayStopped": {
+    "message": "通訳が停止しました。パネルを確認してください。",
+    "description": "Shown on the page after interpretation stopped unexpectedly."
+  }
+}

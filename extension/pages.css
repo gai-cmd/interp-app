@@ -1,0 +1,56 @@
+/* New implementation of docs/extension.md 8.1, 8.3, 8.4 and 8.6; no legacy code is ported.
+   Shared styling of the options page and the microphone-permission page on top of ../styles.css: only its tokens and
+   classes, no new colors, no url(), no @import, no @font-face, rem for text, --touch for targets. Both pages work from
+   320 px to 1280 px and follow prefers-color-scheme through styles.css. Neither page ever shows the API key. */
+
+.page main { max-width: 40rem; margin-inline: auto; padding: var(--page-x); }
+.page main > * { margin: 0; }
+.page main > * + * { margin-top: var(--space-3); }
+.page h1 { font-size: 1.375rem; }
+.page h2 { font-size: 1.125rem; }
+
+/* An empty live region (8.2.1 rule) is still rendered but takes no room */
+.notice:empty, .text-sub:empty { margin: 0; padding: 0; border: 0; min-height: 0; }
+.page main > :empty { margin: 0; }
+
+/* Cards (one per settings section) */
+.page .card > * { margin: 0; }
+.page .card > * + * { margin-top: var(--space-3); }
+.page .card > :empty { margin: 0; }
+
+/* Form rows: a label wraps its control, so the label text is the accessible name and the whole row is the target */
+.field { display: grid; gap: var(--space-1); }
+.field > span { font-size: 0.8125rem; font-weight: 600; }
+.field select, .field input:not([type="checkbox"]):not([type="range"]) { width: 100%; }
+.field input[type="number"] { max-width: 8rem; }
+.field-check { display: flex; align-items: center; gap: var(--space-2); min-height: var(--touch); cursor: pointer; }
+.field-check input[type="checkbox"] { flex: none; width: 1.25rem; height: 1.25rem; }
+.field-check > span { font-size: 0.875rem; font-weight: 400; }
+.field-range { grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-2); }
+.field-range > span { grid-column: 1 / -1; }
+.field-range output { min-width: 4ch; text-align: end; font-variant-numeric: tabular-nums; }
+
+.button-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+#opt-key { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* The key guide is a link that opens a new tab: sized like a control, the note after it is quiet text */
+#opt-key-guide { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); min-height: var(--touch); }
+.link-note { color: var(--text-muted); font-size: 0.875rem; }
+
+/* The "saved" line stays in view while a long page scrolls (it is empty, and collapsed, most of the time) */
+.options-page #opt-saved { position: sticky; bottom: var(--space-3); z-index: 1; }
+
+/* Microphone-permission page: a short single column, the way to ask again is the primary button */
+.permission-page main { max-width: 32rem; padding-block: var(--space-6); }
+
+@media (hover: hover) {
+  .field-check:hover { color: var(--accent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page *, .page *::before, .page *::after { transition: none; animation: none; scroll-behavior: auto; }
+}
+
+@media (forced-colors: active) {
+  .card, .notice, .btn { border-color: CanvasText; }
+}

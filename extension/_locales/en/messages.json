@@ -1,0 +1,50 @@
+{
+  "extName": {
+    "message": "Live Interpreter",
+    "description": "Extension name shown in Chrome."
+  },
+  "extDescription": {
+    "message": "Interpret tab audio and your microphone live with Gemini Live, with captions on the page.",
+    "description": "Extension description shown in Chrome (max 132 characters)."
+  },
+  "actionTitle": {
+    "message": "Open the interpreter panel",
+    "description": "Toolbar icon tooltip."
+  },
+  "commandOpen": {
+    "message": "Open the interpreter panel on this tab",
+    "description": "Description of the keyboard shortcut."
+  },
+  "menuOpen": {
+    "message": "Open the interpreter panel on this tab",
+    "description": "Context menu item title."
+  },
+  "overlayRegion": {
+    "message": "Interpretation captions",
+    "description": "Accessible name of the caption overlay."
+  },
+  "overlayHide": {
+    "message": "Hide captions",
+    "description": "Accessible name of the overlay close button."
+  },
+  "overlayLaneTab": {
+    "message": "Tab audio",
+    "description": "Label chip of the tab-audio caption lane."
+  },
+  "overlayLaneMic": {
+    "message": "Microphone",
+    "description": "Label chip of the microphone caption lane."
+  },
+  "overlayGap": {
+    "message": "Some captions may be missing.",
+    "description": "Shown when some captions may be missing."
+  },
+  "overlayReconnecting": {
+    "message": "Reconnecting…",
+    "description": "Shown on the page while the interpretation session reconnects."
+  },
+  "overlayStopped": {
+    "message": "Interpretation stopped. Check the panel.",
+    "description": "Shown on the page after interpretation stopped unexpectedly."
+  }
+}

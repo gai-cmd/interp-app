@@ -1,0 +1,111 @@
+<!doctype html>
+<!-- New implementation of docs/extension.md 8.2; no legacy code is ported. Ids, order and attributes are the contract with the panel controller (group C). Every element marked "live" is a PERSISTENT region: never hidden, no static text, the controller writes textContent or ''. The per-lane status lines are NOT live: the pill and the notices already announce the same change. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="ext.name"></title>
+  <link rel="stylesheet" href="../../styles.css">
+  <link rel="stylesheet" href="./panel.css">
+</head>
+<body class="panel">
+  <main id="app">
+    <header class="panel-head">
+      <h1 id="panel-title" data-i18n="ext.name"></h1>
+      <p id="status-pill" class="badge" role="status" aria-live="polite" data-state="idle"></p>
+    </header>
+
+    <div id="key-missing" class="notice" role="status"><!-- live: ext.key.missing while no key is stored; explains why Start is disabled -->
+      <span id="key-missing-text"></span>
+      <button id="btn-key-options" type="button" class="btn" hidden data-i18n="ext.key.enter"></button>
+    </div>
+    <p id="stop-note" class="notice" role="status"></p><!-- live: ext.notice.panelGone or ext.notice.hostLost -->
+
+    <section id="card-tab" class="card lane-card" aria-labelledby="tab-title" data-lane="tab">
+      <label class="lane-head"><input id="tab-enabled" type="checkbox"><span id="tab-title" data-i18n="ext.lane.tab.title"></span></label>
+      <p class="text-sub" data-i18n="ext.lane.tab.lead"></p>
+      <label class="field"><span data-i18n="language.target"></span>
+        <select id="tab-target">
+          <option value="ko" data-i18n="language.ko"></option>
+          <option value="en" data-i18n="language.en"></option>
+          <option value="ja" data-i18n="language.ja"></option>
+        </select></label>
+      <p id="tab-apply-next" class="text-sub" role="status"></p><!-- live: ext.applyNext, right below the select it refers to -->
+      <p id="tab-source-note" class="text-sub" data-i18n="ext.source.auto"></p>
+      <label class="field field-range"><span data-i18n="ext.tab.originalVolume"></span>
+        <input id="tab-volume" type="range" min="0" max="100" step="5">
+        <output id="tab-volume-value" for="tab-volume"></output></label>
+      <label class="field field-check"><input id="tab-captions" type="checkbox"><span data-i18n="ext.captions.show"></span></label>
+      <p id="tab-tabline" class="text-sub" hidden></p>
+      <p id="tab-arm-note" class="notice" role="status"></p><!-- live: ext.arm.needed, ext.arm.waiting, ext.arm.ready or ext.error.TAB_UNSUPPORTED -->
+      <p id="tab-status" class="text-sub"></p><!-- not live: the pill and the notices announce state changes -->
+      <p id="tab-route" class="text-sub" hidden></p>
+      <p id="tab-route-note" class="notice" role="status"></p><!-- live: ext.route.fallbackNote while a backup model interprets -->
+      <p id="tab-output" class="text-sub" role="status"></p><!-- live -->
+      <p id="tab-gap" class="text-sub" role="status"></p><!-- live: ext.gap.input, sim.gap.audio or sim.gap.reception -->
+      <meter id="tab-level" min="0" max="100" value="0" data-i18n-label="ext.level.tab" hidden></meter>
+      <p id="tab-notice" class="notice" role="alert"></p><!-- live (assertive): the error notice of the lane -->
+      <div id="tab-preview" class="caption-preview" role="region" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
+    </section>
+
+    <section id="card-mic" class="card lane-card" aria-labelledby="mic-title" data-lane="mic">
+      <label class="lane-head"><input id="mic-enabled" type="checkbox"><span id="mic-title" data-i18n="ext.lane.mic.title"></span></label>
+      <p class="text-sub" data-i18n="ext.lane.mic.lead"></p>
+      <p id="mic-mode" class="text-sub" data-i18n="ext.mic.mode"></p>
+      <label class="field"><span data-i18n="language.target"></span>
+        <select id="mic-target">
+          <option value="ko" data-i18n="language.ko"></option>
+          <option value="en" data-i18n="language.en"></option>
+          <option value="ja" data-i18n="language.ja"></option>
+        </select></label>
+      <p id="mic-apply-next" class="text-sub" role="status"></p><!-- live: ext.applyNext -->
+      <p id="mic-source-note" class="text-sub" data-i18n="ext.source.auto"></p>
+      <label class="field field-check"><input id="mic-captions" type="checkbox"><span data-i18n="ext.captions.show"></span></label>
+      <p id="mic-captions-hint" class="text-sub" data-i18n="ext.captions.micHint"></p>
+      <p id="mic-permission-status" class="text-sub" role="status"></p><!-- live: permission.title and the permission state -->
+      <button id="btn-mic-allow" type="button" class="btn" hidden data-i18n="ext.permission.allowButton"></button>
+      <p id="mic-status" class="text-sub"></p><!-- not live: the pill and the notices announce state changes -->
+      <p id="mic-route" class="text-sub" hidden></p>
+      <p id="mic-route-note" class="notice" role="status"></p><!-- live: ext.route.fallbackNote while a backup model interprets -->
+      <p id="mic-output" class="text-sub" role="status"></p><!-- live -->
+      <p id="mic-gap" class="text-sub" role="status"></p><!-- live -->
+      <meter id="mic-level" min="0" max="100" value="0" data-i18n-label="seq.inputLevel" hidden></meter>
+      <p id="mic-notice" class="notice" role="alert"></p><!-- live (assertive) -->
+      <div id="mic-preview" class="caption-preview" role="region" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
+    </section>
+
+    <p id="no-lane-note" class="notice" role="status"></p><!-- live: ext.status.noLane -->
+    <p id="mute-note" class="text-sub" role="status"></p><!-- live: ext.mic.mutedHint while the interpreted speech is muted -->
+    <p id="echo-note" class="notice" role="status"></p><!-- live: ext.sound.echoWarning while speech is ON and the mic lane is enabled -->
+    <p id="close-note" class="text-sub" hidden data-i18n="ext.panel.closeStops"></p><!-- shown while any lane runs -->
+
+    <details id="howto">
+      <summary data-i18n="ext.howto.link"></summary>
+      <ol id="howto-steps">
+        <li data-i18n="ext.howto.keepOpen"></li>
+        <li data-i18n="sim.headphonesStart"></li>
+        <li data-i18n="ext.howto.step2"></li>
+        <li data-i18n="ext.howto.step3"></li>
+        <li data-i18n="ext.howto.step4"></li>
+        <li data-i18n="ext.howto.step5"></li>
+        <li data-i18n="ext.howto.stepCall"></li>
+      </ol>
+    </details>
+
+    <p id="usage-note" class="text-sub" role="status"></p><!-- live: ext.usage.twoSessions while both lanes are enabled (plus ext.usage.quotaHint when emphasized) -->
+
+    <div class="button-row"><!-- sticky at the bottom of the panel (8.2.2) -->
+      <button id="btn-start" type="button" class="btn btn-primary" aria-disabled="true" aria-describedby="key-missing no-lane-note"></button><!-- aria-disabled, never disabled: it stays focusable so its description is reachable; the controller ignores the click -->
+      <button id="btn-mic-permission" type="button" class="btn icon-btn" data-i18n-label="permission.request" data-i18n-tip="permission.request">
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" class="icon"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+      </button>
+      <button id="btn-mute" type="button" class="btn icon-btn" data-muted="true">
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" class="icon"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12z"/><path class="icon-slash" fill="currentColor" d="M3.5 4.9 4.9 3.5 20.5 19.1 19.1 20.5z"/></svg>
+      </button>
+      <button id="btn-options" type="button" class="btn" data-i18n="ext.options.title"></button>
+    </div>
+
+  </main>
+  <script type="module" src="./panel.js"></script>
+</body>
+</html>

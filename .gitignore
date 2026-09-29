@@ -4,3 +4,4 @@ node_modules/
 .moai/
 docs/build/*.done
 release/
+dist/

@@ -6,6 +6,7 @@
   "engines": { "node": ">=24 <25" },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "serve": "node scripts/serve.mjs"
+    "serve": "node scripts/serve.mjs",
+    "build:extension": "node scripts/build-extension.mjs"
   }
 }

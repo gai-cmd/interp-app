@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- New implementation of docs/extension.md 8.4; no legacy code is ported. The tab that asks for the microphone once, because neither the offscreen document nor the side panel can show the prompt. #perm-status and #perm-help are persistent live regions (8.2.1 rule): never hidden, no static text, the controller writes their text. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="ext.permission.title"></title>
+  <link rel="stylesheet" href="../../styles.css">
+  <link rel="stylesheet" href="../pages.css">
+</head>
+<body class="page permission-page">
+  <main id="app">
+    <h1 id="perm-title" data-i18n="ext.permission.title"></h1>
+    <p id="perm-lead" data-i18n="ext.permission.lead"></p>
+    <p id="perm-always" class="notice" data-i18n="ext.permission.chooseAlways"></p>
+    <div class="button-row">
+      <button id="perm-request" type="button" class="btn btn-primary" data-i18n="ext.permission.allowButton"></button>
+      <button id="perm-close" type="button" class="btn" data-i18n="common.close"></button>
+    </div>
+    <p id="perm-status" class="text-sub" role="status"></p><!-- live: permission.checking, permission.prompt, permission.granted with ext.permission.done, permission.denied, permission.noDevice or permission.busy -->
+    <p id="perm-help" class="notice" role="status"></p><!-- live: ext.permission.blockedHelp, written only after a denial and empty otherwise; a region that appears together with its text is often not announced -->
+  </main>
+  <script type="module" src="./mic-permission.js"></script>
+</body>
+</html>

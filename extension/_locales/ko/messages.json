@@ -1,0 +1,50 @@
+{
+  "extName": {
+    "message": "실시간 통역",
+    "description": "Extension name shown in Chrome."
+  },
+  "extDescription": {
+    "message": "탭 소리와 내 마이크를 Gemini Live로 바로 통역하고, 자막을 페이지에 띄워 줘요.",
+    "description": "Extension description shown in Chrome (max 132 characters)."
+  },
+  "actionTitle": {
+    "message": "통역 패널 열기",
+    "description": "Toolbar icon tooltip."
+  },
+  "commandOpen": {
+    "message": "이 탭에서 통역 패널 열기",
+    "description": "Description of the keyboard shortcut."
+  },
+  "menuOpen": {
+    "message": "이 탭에서 통역 패널 열기",
+    "description": "Context menu item title."
+  },
+  "overlayRegion": {
+    "message": "통역 자막",
+    "description": "Accessible name of the caption overlay."
+  },
+  "overlayHide": {
+    "message": "자막 숨기기",
+    "description": "Accessible name of the overlay close button."
+  },
+  "overlayLaneTab": {
+    "message": "탭 오디오",
+    "description": "Label chip of the tab-audio caption lane."
+  },
+  "overlayLaneMic": {
+    "message": "마이크",
+    "description": "Label chip of the microphone caption lane."
+  },
+  "overlayGap": {
+    "message": "일부 자막이 빠졌을 수 있어요.",
+    "description": "Shown when some captions may be missing."
+  },
+  "overlayReconnecting": {
+    "message": "연결이 끊겨 다시 연결하는 중이에요…",
+    "description": "Shown on the page while the interpretation session reconnects."
+  },
+  "overlayStopped": {
+    "message": "통역이 멈췄어요. 패널을 확인하세요.",
+    "description": "Shown on the page after interpretation stopped unexpectedly."
+  }
+}

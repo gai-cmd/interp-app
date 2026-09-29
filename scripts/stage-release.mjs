@@ -251,7 +251,7 @@ async function stagedBytes(file, bytes, builtinKey) {
  * blank lines and lines starting with # are ignored, duplicates collapse.
  * The values are returned, never printed.
  */
-async function readBuiltinKey(path) {
+export async function readBuiltinKey(path) {
   if (path === null || path === undefined) return null;
   let text;
   try { text = await readFile(path, 'utf8'); } catch { throw fail('RELEASE_KEY_FILE_MISSING'); }
