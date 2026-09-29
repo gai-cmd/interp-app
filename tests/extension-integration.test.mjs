@@ -22,7 +22,14 @@ import { content } from './fixtures/sim.mjs';
 const KEY = `synthetic-${'x'.repeat(24)}`;
 const readSource = (path) => readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)), 'utf8');
 const PANEL_HTML = readSource('extension/panel/panel.html');
-const fileFetch = async (url) => ({ ok: true, json: async () => JSON.parse(readSource(String(url).replace(/^file:\/\/.*\/interp-app\//, ''))) });
+// The dictionaries are fetched by file: URL. The checkout root comes from this file's own URL, never from a folder name:
+// a clone or a worktree may live in a folder called anything.
+const ROOT = new URL('../', import.meta.url).href;
+const fileFetch = async (url) => {
+  const href = String(url);
+  assert.ok(href.startsWith(ROOT), `${href} is under the checkout root ${ROOT}`);
+  return { ok: true, json: async () => JSON.parse(readSource(href.slice(ROOT.length))) };
+};
 
 async function makeWorld({ tabs = [{ id: 5, url: 'https://claude.ai/doc' }], settings, key = KEY, micPermission = 'granted' } = {}) {
   const browser = createFakeBrowser({ messages: { menuOpen: 'Interpret this tab' } });

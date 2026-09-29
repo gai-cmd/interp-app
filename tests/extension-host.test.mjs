@@ -62,6 +62,38 @@ test('overlay hub accept rules: name, role content, top frame, integer tab id an
   assert.ok(asked.includes(9));
 });
 
+// The ROLE rule of 4.4 on its own. An options or permission page (extension origin) opens in a TAB, so it has sender.tab and
+// frameId 0 and passes the name, top-frame and tab-id checks: only the role check keeps it out. The 'wrong role' case above
+// (a panel sender WITHOUT a tab) is refused by the tab-id check first, and the wrong-role panel ports below arrive after the
+// cap is full, so neither of them proves the role rule.
+const OTHER_EXT_ID = 'ponmlkjihgfedcbaponmlkjihgfedcba';
+const extensionPageSender = (path, { id = EXT_ID, tabId = 9, frameId = 0 } = {}) =>
+  ({ id, url: `chrome-extension://${id}/${path}`, origin: `chrome-extension://${id}`, tab: { id: tabId }, frameId });
+
+test('overlay hub role rule: a port from an extension page that HAS a tab and a top frame (options, permission, panel in a tab) is refused although the host would route to that tab', () => {
+  const asked = [];
+  const hub = createOverlayHub({ runtime: RUNTIME, canAccept: (tabId) => { asked.push(tabId); return true; } });
+  for (const [label, sender] of [
+    ['options page', extensionPageSender('extension/options/options.html')],
+    ['permission page', extensionPageSender('extension/permission/permission.html')],
+    ['panel page opened in a tab', extensionPageSender('extension/panel/panel.html')],
+    ['a content-script-shaped sender of ANOTHER extension', { id: OTHER_EXT_ID, url: 'https://page.test/', origin: 'https://page.test',
+      tab: { id: 9 }, frameId: 0 }],
+  ]) {
+    const port = fakePort();
+    port.sender = sender;
+    assert.equal(hub.accept(port), false, label);
+    assert.equal(port.disconnects, 1, `${label}: disconnected at once`);
+  }
+  assert.equal(hub.count(), 0, 'nothing was registered');
+  // Control: the same hub, the same tab and the same policy take a real content script. It was the role that refused the pages.
+  const content = fakePort({ tabId: 9 });
+  assert.equal(hub.accept(content), true);
+  assert.equal(content.disconnects, 0);
+  assert.deepEqual(hub.tabIds(), [9]);
+  assert.ok(asked.includes(9), 'the host policy would have said yes for tab 9');
+});
+
 test('overlay hub: ONE port per tab - a second port REPLACES the first, and the old port\'s late events change nothing', () => {
   const events = [];
   const hub = createOverlayHub({ runtime: RUNTIME, onHello: (tabId) => events.push(['hello', tabId]),
@@ -202,6 +234,31 @@ test('panel hub accept rules: name, role panel, cap; hello reaches the host; oth
   assert.deepEqual(hellos, []);
   ports[0].say(hello);
   assert.deepEqual(hellos, [ports[0]]);
+});
+
+test('panel hub role rule: on a fresh hub with room to spare only a panel page is accepted; every other role is refused by the role check, not by the cap', () => {
+  const clock = createFakeClock();
+  const hub = createPanelHub({ runtime: RUNTIME, timers: clock });
+  const ports = [
+    ['options page', fakePort({ name: PORT_NAMES.panel, kind: 'options' })],
+    ['permission page', fakePort({ name: PORT_NAMES.panel, kind: 'permission' })],
+    ['content script', fakePort({ name: PORT_NAMES.panel, kind: 'content' })],
+    ['options page in a tab', Object.assign(fakePort({ name: PORT_NAMES.panel }), { sender: extensionPageSender('extension/options/options.html') })],
+    ['offscreen page', Object.assign(fakePort({ name: PORT_NAMES.panel }), { sender: extensionPageSender('extension/engine/host.html') })],
+    ['service worker', Object.assign(fakePort({ name: PORT_NAMES.panel }), { sender: { id: EXT_ID, origin: `chrome-extension://${EXT_ID}` } })],
+    ['a panel page of ANOTHER extension', Object.assign(fakePort({ name: PORT_NAMES.panel }), {
+      sender: { id: OTHER_EXT_ID, url: `chrome-extension://${OTHER_EXT_ID}/extension/panel/panel.html`, origin: `chrome-extension://${OTHER_EXT_ID}` } })],
+  ];
+  for (const [label, port] of ports) {
+    assert.equal(hub.accept(port), false, label);
+    assert.equal(port.disconnects, 1, `${label}: disconnected at once`);
+  }
+  assert.equal(hub.count(), 0, 'no refused port was counted');
+  // Control: the same fresh hub takes the panel page, so the refusals above were about the role only.
+  const panel = fakePort({ name: PORT_NAMES.panel, kind: 'panel' });
+  assert.equal(hub.accept(panel), true);
+  assert.equal(panel.disconnects, 0);
+  assert.equal(hub.count(), 1);
 });
 
 test('panel hub broadcast: deduped per port and kind (ignoring seq); sendTo is a baseline; a throwing port is removed', () => {
@@ -488,6 +545,59 @@ test('host/lane-stop: absent lane stops both; a stop while a lane is still start
   assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.tab, 'off');
 });
 
+// 5.9: only a lane-less host/lane-stop, the panel-gone grace and dispose() stop BOTH lanes. Everything below runs through the
+// host/* messages, so it sees what the lane objects alone cannot: whether the host handler names the lane it was asked about.
+test('host/lane-stop {lane} stops ONLY that lane: the other lane keeps its phase, its capture and its socket', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const tab = await up(rigH, 'tab');
+  const mic = await up(rigH, 'mic', { model: 'gemini-3.8-live' });
+  assert.deepEqual((await rigH.send(makeMessage('host/ping'))).lanes, { tab: 'running', mic: 'running' });
+  assert.equal(rigH.browser.captures.size, 1, 'the tab capture is held');
+
+  assert.deepEqual(await rigH.send(makeMessage('host/lane-stop', { lane: 'mic' })), { ok: true });
+  assert.deepEqual((await rigH.send(makeMessage('host/ping'))).lanes, { tab: 'running', mic: 'off' }, 'stopping the microphone must not stop the tab lane');
+  assert.equal(rigH.browser.captures.size, 1, 'the tab capture is still held');
+  assert.equal(tab.socket.closeCalls, 0, 'the tab lane\'s interpretation is still connected');
+  assert.ok(mic.socket.closeCalls >= 1, 'the mic lane really stopped');
+  await rigH.clock.advance(100);
+  assert.deepEqual([panel.last('state').state.lanes.tab.phase, panel.last('state').state.lanes.mic.phase], ['running', 'off']);
+
+  // And the other way round: bring the mic lane back, then stop only the tab lane.
+  const micAgain = await up(rigH, 'mic', { model: 'gemini-3.8-live' });
+  assert.deepEqual(await rigH.send(makeMessage('host/lane-stop', { lane: 'tab' })), { ok: true });
+  assert.deepEqual((await rigH.send(makeMessage('host/ping'))).lanes, { tab: 'off', mic: 'running' }, 'stopping the tab lane must not stop the microphone');
+  assert.equal(rigH.browser.captures.size, 0, 'the tab capture is released');
+  assert.equal(micAgain.socket.closeCalls, 0, 'the mic lane\'s interpretation is still connected');
+  await rigH.clock.advance(100);
+  assert.deepEqual([panel.last('state').state.lanes.tab.phase, panel.last('state').state.lanes.mic.phase], ['off', 'running']);
+});
+
+test('a mic start the host refuses (permission denied) leaves the RUNNING tab lane alone', async () => {
+  const rigH = await createHostRig({ micPermission: 'denied' });
+  rigH.openPanel();
+  const tab = await up(rigH, 'tab');
+  const refused = await rigH.startLane('mic', { model: 'gemini-3.8-live' });
+  assert.equal(refused.ok, false, JSON.stringify(refused));
+  assert.equal(typeof refused.code, 'string');
+  const ping = await rigH.send(makeMessage('host/ping'));
+  assert.equal(ping.lanes.mic, 'error', 'the mic lane carries the failure');
+  assert.equal(ping.lanes.tab, 'running', `the tab lane survived: ${JSON.stringify(ping.lanes)} ${JSON.stringify(refused)}`);
+  assert.equal(rigH.browser.captures.size, 1, 'the tab capture is still held');
+  assert.equal(tab.socket.closeCalls, 0, 'the tab lane\'s interpretation is still connected');
+});
+
+test('a tab start the host refuses (bad stream id) leaves the RUNNING mic lane alone', async () => {
+  const rigH = await createHostRig();
+  rigH.openPanel();
+  const mic = await up(rigH, 'mic', { model: 'gemini-3.8-live' });
+  assert.deepEqual(await rigH.startLane('tab', { streamId: 'not-a-stream' }), { ok: false, code: 'TAB_CAPTURE_FAILED' });
+  const ping = await rigH.send(makeMessage('host/ping'));
+  assert.equal(ping.lanes.tab, 'error', 'the tab lane carries the failure');
+  assert.equal(ping.lanes.mic, 'running', `the mic lane survived: ${JSON.stringify(ping.lanes)}`);
+  assert.equal(mic.socket.closeCalls, 0, 'the mic lane\'s interpretation is still connected');
+});
+
 test('host/settings: live mute (both lanes, resumeAudio on unmute), original volume and style', async () => {
   const rigH = await createHostRig();
   const panel = rigH.openPanel();
@@ -596,9 +706,22 @@ test('host/tab-removed stops the tab lane with TAB_ENDED and forgets the tab you
   const rigH = await createHostRig();
   const panel = rigH.openPanel();
   await up(rigH, 'tab');
-  await up(rigH, 'mic', { model: 'gemini-3.8-live' });
+  const mic = await up(rigH, 'mic', { model: 'gemini-3.8-live', captions: true });
+  // You look at the captured tab: your own captions go to its overlay. That tab id is what a removal must forget.
+  assert.deepEqual(await rigH.send(makeMessage('host/overlay-wanted', { tabId: 5, active: true })), { ok: true, wanted: true, lanes: ['tab', 'mic'] });
+  const overlay = rigH.openOverlay(5);
+  await rigH.settle();
+  const micText = () => (overlay.frames.filter((frame) => frame.type === 'captions' && frame.lane === 'mic').at(-1)?.rows ?? []).map((row) => row.text).join(' ');
+  const speak = async (text) => { content(mic.socket, { outputTranscription: { text } }); await tick(); await rigH.clock.advance(150); };
+  await speak('before');
+  assert.ok(micText().includes('before'), 'control: your speech reaches the tab you look at');
+
   assert.deepEqual(await rigH.send(makeMessage('host/tab-removed', { tabId: 77 })), { ok: true });
   assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.tab, 'running', 'another tab');
+  await speak('unrelated');
+  assert.ok(micText().includes('unrelated'), 'the removal of ANOTHER tab does not move the tab you look at');
+
+  const framesBefore = overlay.frames.length;
   assert.deepEqual(await rigH.send(makeMessage('host/tab-removed', { tabId: 5 })), { ok: true });
   await rigH.clock.advance(100);
   const state = panel.last('state').state;
@@ -606,6 +729,15 @@ test('host/tab-removed stops the tab lane with TAB_ENDED and forgets the tab you
   assert.equal(state.lanes.tab.errorCode, 'TAB_ENDED');
   assert.equal(state.lanes.mic.phase, 'running');
   assert.equal(rigH.browser.captures.size, 0);
+  // The tab you looked at is gone: your captions leave it at once and are not routed to it any more. Its port is still open
+  // (the ended tab lane lingers to show why), so only the reset of the looked-at tab keeps your speech away from it.
+  assert.ok(overlay.frames.slice(framesBefore).some((frame) => frame.type === 'clear' && frame.lane === 'mic'), 'your captions are cleared from the removed tab');
+  assert.equal(overlay.disconnected, false, 'the port of the removed tab is still open');
+  await speak('after removal');
+  assert.equal(overlay.frames.slice(framesBefore).some((frame) => frame.type === 'captions' && frame.lane === 'mic'), false,
+    'no mic caption is routed to the removed tab any more');
+  assert.equal(micText().includes('after removal'), false);
+  assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.mic, 'running', 'the mic lane itself keeps running');
   // Nothing to end on an idle lane.
   await rigH.send(makeMessage('host/lane-stop', { lane: 'tab' }));
   await rigH.send(makeMessage('host/tab-removed', { tabId: 5 }));
@@ -675,6 +807,39 @@ test('panel ports: more than maxPanelPorts, the wrong page kind and a foreign na
   assert.equal(options.disconnected, true, 'an options page is not a panel');
   assert.equal(stranger.disconnected, false, 'a port with another name is ignored, not disconnected');
   assert.equal((await rigH.send(makeMessage('host/ping'))).panels, 4);
+});
+
+test('port roles over the host: an options page in the captured tab is no overlay and an options/permission page is no panel, while there is room', async () => {
+  const rigH = await createHostRig();
+  await up(rigH, 'tab');   // tab 5 is captured with captions on: the routing policy WOULD accept an overlay port for it
+  const connectFrom = (kind, tabId, name) => {
+    const context = rigH.browser.createContext(kind, tabId === undefined ? {} : { tabId });
+    const port = context.chrome.runtime.connect({ name });
+    const seen = { disconnected: false };
+    port.onDisconnect.addListener(() => { seen.disconnected = true; });
+    port.postMessage(hello);
+    return seen;
+  };
+  const optionsAsOverlay = connectFrom('options', 5, PORT_NAMES.overlay);
+  const permissionAsOverlay = connectFrom('permission', 5, PORT_NAMES.overlay);
+  const optionsAsPanel = connectFrom('options', undefined, PORT_NAMES.panel);
+  const permissionAsPanel = connectFrom('permission', 5, PORT_NAMES.panel);
+  const contentAsPanel = rigH.browser.createContext('content', { tabId: 5 }).chrome.runtime.connect({ name: PORT_NAMES.panel });
+  let contentAsPanelGone = false;
+  contentAsPanel.onDisconnect.addListener(() => { contentAsPanelGone = true; });
+  await rigH.settle();
+  assert.deepEqual([optionsAsOverlay.disconnected, permissionAsOverlay.disconnected], [true, true], 'an extension page is not a content script');
+  assert.deepEqual([optionsAsPanel.disconnected, permissionAsPanel.disconnected, contentAsPanelGone], [true, true, true], 'only the side panel is a panel');
+  const ping = await rigH.send(makeMessage('host/ping'));
+  assert.equal(ping.panels, 0, 'no refused port was counted');
+  // Control: the right pages are taken by the same host.
+  const overlay = rigH.openOverlay(5);
+  const panel = rigH.openPanel();
+  await rigH.settle();
+  assert.equal(overlay.disconnected, false);
+  assert.equal(panel.disconnected, false);
+  assert.equal((await rigH.send(makeMessage('host/ping'))).panels, 1);
+  assert.deepEqual(typesOf(overlay), ['style', 'captions:tab'], 'and only the content script is fed');
 });
 
 test('panel grace: the last panel gone -> lanes stop after panelGraceMs and exactly one sw/host-idle {panel-gone}; a reconnect cancels it', async () => {

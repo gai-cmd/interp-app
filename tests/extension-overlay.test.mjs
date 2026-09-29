@@ -53,9 +53,9 @@ const BYE = Object.freeze({ v: 1, type: 'bye' });
 // Harness
 
 // Wraps a content context's chrome so a test can see and steer what the script does: it records every getMessage
-// name and every port it opens (with the handlers it registered, so a LATE disconnect of a stale port can be
-// replayed), makes runtime.id vanish (an orphaned script) and makes connect throw. It never spreads the real
-// chrome object: its `storage` accessor would count as a read.
+// name and every port it opens (with the disconnect and message handlers it registered, so a LATE disconnect or a
+// LATE frame of a stale port can be replayed), makes runtime.id vanish (an orphaned script) and makes connect throw.
+// It never spreads the real chrome object: its `storage` accessor would count as a read.
 function spyChrome(content) {
   const real = content.chrome;
   const log = { names: [], connects: 0, ports: [] };
@@ -67,12 +67,16 @@ function spyChrome(content) {
       log.connects++;
       if (control.failConnect) throw new Error('connect failed');
       const port = real.runtime.connect(info);
-      const record = { port, disconnectHandlers: [] };
+      const record = { port, disconnectHandlers: [], messageHandlers: [] };
       log.ports.push(record);
       return new Proxy(port, { get(target, key) {
         if (key === 'onDisconnect') {
           return { addListener: (fn) => { record.disconnectHandlers.push(fn); target.onDisconnect.addListener(fn); },
             removeListener: (fn) => target.onDisconnect.removeListener(fn), hasListener: (fn) => target.onDisconnect.hasListener(fn) };
+        }
+        if (key === 'onMessage') {
+          return { addListener: (fn) => { record.messageHandlers.push(fn); target.onMessage.addListener(fn); },
+            removeListener: (fn) => target.onMessage.removeListener(fn), hasListener: (fn) => target.onMessage.hasListener(fn) };
         }
         const value = target[key];
         return typeof value === 'function' ? value.bind(target) : value;
@@ -1131,6 +1135,39 @@ test('disconnect: a late FRAME of a replaced port is ignored', async () => {
   assert.throws(() => oldHostEnd.postMessage(captionsFrame('tab', [row('z', 'from the old port')])), /disconnected/);
   await env.browser.settle();
   assert.deepEqual(env.shown(), before);
+  // The fake refuses to deliver through a closed port, so the racing frame is replayed through the handler the overlay
+  // registered on the OLD port: it must not reach the UI of the port that replaced it.
+  const stale = env.spy.log.ports[0];
+  assert.equal(stale.messageHandlers.length, 1, 'the overlay registered one message handler on the old port');
+  for (const handler of stale.messageHandlers) handler(captionsFrame('tab', [row('z', 'from the old port')], { epoch: 9 }));
+  await env.browser.settle();
+  assert.deepEqual(env.shown(), before, 'the late frame of the replaced port changed nothing');
+  await env.send(captionsFrame('tab', [row('b', 'current'), row('c', 'next')], { epoch: 9 }));
+  assert.deepEqual(env.rows('tab'), [['final', 'current'], ['final', 'next']], 'the current port still drives the UI');
+});
+
+test('bye: a late captions frame of the detached port draws nothing, so the overlay is never resurrected over the page', async () => {
+  const env = await boot();
+  await env.start();
+  await env.send(captionsFrame('tab', [row('a', 'first')]));
+  assert.equal(env.hostElement()?.isConnected, true);
+  const stale = env.spy.log.ports[0];
+  await env.send(BYE);
+  assert.equal(env.hostElement(), null, 'bye removed the UI');
+  // A captions frame that the host had already posted when it said bye arrives afterwards, on the same (old) port.
+  for (const handler of stale.messageHandlers) handler(captionsFrame('tab', [row('z', 'late')], { epoch: 5 }));
+  await env.browser.settle();
+  assert.equal(env.hostElement(), null, 'no host element came back');
+  assert.equal(env.document.querySelectorAll('interp-live-captions').length, 0);
+  assert.equal(env.document.listenerCount, 0, 'no document listener came back');
+  assert.equal(env.browser.clock.pending(), 0, 'no timer came back');
+  assert.equal(env.listenerCount(), 1, 'the message listener stays for the next lane start');
+
+  await env.attach();   // and the next run starts clean
+  assert.equal(env.ports.length, 2);
+  await env.send(styleFrame());
+  await env.send(captionsFrame('tab', [row('a', 'again')], { epoch: 5 }));
+  assert.deepEqual(env.rows('tab'), [['final', 'again']], 'the late frame left no dismissal or row behind');
 });
 
 test('orphan: a frame that arrives after chrome.runtime.id is gone removes the UI, the timers and the listener without throwing', async () => {

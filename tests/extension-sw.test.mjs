@@ -149,7 +149,7 @@ function observe(adapter, log, hooks) {
 function makeEnv({ browserOptions = {}, stubOptions = {} } = {}) {
   const browser = createFakeBrowser({ messages: { menuOpen: 'Interpret this tab' }, ...browserOptions });
   const stub = createStubHost(browser, stubOptions);
-  const env = { browser, stub, log: [], hooks: {}, sw: null, starts: [], attaches: [], injected: [] };
+  const env = { browser, stub, log: [], hooks: {}, sw: null, starts: [], counts: [], attaches: [], injected: [] };
   browser.onCreateOffscreen = (context) => stub.attach(context);
   // The overlay stand-in: every content script created answers content/overlay-attach and records it.
   const overlay = (context) => {
@@ -169,6 +169,8 @@ function makeEnv({ browserOptions = {}, stubOptions = {} } = {}) {
     env.sw.register();
     // Captured in the same synchronous turn as register(): proves the nine listeners are registered synchronously.
     env.starts.push([...browser.sw.context.listeners.keys()].sort());
+    // ... and how many listeners each event got: the list above only names the events.
+    env.counts.push(Object.fromEntries([...browser.sw.context.listeners].map(([name, list]) => [name, list.length])));
   });
   env.panel = browser.createContext('panel', { windowId: 1 });
   env.send = (context, type, payload) => context.chrome.runtime.sendMessage(makeMessage(type, payload));
@@ -212,6 +214,9 @@ test('register() adds exactly the nine listeners of 6.1 synchronously, and no ru
   assert.equal(env.starts[0].length, 9);
   assert.ok(!env.starts[0].includes('runtime.onConnect'));
   assert.ok(!env.starts[0].includes('commands.onCommand'));
+  // Nine events is not nine listeners: a second registration on one event would run its handler twice per click.
+  assert.deepEqual(env.counts[0], Object.fromEntries(expected.map((name) => [name, 1])), 'exactly one listener per event');
+  assert.equal(Object.values(env.counts[0]).reduce((sum, count) => sum + count, 0), 9);
   assert.deepEqual(Object.keys(env.sw.handlers).sort(), ['onActionClicked', 'onInstalled', 'onMenuClicked', 'onStartup',
     'onStorageChanged', 'onTabActivated', 'onTabRemoved', 'onTabUpdated']);
 });
@@ -449,6 +454,43 @@ test('ensureOffscreen: ten concurrent calls create ONE document with reasons exa
   assert.ok(answers.every((answer) => answer.hostId === 'h-stub'));
   await env.sw.ensureOffscreen();   // an existing document is found with getContexts, not recreated
   assert.equal(env.calls('offscreen.createDocument'), 1);
+});
+
+test('closeHost runs inside the same mutex: an ensureOffscreen that begins during a close waits and gets a fresh document', async () => {
+  const env = makeEnv();
+  await env.sw.ensureOffscreen();
+  assert.equal(env.stub.creations, 1);
+  const gate = deferred();
+  env.hooks['offscreen.closeDocument'] = async (real, ...args) => { await gate.promise; return real(...args); };
+  const closing = env.sw.closeHost({ except: null });
+  await env.browser.settle();
+  assert.equal(env.calls('offscreen.closeDocument'), 1, 'the close is blocked inside closeDocument');
+  const ensuring = env.sw.ensureOffscreen();
+  await env.browser.settle();
+  assert.equal(env.stub.creations, 1, 'the ensure did not run against the document that is being closed');
+  gate.release();
+  assert.equal(await closing, true);
+  const { hostId } = await ensuring;
+  assert.equal(typeof hostId, 'string');
+  assert.ok(env.browser.offscreenDocument, 'a document exists after the ensure resolved');
+  assert.equal(env.stub.creations, 2, 'the ensure waited for the close and created a fresh document');
+});
+
+test('closeHost waits for an ensureOffscreen that is still creating: the close is never lost under the new document', async () => {
+  const env = makeEnv();
+  const gate = deferred();
+  env.hooks['offscreen.createDocument'] = async (real, ...args) => { await gate.promise; return real(...args); };
+  const ensuring = env.sw.ensureOffscreen();
+  await env.browser.settle();
+  assert.equal(env.calls('offscreen.createDocument'), 1, 'the ensure is blocked inside createDocument');
+  const closing = env.sw.closeHost({ except: null });
+  await env.browser.settle();
+  assert.equal(env.calls('offscreen.closeDocument'), 0, 'the close waits for the ensure instead of running against an empty slot');
+  gate.release();
+  await ensuring;
+  assert.equal(await closing, true);
+  assert.equal(env.calls('offscreen.closeDocument'), 1);
+  assert.equal(env.browser.offscreenDocument, null, 'the close ran AFTER the ensure and removed the document it created');
 });
 
 test('a "single offscreen document" refusal is treated as "it exists"; any other createDocument error is HOST_UNAVAILABLE', async () => {
@@ -712,6 +754,69 @@ test('CANCELLATION 3: sw/lane-stop between the mint and the host answer: the hos
     assert.equal(env.browser.captures.has(7), false, 'the capture was released');
     assert.equal(env.session()[STORAGE_KEYS.lastStop], undefined);
   }
+});
+
+// 6.3 step 0: after EVERY await the start checks for a stop. The three cases below cover the awaits before any host
+// exists (settings and key, tabs.get, the arm lookup); a stop that lands there must end the start before it can create
+// an offscreen document for a run the user already cancelled (only the 15 s initial grace would close it again).
+test('CANCELLATION 4: sw/lane-stop while the settings and the key are read ends in START_CANCELLED before any tab lookup', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  const gate = deferred();
+  env.hooks['storage.local.get'] = async (real, ...args) => { await gate.promise; return real(...args); };
+  env.log.length = 0;
+  const start = env.start('tab', 7);
+  await env.browser.settle();
+  assert.equal(env.calls('storage.local.get'), 1, 'blocked inside the settings read');
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  gate.release();
+  assert.deepEqual(await start, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.calls('tabs.get'), 0, 'the start ended before it looked at the tab');
+  assert.equal(env.calls('storage.session.get'), 0, 'and before the arm lookup');
+  assert.equal(env.calls('offscreen.createDocument'), 0);
+  assert.equal(env.browser.offscreenDocument, null, 'a cancelled start created no document');
+  assert.equal(env.stub.count('host/lane-start'), 0);
+});
+
+test('CANCELLATION 5: sw/lane-stop while tabs.get is pending ends in START_CANCELLED before the arm lookup and any host work', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  const gate = deferred();
+  env.hooks['tabs.get'] = async (real) => { await gate.promise; return real(); };
+  env.log.length = 0;
+  const start = env.start('tab', 7);
+  await env.browser.settle();
+  assert.equal(env.calls('tabs.get'), 1, 'blocked inside tabs.get');
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  gate.release();
+  assert.deepEqual(await start, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.calls('storage.session.get'), 0, 'the start ended right after tabs.get, before it asked whether the tab is armed');
+  assert.equal(env.calls('offscreen.createDocument'), 0);
+  assert.equal(env.browser.offscreenDocument, null, 'a cancelled start created no document');
+  assert.equal(env.calls('tabCapture.getMediaStreamId'), 0);
+  assert.equal(env.stub.count('host/lane-start'), 0);
+});
+
+test('CANCELLATION 6: sw/lane-stop while the arm lookup is pending ends in START_CANCELLED before any host work', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  const gate = deferred();
+  env.hooks['storage.session.get'] = async (real, ...args) => { await gate.promise; return real(...args); };
+  env.log.length = 0;
+  const start = env.start('tab', 7);
+  await env.browser.settle();
+  assert.equal(env.calls('storage.session.get'), 1, 'blocked inside the arm lookup');
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  gate.release();
+  assert.deepEqual(await start, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.calls('runtime.getContexts'), 0, 'the start ended before it looked for a host');
+  assert.equal(env.calls('offscreen.createDocument'), 0);
+  assert.equal(env.browser.offscreenDocument, null, 'a cancelled start created no document');
+  assert.equal(env.calls('tabCapture.getMediaStreamId'), 0);
+  assert.equal(env.stub.count('host/lane-start'), 0);
 });
 
 test('a stop with no host at all answers ok, and a stop after the worker was killed still forwards to the host', async () => {
@@ -1006,10 +1111,16 @@ test('sw/host-idle closes only when no start is in flight, no panel is connected
   gate.release();
   assert.deepEqual(await start, { ok: true });
 
+  // Each guard alone: the lane that the start above left running must be off while the panel is the only reason to stay
+  // open, or the running lane would answer closed:false by itself and the panel check would never be exercised.
+  env.stub.lanes.mic = 'off';
   env.stub.panels = 2;
   assert.deepEqual(await idle(), { ok: true, closed: false }, 'a panel is connected');
+  assert.ok(env.browser.offscreenDocument, 'the document was NOT closed under a connected panel');
   env.stub.panels = 0;
+  env.stub.lanes.mic = 'running';
   assert.deepEqual(await idle(), { ok: true, closed: false }, 'a lane is running');
+  assert.ok(env.browser.offscreenDocument, 'the document was NOT closed under a running lane');
   env.stub.lanes.mic = 'off';
   const done = await idle('panel-gone');
   assert.deepEqual(done, { ok: true, closed: true });
@@ -1021,6 +1132,27 @@ test('sw/host-idle closes only when no start is in flight, no panel is connected
   assert.equal(lastStop.reason, 'panel-gone');
   assert.equal(lastStop.v, 1);
   assert.equal(JSON.stringify(lastStop).includes(KEY), false);
+});
+
+test('sw/host-idle never closes the document under a panel that reconnected after the grace stopped the lanes', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  const { hostId } = await env.sw.ensureOffscreen();
+  // The 3 s grace fired with no panel: the host stopped its lanes and asks the worker to close. In the same second the
+  // panel opened and connected, so both lanes are off and nothing is starting, and a panel is the ONLY reason to stay.
+  env.stub.lanes.mic = 'off';
+  env.stub.panels = 1;
+  const offscreenSender = env.browser.contexts().find((context) => context.kind === 'offscreen');
+  assert.deepEqual(await env.send(offscreenSender, 'sw/host-idle', { hostId, reason: 'panel-gone' }), { ok: true, closed: false });
+  assert.ok(env.browser.offscreenDocument, 'the document stays under the connected panel');
+  assert.equal(env.calls('offscreen.closeDocument'), 0);
+  assert.equal(env.session()[STORAGE_KEYS.host].up, true, 'the host flag still says up');
+  assert.equal(env.session()[STORAGE_KEYS.lastStop], undefined, 'nothing was recorded as stopped');
+
+  env.stub.panels = 0;   // the panel goes away again: now the same request closes
+  assert.deepEqual(await env.send(offscreenSender, 'sw/host-idle', { hostId, reason: 'panel-gone' }), { ok: true, closed: true });
+  assert.equal(env.browser.offscreenDocument, null);
 });
 
 test('sw/host-idle from a host that is already gone writes up:false and the reported reason; a start removes lastStop', async () => {
