@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
 import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import { ERROR_CODES } from '../app/providers/contract.js';
 import { SECRET_PATTERNS } from '../scripts/check-release.mjs';
-import { EXTENSION_PAGES, EXTRA_FILES, KEY_SLOT, buildExtension, lintManifest } from '../scripts/build-extension.mjs';
+import { EXTENSION_PAGES, EXTRA_FILES, KEY_SLOT, OUTPUT_MARKER, buildExtension, lintManifest } from '../scripts/build-extension.mjs';
 import { checkI18n } from '../scripts/check-i18n.mjs';
 
 // New implementation of docs/extension.md §11.1 (group A, M3); no legacy code is ported.
@@ -443,7 +443,8 @@ async function outputFindings({ sourceRoot, outRoot }) {
   };
 
   const TOP = new Set(['manifest.json', 'styles.css', '_locales', 'app', 'extension', 'icons']);
-  for (const path of files) {
+  // The build's ownership marker is the one allowed top-level dotfile: build metadata, never listed in result.files (10.2 step 4).
+  for (const path of files.filter((name) => name !== OUTPUT_MARKER)) {
     const segments = path.split('/');
     if (!TOP.has(segments[0])) findings.push(`OUT_TOP_LEVEL:${path}`);
     if (segments.some((segment) => segment.startsWith('.'))) findings.push(`OUT_DOTFILE:${path}`);
@@ -560,7 +561,9 @@ test('the real repository builds into a temp directory and the result satisfies 
   assert.deepEqual(result.files, [...result.files].sort(), 'files are sorted');
   assert.equal(new Set(result.files).size, result.files.length, 'files are unique');
   assert.ok(result.files.every((path) => !path.startsWith('/') && !path.includes('\\') && !path.includes('..') && !path.startsWith('.')), 'files are relative POSIX paths');
-  assert.deepEqual(result.files, await listFiles(out), 'result.files is exactly what is on disk');
+  const onDisk = await listFiles(out);
+  assert.ok(onDisk.includes(OUTPUT_MARKER), 'the build leaves its ownership marker');
+  assert.deepEqual(result.files, onDisk.filter((path) => path !== OUTPUT_MARKER), 'result.files is exactly what is on disk, apart from the marker');
 });
 
 test('the built folder has the layout of section 3.2: manifest paths exist, imports resolve, no tests/docs/scripts/dotfiles/web-app entry, secrets absent', async () => {

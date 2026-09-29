@@ -8,7 +8,7 @@
 // scripts/stage-release.mjs it is dependency-free, prints fixed codes and counts only (never file
 // contents, never a key), and refuses anything unexpected instead of guessing.
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -29,6 +29,13 @@ export const ALLOWED_PERMISSIONS = Object.freeze(['activeTab', 'contextMenus', '
 export const EXTENSION_PAGES = Object.freeze(['extension/engine/host.html', 'extension/permission/mic-permission.html']);
 export const KEY_SLOT = 'export const BUILTIN_KEYS = Object.freeze([]);';
 export const KEY_FILE = 'extension/lib/builtin-key.js';
+/**
+ * The build's own ownership proof, written into every output (not part of `files`, not zipped). A folder is replaced
+ * only when it carries this exact file: a manifest fingerprint alone is not specific, because '__MSG_extName__' with
+ * default_locale 'en' is the common i18n convention of countless other extensions, whose source folders must never be wiped.
+ */
+export const OUTPUT_MARKER = '.interp-extension-build';
+const OUTPUT_MARKER_TEXT = 'interp-extension-build/1\n';
 /** Copied whatever the import walk finds: template-literal URLs (`./${language}.json`) and the worklet cannot be followed statically. */
 export const EXTRA_FILES = Object.freeze(['styles.css', 'app/audio/capture-worklet.js', 'app/i18n/ko.json', 'app/i18n/en.json', 'app/i18n/ja.json']);
 export const EXTENSION_CODES = Object.freeze([
@@ -517,6 +524,21 @@ function isInside(base, path) {
   return between !== '' && between !== '..' && !between.startsWith(`..${sep}`) && !isAbsolute(between);
 }
 
+/** The path as the filesystem resolves it: symlinks, the /tmp -> /private/tmp alias and letter case of the deepest existing ancestor. */
+async function canonicalPath(path) {
+  const tail = [];
+  let current = path;
+  for (;;) {
+    try { return join(await realpath(current), ...tail.reverse()); } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw fail('EXTENSION_OUT_INVALID');
+      const parent = dirname(current);
+      if (parent === current) return path;
+      tail.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
 async function validateTargets({ rootPath, out, keyed }) {
   if (typeof out !== 'string' || out === '') throw fail('EXTENSION_OUT_INVALID');
   const outPath = resolve(out);
@@ -539,12 +561,27 @@ async function validateTargets({ rootPath, out, keyed }) {
     const kind = await lstatKind(outPath);
     if (kind === 'link' || (kind !== 'missing' && kind !== 'directory')) throw fail('EXTENSION_OUT_INVALID');
   }
+  // The same rules again on the resolved paths: the checks above compare spellings, so a symlinked ancestor, the /tmp
+  // alias of /private/tmp or a different letter case on a case-insensitive disk could otherwise point into app/ or tests/.
+  const realRoot = await canonicalPath(rootPath);
+  const realOut = await canonicalPath(outPath);
+  const realInsideDist = isInside(join(realRoot, 'dist'), realOut);
+  if (containsRoot(realOut, realRoot) || (isInside(realRoot, realOut) && !realInsideDist) || (keyed && !realInsideDist)) {
+    throw fail('EXTENSION_OUT_INVALID');
+  }
   return { outPath, insideDist };
 }
 
-/** True when `out` holds a previous build of this script: the manifest's own two fingerprints (§10.2 step 4). */
-export async function isOwnOutput(out) {
+/**
+ * True when `out` holds a previous build of this script: it carries OUTPUT_MARKER with the build's text (§10.2 step 4).
+ * `legacy: true` also accepts a build made before the marker existed (the manifest's two fingerprints); the caller
+ * allows that only inside the repository's own gitignored dist/, never in a folder elsewhere.
+ */
+export async function isOwnOutput(out, { legacy = false } = {}) {
   try {
+    const marker = join(out, OUTPUT_MARKER);
+    if (await lstatKind(marker) === 'file') return await readFile(marker, 'utf8') === OUTPUT_MARKER_TEXT;
+    if (legacy !== true) return false;
     const path = join(out, 'manifest.json');
     if (await lstatKind(path) !== 'file') return false;
     const manifest = JSON.parse(await readFile(path, 'utf8'));
@@ -561,7 +598,7 @@ async function prepareOut({ outPath, clean, insideDist }) {
   }
   if (entries.length === 0) return;
   // Only the directory the build itself recognizes (or, with --clean, a half-written one inside dist/) is replaced; a foreign folder never is.
-  if (await isOwnOutput(outPath) || (clean === true && insideDist)) {
+  if (await isOwnOutput(outPath, { legacy: insideDist }) || (clean === true && insideDist)) {
     await rm(outPath, { recursive: true, force: true });
     await mkdir(outPath, { recursive: true });
     return;
@@ -592,7 +629,7 @@ async function readKeys(path) {
 
 async function defaultZip({ cwd, zipPath }) {
   // An argument array, never a shell string: neither the path nor a file name can be interpreted by a shell.
-  await execFileAsync('zip', ['-q', '-r', '-X', zipPath, '.'], { cwd });
+  await execFileAsync('zip', ['-q', '-r', '-X', zipPath, '.', '-x', OUTPUT_MARKER], { cwd });
 }
 
 async function makeZip({ outPath, zipPath, zipFn }) {
@@ -684,6 +721,8 @@ async function runBuild({ root = projectRoot, out, clean = false, zip = false, b
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, outputs.get(path));
   }
+  // Last, so a build that failed half-way leaves no proof of ownership behind.
+  await writeFile(join(outPath, OUTPUT_MARKER), OUTPUT_MARKER_TEXT);
 
   // Step 8.
   const zipped = zip === true ? await makeZip({ outPath, zipPath, zipFn }) : null;

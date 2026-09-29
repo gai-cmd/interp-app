@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { access, constants, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, relative, sep } from 'node:path';
+import { basename, delimiter, dirname, join, relative, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { crc32, deflateSync, inflateSync } from 'node:zlib';
@@ -17,7 +17,7 @@ import * as build from '../scripts/build-extension.mjs';
 // --root flag, so any child run would otherwise see the real tree). Every fake key is assembled at runtime.
 
 const repoRoot = fileURLToPath(new URL('../', import.meta.url));
-const { buildExtension, computeImportClosure, lintManifest, decodePng, encodePng, downscale4, parseArguments, runCli, isOwnOutput } = build;
+const { buildExtension, computeImportClosure, lintManifest, decodePng, encodePng, downscale4, parseArguments, runCli, isOwnOutput, OUTPUT_MARKER } = build;
 
 // ---------------------------------------------------------------------------------------------------
 // helpers
@@ -32,10 +32,12 @@ async function tempDir(t, prefix = 'interp-extbuild-') {
   return directory;
 }
 
+/** Every file under root; the build's own ownership marker at the top is build metadata, not extension content, so it is left out. */
 async function listTree(root) {
   const files = [];
   async function walk(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (directory === root && entry.name === OUTPUT_MARKER) continue;
       const absolute = join(directory, entry.name);
       if (entry.isDirectory()) await walk(absolute);
       else files.push(relative(root, absolute).split(sep).join('/'));
@@ -317,7 +319,7 @@ test('the script is dependency-free, silent and starts with the design-reference
   assert.ok(specifiers.every((specifier) => specifier.startsWith('node:') || specifier.startsWith('./')), `no npm dependency: ${specifiers.join(' ')}`);
   assert.doesNotMatch(source, /\bconsole\./);
   // zip is spawned with an argument array through execFile, never through a shell.
-  assert.match(source, /execFileAsync\('zip', \['-q', '-r', '-X', zipPath, '\.'\], \{ cwd \}\)/);
+  assert.match(source, /execFileAsync\('zip', \['-q', '-r', '-X', zipPath, '\.', '-x', OUTPUT_MARKER\], \{ cwd \}\)/);
   assert.doesNotMatch(source, /\bshell\s*:/);
   assert.doesNotMatch(source, /(?<![.\w])(?:exec|execSync|spawn|spawnSync)\(/);
   assert.equal(SECRET_PATTERNS.some((pattern) => pattern.test(source)), false, 'no key-shaped literal');
@@ -1522,4 +1524,77 @@ test('the CLI as a child process: argument errors print one code on stderr, exit
     assert.equal(child.stdout, '', args.join(' '));
     assert.equal(await exists(target), false, `${args.join(' ')} built nothing`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------
+// ownership marker and resolved-path checks (verification round, 2026-09-29)
+// ---------------------------------------------------------------------------------------------------
+
+test('ownership: another extension project with the same i18n manifest fingerprint is never wiped', async (t) => {
+  const root = await makeRoot(t);
+  const project = await tempDir(t, 'interp-extbuild-other-');
+  await put(project, 'manifest.json', JSON.stringify({ manifest_version: 3, name: '__MSG_extName__', default_locale: 'en', version: '2.3.0' }));
+  await put(project, '.git/HEAD', 'ref: refs/heads/main\n');
+  await put(project, 'README.md', '# someone else\n');
+  await put(project, 'src/background.js', 'export const mine = 1;\n');
+  await put(project, '_locales/en/messages.json', '{"extName":{"message":"Other"}}');
+  const digest = await treeDigest(project);
+  await rejectsWith(buildExtension({ root, out: project }), 'EXTENSION_OUT_EXISTS');
+  await rejectsWith(buildExtension({ root, out: project, clean: true }), 'EXTENSION_OUT_EXISTS');
+  assert.equal(await treeDigest(project), digest, 'every file of the other project is still there, byte for byte');
+  assert.equal(await isOwnOutput(project), false);
+  assert.equal(await isOwnOutput(project, { legacy: true }), true, 'the legacy fingerprint matches, which is exactly why it is honoured only inside dist/');
+});
+
+test('ownership: every build writes the marker, a build outside dist/ can be rebuilt, and a marker with other text is not trusted', async (t) => {
+  const root = await makeRoot(t);
+  const result = await run(root);
+  assert.equal(await readFile(join(outOf(root), OUTPUT_MARKER), 'utf8'), 'interp-extension-build/1\n');
+  assert.equal(result.files.includes(OUTPUT_MARKER), false, 'metadata, not extension content');
+  const elsewhere = join(await tempDir(t), 'out');
+  const first = await buildExtension({ root, out: elsewhere });
+  await put(elsewhere, 'stray.txt', 'left over');
+  const second = await buildExtension({ root, out: elsewhere });
+  assert.deepEqual(second.files, first.files);
+  assert.equal(await exists(join(elsewhere, 'stray.txt')), false, 'its own previous output is replaced');
+  const forged = await tempDir(t);
+  await put(forged, OUTPUT_MARKER, 'something else\n');
+  await put(forged, 'keep.txt', 'mine');
+  await rejectsWith(buildExtension({ root, out: forged }), 'EXTENSION_OUT_EXISTS');
+  assert.equal(await exists(join(forged, 'keep.txt')), true);
+});
+
+test('ownership: a build made before the marker existed is replaced once inside dist/, never elsewhere', async (t) => {
+  const root = await makeRoot(t);
+  const legacyManifest = JSON.stringify({ manifest_version: 3, name: '__MSG_extName__', default_locale: 'en', version: '0.1.0' });
+  await put(outOf(root), 'manifest.json', legacyManifest);
+  await put(outOf(root), 'extension/lib/old.js', 'export const old = 1;\n');
+  const result = await run(root);
+  assert.equal(await exists(join(outOf(root), 'extension/lib/old.js')), false);
+  assert.equal(await exists(join(outOf(root), OUTPUT_MARKER)), true, 'from now on the marker proves ownership');
+  assert.ok(result.files.includes('manifest.json'));
+  const outside = await tempDir(t);
+  await put(outside, 'manifest.json', legacyManifest);
+  await rejectsWith(buildExtension({ root, out: outside }), 'EXTENSION_OUT_EXISTS');
+});
+
+test('EXTENSION_OUT_INVALID: a symlinked ancestor or the resolved spelling of the root cannot reach app/, scripts/ or tests/', async (t) => {
+  const root = await makeRoot(t);
+  const before = await treeDigest(root, { except: (path) => path.startsWith('dist/') });
+  const links = await tempDir(t);
+  await symlink(root, join(links, 'alias'));
+  for (const out of [join(links, 'alias', 'app', 'evil'), join(links, 'alias', 'scripts', 'evil'), join(links, 'alias', 'tests', 'evil')]) {
+    await rejectsWith(buildExtension({ root, out }), 'EXTENSION_OUT_INVALID', out);
+  }
+  // The root through its resolved spelling (macOS: /var -> /private/var) is the same folder.
+  const { realpath } = await import('node:fs/promises');
+  const realRoot = await realpath(root);
+  if (realRoot !== root) await rejectsWith(buildExtension({ root, out: join(realRoot, 'app', 'evil') }), 'EXTENSION_OUT_INVALID', 'resolved spelling');
+  // A case-insensitive disk (APFS default) reaches the same folder with other letter case.
+  const upper = join(dirname(root), basename(root).toUpperCase());
+  if (upper !== root && await exists(upper)) await rejectsWith(buildExtension({ root, out: join(upper, 'app', 'evil') }), 'EXTENSION_OUT_INVALID', 'letter case');
+  assert.equal(await treeDigest(root, { except: (path) => path.startsWith('dist/') }), before, 'nothing was written into the source tree');
+  // The legitimate out inside dist/ still works through the alias.
+  const ok = await buildExtension({ root, out: join(links, 'alias', 'dist', 'extension') });
+  assert.ok(ok.files.includes('manifest.json'));
 });
