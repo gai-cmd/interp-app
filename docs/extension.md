@@ -1,9 +1,31 @@
 # Chrome side-panel extension — implementation contract
 
-Status: DESIGN CONTRACT, written 2026-09-29 by the architect before any implementation.
-Audience: four engineers (groups A, B, C, D, section 15) who implement disjoint parts in parallel from
-this document alone. If the code and this document disagree, the document wins until group A's
-"docs polish" pass reconciles them (section 15, group A).
+## Status
+
+IMPLEMENTED on 2026-09-29 and committed in three steps:
+- `2f6901a` session: the opt-in isolated Live slot (`isolated` on `createSessionManager` and `createAppConfig`; `app/config.js`, `app/engine/session-manager.js`, `tests/session-isolated.test.mjs`). These are the only edits under `app/`.
+- `43febec` extension: `extension/**` (46 files, 3.1), `scripts/build-extension.mjs`, the repo-gate edits of section 12, 23 test files and 4 fixtures under `tests/`, and this document.
+- `7773fbc` test hardening: a mutation study of the 12 MUST rules found 13 real test gaps; tests only, no source change.
+
+Verification state:
+- The whole suite (`node --test tests/*.test.mjs`) was green at delivery: 1789 tests, 1789 pass (orchestrator run of 2026-09-29 20:22, after the last source change) and again after this docs polish; the 24 extension-related files alone count 778 tests (11.1).
+- NOTHING has been verified in a real Chrome or with real audio (owner rule: no sound, meeting in progress). Every statement about Chrome's behavior stays tagged `[verified-doc]`, `[observed]` or `[assumption A#]`, and all 51 checks of section 13 are NOT TESTED BY CLAUDE. A green suite proves the protocol, the state machines, the file tree and the build (fakes, 11.2 and 11.3), not Chrome behavior.
+
+Document state: the text below began as the DESIGN CONTRACT written by the architect before any implementation, for four engineers (groups A, B, C, D, section 15) who implement disjoint parts in parallel from this document alone. The docs polish pass of 2026-09-29 (15.3 item 7) reconciled it with the delivered code, section by section, using scripts that diff the document against the code (file list, exports, message catalog, element ids, dictionaries, manifest, build API, check-i18n patch, tests). From here on the document describes the delivered extension: a difference between code and document is a defect in one of them, and the tests pin the code. Section 15 is kept as history.
+
+Deviations from the first draft (delivered behavior that differs from the original contract text; each is now written into the section named):
+1. Panel accessibility (8.2.1, 8.2.6, 8.2.8, 13.31, 13.33, 13.47-13.49): Start is never natively `disabled` but `aria-disabled="true"` with its click ignored, so it stays focusable and its description reachable; the per-lane status lines `#tab-status` / `#mic-status` are plain text, not live regions (the pill and the notices announce state); the two caption previews are `role="region"` with an `aria-label`; the muted mute button shows a slashed speaker (a shape cue), not only a colour.
+2. Backup model (5.11, 8.2.3, 9.2): the warning is a persistent live region `#<lane>-route-note` (`ext.route.fallbackNote`); `ext.route.fallback` is a short label ("Backup model") that stays on the route line next to the model id.
+3. Dictionaries (9.2, 9.6): 117 `ext.*` keys, not 113: `ext.status.off` (a switched-off lane no longer reads "Ready to start"), `ext.route.fallbackNote`, `ext.key.savedBrowser` (the app key's Korean text is in a formal register) and `ext.options.modelLive` (the tab select does not tag its model "(default)"). The caption-lines and auto-hide labels state the ranges (1-6, 0-60); `ext.permission.title` (en) reads "Allow microphone" like the button; `ext.menu.open` and the `_locales` `menuOpen` read "Open the interpreter panel on this tab" (the click opens the panel, it does not start interpretation).
+4. Microphone permission page (8.4): `#perm-help` is a persistent `role="status"` region whose text is written and cleared, never hidden; `#perm-request` and the panel's `#btn-mic-allow` are named `ext.permission.allowButton` (only the panel's icon button `#btn-mic-permission` keeps `permission.request`).
+5. Options (7.3, 8.3): the two number fields reject an out-of-range or fractional value (the stored value comes back, nothing is written, no "Saved.").
+6. Idle report (5.8, 6.9): a `sw/host-idle` answered `{closed:false}`, or two failed sends, makes the host's panel hub repeat the report 3 s, 6 s and 12 s later, at most 3 times; a panel port cancels and resets the chain (an idle offscreen document can no longer stay for good).
+7. Stop races (6.3, 5.6): a start of a lane whose previous start is cancelled but still unwinding answers `LANE_STOPPING` (it used to answer `ALREADY_RUNNING`, which the panel ignores, so the press vanished); when a Stop overtakes a refused start, `START_CANCELLED` wins over the refusal.
+8. Panel behavior (8.2.3, 8.2.5): a stale `MICROPHONE_DENIED` clears the moment the permission is granted; Start on a page known to be unsupported is a silent no-op for the tab lane (the arm note is the one explanation), the microphone lane of the same Start still runs; arm notes are dropped where the lane's own notice already says what to do.
+9. Overlay (8.5.2): the host pins `direction: ltr` and `unicode-bidi: isolate`, every row carries `dir="auto"`, and the top-fade mask has a second opaque layer over the close button's corner.
+10. Structure (5.1, 5.5, 5.6, 6, 10.1): the start/stop state machine both lanes share is `createLaneController` in `engine/lane-engine.js`; `lane-host.js` also exports `createRealmClock` and `createHostEnv`; `worker-timers.js` also exports `createEngineClock`; `host/lane-start` also applies the message's mute, captions, style and volume to the host settings; the build script exports `EXTRA_FILES`, `EXTENSION_CODES`, `isOwnOutput`, `parseArguments` and `runCli`, and scans for secrets BEFORE it writes anything.
+11. i18n failure (9.5, 13.51): when the dictionaries fail to load, the panel and the options page show the three-key boot dictionary and retry silently (2 s, 6 s, 18 s); there is no Retry button (known, not fixed).
+12. Tests (11.1): the file-fetch shim of `extension-integration` derives the checkout root from its own URL instead of the folder name `interp-app`, so the suite passes in any checkout or worktree.
 
 How to read this document
 - "MUST / MUST NOT" are binding. "SHOULD" is a default that needs a written reason to deviate.
@@ -14,11 +36,12 @@ How to read this document
 - Nothing in this project has been run in a real browser with real audio. The owner is in a no-sound
   regime (BRIEF "HARD RULE"): everything that needs real tab capture, a real microphone or audible output is
   written into the manual checklist (section 13) and is marked NOT TESTED BY CLAUDE.
-- Repo facts below were re-read by the architect on 2026-09-29: `node --test tests/*.test.mjs` reports
-  1011 tests / 1011 pass, `node scripts/check-i18n.mjs` reports `I18N_OK languages=3 keys=810 files=86`, and
-  `git apply --check` of the prepared check-i18n patch succeeds.
-- Working tree state this design builds on: `app/config.js` and `app/engine/session-manager.js` already carry the
-  opt-in `isolated` option (uncommitted edits by the orchestrator). Nothing else under `app/` changes (D14).
+- Repo facts at DESIGN time (kept as history; the delivered numbers are in the Status block and in 11.1): the architect
+  re-read on 2026-09-29 that `node --test tests/*.test.mjs` reported 1011 tests / 1011 pass, that
+  `node scripts/check-i18n.mjs` reported `I18N_OK languages=3 keys=810 files=86`, and that `git apply --check` of the
+  prepared check-i18n patch succeeded. At delivery the checker prints `I18N_OK languages=3 keys=810 files=123`.
+- Working tree state this design builds on (committed since as `2f6901a`): `app/config.js` and `app/engine/session-manager.js`
+  already carried the opt-in `isolated` option. Nothing else under `app/` changes (D14).
 - Revision 2 (2026-09-29, after three independent reviews: MV3 security, testability/gates, UX/product): start/stop
   cancellation (5.6, 6.3, 6.11), live caption attach and mic-caption privacy (5.6.3, 6.6, 6.7, 8.5), panel-close
   disclosure and stop reasons (5.8, 6.9), lane-aware error wording, the quota copy family and the arming copy split
@@ -26,6 +49,9 @@ How to read this document
   corrected dependency graph (11, 15). Appendix B maps every review issue to the place that resolves it; Appendix C
   carries the prototype test that group A starts from. Anything the reviews proved unworkable in D1-D14 is listed in
   section 14.4, not silently changed.
+- Revision 3 (2026-09-29, after implementation and a second review round on the built extension): the docs polish of 15.3
+  item 7. Sections keep their numbers; the text now describes the delivered code (Status block at the top for the list of
+  deviations, 11.1 for the delivered test files and counts, 13 for the owner's checklist).
 
 Table of contents
 1. Goal, scope, non-goals, screenshot mapping
@@ -42,7 +68,7 @@ Table of contents
 12. Repo-gate edits
 13. Manual verification checklist (NOT TESTED BY CLAUDE)
 14. Risks, open questions, assumptions register
-15. Task breakdown (groups A-D)
+15. Task breakdown (groups A-D; historical: delivered)
 Appendix A: weakest points of this design
 Appendix B: review ledger (issue -> resolution)
 Appendix C: prototype test for group A (`tests/extension-i18n.test.mjs`)
@@ -128,16 +154,16 @@ contract between group D (HTML) and group C (controller). All ids exist in `exte
 | 12 | Checkbox "페이지에 자막 표시" (mic) | `#mic-captions` (checkbox) | `lanes.mic.captions`, OFF by default (7.1). Mic captions are drawn ONLY on the tab you are looking at (the active tab of the last focused window, 6.7), never on background tabs; the hint `#mic-captions-hint` (`ext.captions.micHint`) says so. Live like the tab checkbox. |
 | 13 | Note "번역된 음성이 음소거되어 있습니다…" | `#mute-note` (`p`, persistent live region, key `ext.mic.mutedHint`) | Text present while `speechMuted` and at least one lane is enabled (8.2.6 live-region rule). Placed between the cards and the button row (not inside the mic card) because mute is global. While the voice is ON and the mic lane is enabled, `#echo-note` (`ext.sound.echoWarning`) takes its place. |
 | 14 | Link "사용 방법: 통화 전에 할 일" | `#howto` (`details`), `summary` text `ext.howto.link`, body `ol#howto-steps` | Disclosure instead of navigation (no extra page). Steps: `ext.howto.keepOpen`, `sim.headphonesStart`, `ext.howto.step2`, `ext.howto.step3`, `ext.howto.step4`, `ext.howto.step5` (the voice plays only on this computer), `ext.howto.stepCall` (which lane to use for the other side of a call). |
-| 15 | Button "Start" | `#btn-start` (`button.btn.btn-primary`) | Text `common.start` when no lane is starting/running, `common.stop` otherwise, `common.cancel` while the ONLY thing happening is the wait for the toolbar-icon click (`awaiting`). Start = start every enabled lane that is not running; Stop = stop all lanes, cancel every in-flight start (`sw/lane-stop`, 6.11) and cancel a pending arm. Disabled while no key is stored. The row is sticky at the bottom of the panel (8.2.2). |
+| 15 | Button "Start" | `#btn-start` (`button.btn.btn-primary`) | Text `common.start` when no lane is starting/running, `common.stop` otherwise, `common.cancel` while the ONLY thing happening is the wait for the toolbar-icon click (`awaiting`). Start = start every enabled lane that is not running; Stop = stop all lanes, cancel every in-flight start (`sw/lane-stop`, 6.11) and cancel a pending arm. Not available while no key is stored or no lane is enabled: the button then carries `aria-disabled="true"` (NEVER the native `disabled` attribute, so it stays focusable and its `aria-describedby` reason stays reachable) and a click on it is ignored (8.2.6). The row is sticky at the bottom of the panel (8.2.2). |
 | 16 | Mic-permission icon button | `#btn-mic-permission` (`button.btn.icon-btn`, `aria-label` = `permission.request`) + `#mic-permission-status` (`p`, `role="status"`) + `#btn-mic-allow` (`button.btn`, visible text `ext.permission.allowButton`, shown while the state is not `granted`) | Both buttons open the permission tab (D5) via `sw/permission-open` (the text button exists because the icon-only button is easy to miss); the status line shows `permission.title · permission.<granted, denied or prompt>` from `navigator.permissions.query({name:'microphone'})` and its `onchange`. |
-| 17 | Mute-toggle icon button (red when muted) | `#btn-mute` (`button.btn.icon-btn`, `data-muted`, `aria-label` AND `title` = `ext.sound.on` when muted / `ext.sound.off` when audible) | Toggles the global `speechMuted` (default true). The labels name what the button controls (the INTERPRETED speech, not the tab's sound); same label-swap pattern as the web app's sound button (an action label, so no `aria-pressed`); muted = danger styling via `data-muted="true"` plus the `#mute-note` text. |
+| 17 | Mute-toggle icon button (red when muted) | `#btn-mute` (`button.btn.icon-btn`, `data-muted`, `aria-label` AND `title` = `ext.sound.on` when muted / `ext.sound.off` when audible) | Toggles the global `speechMuted` (default true). The labels name what the button controls (the INTERPRETED speech, not the tab's sound); same label-swap pattern as the web app's sound button (an action label, so no `aria-pressed`); muted = danger styling via `data-muted="true"`, a slash across the speaker (a second icon path shown only while muted, so the state is a shape and not only a colour, 8.2.2) plus the `#mute-note` text. |
 | 18 | Button "옵션" | `#btn-options` (`button.btn`, key `ext.options.title`) | `runtime.openOptionsPage()`. |
 | 19 | Footnote "둘을 함께 켜면 …두 배" | `#usage-note` (`p`, key `ext.usage.twoSessions`) | Shown while both `#tab-enabled` and `#mic-enabled` are checked (or both lanes run). Text states the doubling is not measured (D12). |
 
 Additions that are not in the screenshot but are required by the design:
-`#key-missing` (notice + `#btn-key-options`), `#no-lane-note` (no lane enabled), `#tab-arm-note` (needs-arm state, D2), `#tab-tabline` (title of the captured tab), per-lane `#tab-status`/`#mic-status` (`role="status"`), `#tab-route`/`#mic-route`,
+`#key-missing` (notice + `#btn-key-options`), `#no-lane-note` (no lane enabled), `#tab-arm-note` (needs-arm state, D2), `#tab-tabline` (title of the captured tab), per-lane `#tab-status`/`#mic-status` (plain text, NOT live regions: the pill and the notices already announce every state change), `#tab-route`/`#mic-route` (route label and model id, not live), `#tab-route-note`/`#mic-route-note` (persistent `role="status"` regions holding the backup-model warning `ext.route.fallbackNote`),
 `#tab-output`/`#mic-output`, `#tab-gap`/`#mic-gap` (input/audio/reception gap line: the visible symptom of a starved uplink, K5), `#tab-level`/`#mic-level` (`meter`), `#tab-notice`/`#mic-notice` (`role="alert"`), per-lane caption preview
-`#tab-preview`/`#mic-preview` (aria-live off), `#tab-apply-next` / `#mic-apply-next` (`p`, inside the lane card, right below the language select it refers to), `#stop-note` (why the last run ended: panel closed / engine lost), `#close-note` (`ext.panel.closeStops`, shown while any lane runs),
+`#tab-preview`/`#mic-preview` (`role="region"`, focusable, `aria-live` off), `#tab-apply-next` / `#mic-apply-next` (`p`, inside the lane card, right below the language select it refers to), `#stop-note` (why the last run ended: panel closed / engine lost), `#close-note` (`ext.panel.closeStops`, shown while any lane runs),
 `#echo-note` (`ext.sound.echoWarning`), `#mic-captions-hint`, `#btn-mic-allow`.
 
 ---------------------------------------------------------------------------------------------------
@@ -267,7 +293,7 @@ None of these reopens a D-decision; each fills a gap the decisions leave open. A
 | F12 | A keyed build is allowed only into `dist/`; an unkeyed build is secret-scanned by the build itself. | The check-release gate does not cover `dist/extension`. | 10.6 |
 | F13 | Every lane start carries a cancel flag (host: per-run token checked after every await; SW: in-flight map). Stop goes panel -> `sw/lane-stop` -> `host/lane-stop`, and "stop wins" even when it lands before the host exists. | Review: a Stop during `getUserMedia`, the resume wait or `ensureOffscreen` was lost, leaving live capture, a spent Live session and a stale panel. | 5.6, 6.3, 6.11 |
 | F14 | The overlay shadow root is CLOSED (D6 said open), mic captions go only to the tab you are looking at and default to OFF, and the privacy copy says captions are drawn into the page. | Review: an open root lets any page script read the user's own translated speech. See 14.4 change 1. | 5.6.3, 7.1, 8.5 |
-| F15 | The SW serializes `ensureOffscreen`, `closeHost` and start orchestration with one promise-chain mutex; `sw/host-idle` never closes while a start is in flight; a zombie offscreen document is closed and recreated once. | Review: a close between mint and send turned a valid Start into `HOST_UNAVAILABLE`. | 6.3.1, 6.9 |
+| F15 | The SW serializes `ensureOffscreen`, `closeHost` and start orchestration with one promise-chain mutex; `sw/host-idle` never closes while a start is in flight (the host then repeats its report 3 s, 6 s and 12 s later, at most 3 times: 5.8); a zombie offscreen document is closed and recreated once. | Review: a close between mint and send turned a valid Start into `HOST_UNAVAILABLE`. | 6.3.1, 6.9 |
 | F16 | The host tells the SW WHY it went idle (`panel-gone`, `initial-grace`); the SW writes `interp.lastStop.v1`; a reopened panel explains it; `sw/host-probe` reconciles a stale `up` flag. | Review: closing the panel or losing the renderer stopped everything silently. | 4.10, 5.8, 6.11 |
 | F17 | A worker-driven timer seam (`engine/worker-timers.js`) is BUILT in v1 but OFF (`TIMER_MODE = 'realm'`); the gap line in the panel and overlay is the visible symptom of a starved uplink. | Review: K5 was masked by a checklist item that kept the graph audible. | 5.13, 14.1 K5 |
 | F18 | The overlay gets a `status` frame (reconnecting / stopped), so captions never vanish without a reason on the page. | Review: overlay failure UX was invisible. | 4.5, 8.5.3 |
@@ -332,6 +358,8 @@ extension/
   pages.css                            D  shared by options and permission pages
   overlay/overlay.js                   D  classic-script IIFE (8.5)
 ```
+
+Delivered: `git ls-files extension` lists exactly these 46 paths (compared by script on 2026-09-29; `EXPECTED_FILES` in `tests/extension-static.test.mjs` pins the same list). No file was added, renamed or dropped. Exports beyond the names in the later sections are listed where the module is described (3.5, 4.3, 4.6, 5.1, 7.2).
 
 Files outside `extension/` that belong to this work (owner in brackets):
 
@@ -493,6 +521,8 @@ The two sides are pinned WITHOUT a cross-group import (review: the old wording m
 `tests/extension-tree.test.mjs` (A, M3 only) pins `protocol.js` against the same literals and against the `WIRE`
 text extracted from `overlay.js` (same technique as `tests/appearance-boot.test.mjs`).
 
+Also exported by `protocol.js`: `SENDER_ROLES` (the seven roles of 4.4), `PROTOCOL_CODES` (`INVALID_MESSAGE`, `FORBIDDEN`, `UNKNOWN_TYPE`, `INTERNAL`), `MESSAGE_CATALOG` (the 13 rows of 4.2, each `{target, roles, errors}`) and `MESSAGE_TYPES`; the message, sender and frame functions are in 4.2-4.5. `lib/constants.js` (imports nothing) exports the enum lists and range rules both validators share: `VOICE_GENDERS`, `TARGET_LANGUAGES`, `UI_LANGUAGES`, `CAPTION_SIZE`, `clampCaptionSize`, `CAPTION_POSITIONS`, `CAPTION_DISPLAYS`, `ORIGINAL_VOLUME`, `STYLE_LIMITS`, `DEFAULT_STYLE`, `normalizeStyle`, `isValidStyle`, the patterns `MACHINE_CODE_PATTERN`, `KEY_PATTERN`, `HOST_ID_PATTERN` with `isMachineCode`, `MODEL_MAX_CHARS`, the LaneState vocabulary (`LANE_PHASES`, `ENGINE_STATUSES`, `OUTPUT_STATES`, `ROUTES`, `GAP_KINDS`, `OVERLAY_STATES`, `STATUS_PHASES`, `CAPTION_ROLES`, `CAPTION_STATUSES`) and the helpers `isPlainObject` and `deepFreeze`.
+
 ---------------------------------------------------------------------------------------------------
 
 ## 4. Protocols
@@ -622,7 +652,8 @@ by itself put anything on a page: the SW compares the old and new settings and r
 createMessageRouter({ runtime, target, handlers, roleOf? }) -> Readonly<{ dispose(): void }>
 // runtime  = adapter.runtime (needs onMessage, id, getURL)
 // target   = the ONE target this context answers to ('sw' | 'offscreen' | 'panel' | 'content')
-// handlers = { [type]: async (message, sender) => responseObject }   // response WITHOUT 'ok': the router adds it
+// handlers = { [type]: async (message, sender, role) => responseObject }   // response WITHOUT 'ok': the router adds it; `message` is the sanitized copy from validateMessage
+// roleOf   = (sender, runtime) => role, default senderRole (a seam for tests)
 ```
 
 `runtime.onMessage` listener contract (each numbered step is tested):
@@ -644,7 +675,7 @@ createMessageRouter({ runtime, target, handlers, roleOf? }) -> Readonly<{ dispos
 | Check (in order) | Result |
 |---|---|
 | `sender?.id !== runtime.id` | `'foreign'` (another extension or a web page via externally_connectable: none exist, but reject anyway) |
-| `origin` = `sender.origin`, else `new URL(sender.url).origin` when `sender.url` is a string that parses, else `null`; `origin` equals the extension origin (`new URL(runtime.getURL('')).origin`) | extension sender: if `sender.url` is a string, classify by its path prefix: `extension/background/` -> `'sw'`; `extension/panel/` -> `'panel'`; `extension/engine/` -> `'offscreen'`; `extension/options/` -> `'options'`; `extension/permission/` -> `'permission'`; anything else -> `'foreign'`. If `sender.url` is NOT a string (`[assumption A23]`: Chrome may leave it undefined for a service worker): `'sw'` when `sender.tab === undefined` and `sender.documentId === undefined` and `sender.frameId === undefined`, else `'foreign'`. |
+| `origin` = `sender.origin`, else the origin of `sender.url` when it is a string that parses, else `null`; `origin` equals the extension origin (`runtime.getURL('')`). Origins are compared as `scheme://host` (the code does not use `URL.origin`, which reads the string 'null' for a non-special scheme in some runtimes and would make every unparsable origin look like one) | extension sender: if `sender.url` is a string, classify by its path prefix: `extension/background/` -> `'sw'`; `extension/panel/` -> `'panel'`; `extension/engine/` -> `'offscreen'`; `extension/options/` -> `'options'`; `extension/permission/` -> `'permission'`; anything else -> `'foreign'`. If `sender.url` is NOT a string (`[assumption A23]`: Chrome may leave it undefined for a service worker): `'sw'` when `sender.tab === undefined` and `sender.documentId === undefined` and `sender.frameId === undefined`, else `'foreign'`. |
 | `origin` is `null` (no `origin`, unparsable or missing `url`) and `sender.tab === undefined` and `sender.documentId === undefined` and `sender.frameId === undefined` and `sender.id === runtime.id` | `'sw'` (same url-less rule; a content script always has `sender.tab`, so it can never reach this row) |
 | `sender.tab` is defined and `origin` is NOT the extension origin | `'content'` |
 | otherwise | `'foreign'` |
@@ -669,7 +700,7 @@ Port acceptance (host side):
   dispose the new one.
 - Any other port name is ignored (NOT disconnected: another extension page may own it; a `disconnect()` from a
   non-owner only notifies the sender).
-- Frames received on a port are validated the same way as messages; an invalid frame is dropped silently.
+- Frames received on a port are validated the same way as messages; an invalid frame is dropped silently. The validator is `validateFrame(direction, frame)` (directions `panel->host`, `host->panel`, `overlay->host`, `host->overlay`, listed in `FRAME_TYPES` / `FRAME_DIRECTIONS`), which returns `{ok:true, frame}` with a frozen sanitized copy or `{ok:false}`; `makeFrame(type, payload)` builds a frame and throws `INVALID_MESSAGE` for one no receiver would accept; `validateUiState` and `validateLaneState` check the state payload (4.6.1).
 
 Content-script side (overlay): `runtime.onMessage` accepts only `sender.id === chrome.runtime.id`, `sender.tab === undefined`,
 `message.v === 1`, `message.target === 'content'`, `message.type === 'content/overlay-attach'`.
@@ -761,10 +792,10 @@ Input: the frozen `engine.snapshot()` of `app/engine/sim.js` (`status`, `output`
 flag is set by the engine when the uplink queue drops stale frames (`app/engine/sim.js` `onDrop` -> `markGap('input')`), i.e. it
 is the engine's own accounting of a starved uplink and therefore the visible symptom of throttled offscreen timers (K5, 5.13).
 
-Exported constants (`extension/lib/ui-state.js`):
+Exported constants (`extension/lib/ui-state.js`; besides these it exports `laneStateFromSnapshot`, `createIdleLaneState(lane)` and `buildUiState({hostId, seq, speechMuted, lanes})`, and `ACTIVE_PHASES` = `starting|running|reconnecting`, the phases that count as `concurrent`):
 
 ```js
-export const LANE_PHASES = Object.freeze(['off','starting','running','reconnecting','stopping','error']);
+export const LANE_PHASES = Object.freeze(['off','starting','running','reconnecting','stopping','error']);   // re-exported from constants.js
 export const QUOTA_CODES = Object.freeze(['RATE_LIMITED','DAILY_LIMIT','TOKEN_LIMIT','UNKNOWN_429']);
 export const KEY_FAILURE_CODES = Object.freeze(['CREDENTIAL_REQUIRED','CREDENTIAL_MISMATCH','INVALID_KEY','PERMISSION_DENIED']);
 export const EXTENSION_ERROR_CODES = Object.freeze(['TAB_CAPTURE_FAILED','TAB_UNSUPPORTED','TAB_GONE',
@@ -806,7 +837,7 @@ and the generic `error.TIMEOUT` text ("The response timed out. Please retry.") i
   "live": true }
 ```
 
-`buildCaptionFrame({ captions, skippedSegments, lane, lang, epoch, seq, showSource, maxRows, live })` rules:
+`buildCaptionFrame({ captions, skippedSegments, lane, lang, epoch, seq, showSource, maxRows, live })` rules (the same module exports `buildStyleFrame(style)`, the overlay's `style` frame without `showSource`, and `createFrameCoalescer`, 4.7):
 1. `captions` is the engine snapshot's `captions` object or null. Null -> `rows: []`, all gaps false.
 2. Keep rows with `role === 'translation'`; also `role === 'source'` only when `showSource` (source and translation
    rows are NOT paired: role-local segment ids, so rows are shown in first-arrival order, never side by side).
@@ -819,6 +850,7 @@ and the generic `error.TIMEOUT` text ("The response timed out. Please retry.") i
 7. `maxRows` is clamped to `1..LIMITS.maxRows`. The panel uses 4, the overlay uses `style.maxLines`.
 8. Size fit: if `JSON.stringify(frame).length > LIMITS.maxFrameBytes`, drop the OLDEST rows one by one; if a
    single row still does not fit, truncate row texts to 120 chars; the result always fits.
+9. `epoch`, `seq` and `live` come from the caller (the host stamps `seq` at send time; it passes `live = phase === 'running' || phase === 'reconnecting'`); an unknown `lang` is emitted as `'en'` and an unknown `lane` throws `Error{code:'INVALID_REQUEST'}`.
 
 #### 4.6.4 The engine's `MAX_CAPTIONS`-scale data never crosses
 
@@ -903,14 +935,14 @@ offscreen document `[observed]`) and `env` by injection.
 
 | File | Export | Responsibility |
 |---|---|---|
-| `engine/host.js` (ENTRY) | none | `const adapter = createChromeAdapter(); const host = createLaneHost({adapter, env: globalThis-derived, timers: realmClock}); host.start();` — the only side-effect module of the host (with `timer-worker.js`); `env.setTimeout/clearTimeout/now` are the ENGINE clock chosen by `TIMER_MODE` (5.13). |
-| `engine/lane-host.js` | `createLaneHost` | message handlers, lane registry, hubs, coalescers, settings, grace, `sw/host-idle`. |
-| `engine/lane-engine.js` | `createLaneEngine` | one isolated `createAppConfig` + `createSimEngine` per lane run; key install; voice; snapshot access; cleanup. |
+| `engine/host.js` (ENTRY) | none | `const realm = createRealmClock(globalThis); const engine = createEngineClock({ realm, Worker: globalThis.Worker }); createLaneHost({ adapter: createChromeAdapter(), env: createHostEnv(globalThis, engine), timers: realm }).start();` — the only side-effect module of the host (with `timer-worker.js`); `env.setTimeout/clearTimeout/now` are the ENGINE clock chosen by `TIMER_MODE` (5.13). |
+| `engine/lane-host.js` | `createLaneHost`, `createRealmClock`, `createHostEnv` | message handlers, lane registry, hubs, coalescers, settings, grace, `sw/host-idle`; `createRealmClock(scope)` is the realm clock `{setTimeout, clearTimeout, now}` (arrow wrappers, so a native timer never gets a foreign `this`) and `createHostEnv(scope, clock)` builds the `env` of 5.2 from a global scope and the ENGINE clock. |
+| `engine/lane-engine.js` | `createLaneEngine`, `createLaneController` | `createLaneEngine`: one isolated `createAppConfig` + `createSimEngine` per lane run; key install; voice; snapshot access; cleanup. `createLaneController({ lane, env, deps, timers, onChange, acquire, release })`: the start/stop state machine BOTH lanes share (cancel token per run, `abandon`, teardown order of 5.7, `LANE_STOPPING` / `ALREADY_RUNNING` refusal), so the rules of 5.6 exist once; `tab-lane.js` and `mic-lane.js` only supply `acquire` and `release`. |
 | `engine/tab-lane.js` | `createTabLane`, `TAB_CAPTURE_INCLUDE_VIDEO` | tab stream acquisition, graph, platform, engine, tab-ended handling. |
 | `engine/mic-lane.js` | `createMicLane` | microphone platform, engine, permission preflight. |
-| `engine/audio-graph.js` | `createTabAudioGraph` | passthrough + synthetic engine streams (D3). |
+| `engine/audio-graph.js` | `createTabAudioGraph`, `RESUME_TIMEOUT_MS` | passthrough + synthetic engine streams (D3). |
 | `engine/platform-shim.js` | `createLanePlatform` | D4 platform shim. |
-| `engine/worker-timers.js` | `createWorkerTimers`, `TIMER_MODE` | 5.13: worker-driven `setTimeout`/`clearTimeout`/`now` seam for the engine clock; default mode `'realm'` (not switched on). |
+| `engine/worker-timers.js` | `createWorkerTimers`, `createEngineClock`, `TIMER_MODE` | 5.13: worker-driven `setTimeout`/`clearTimeout`/`now` seam for the engine clock; default mode `'realm'` (not switched on). |
 | `engine/timer-worker.js` | none | 5.13: the worker script (entry-like, R10). |
 | `engine/overlay-hub.js` | `createOverlayHub` | overlay port registry and routing. |
 | `engine/panel-hub.js` | `createPanelHub` | panel port registry, hello, broadcast, grace timer. |
@@ -942,9 +974,9 @@ Message handlers (all return response data WITHOUT `ok`; the router adds it):
 
 | type | behavior |
 |---|---|
-| `host/ping` | `{hostId, protocol: 1, lanes:{tab: phase, mic: phase}, tabId: tabLane.facts().tabId, panels: panelHub.count()}` |
-| `host/lane-start` | 5.6.1 / 5.6.2. Returns `{epoch}` or throws `{code}` (router maps a thrown object with a valid `code`). While that lane's phase is `stopping` it throws `LANE_STOPPING` (never `ALREADY_RUNNING`, which is only for `starting`, `running` or `reconnecting`). |
-| `host/lane-stop` | `lane` absent: stop both, else that lane (5.7). Always succeeds, ALSO when the lane is still `starting`: the stop sets the run's cancel flag, so a start that is inside `getUserMedia`, the resume wait or the permission query abandons itself (5.6). A stop that arrives before any start is a no-op (the SW re-sends it after the start answers, 6.3 step 7). |
+| `host/ping` | `{hostId, protocol: 1, lanes:{tab: phase, mic: phase}, tabId: tabLane.facts().tabId, panels: panelHub.count()}` (`tabId` keeps the last run's tab id until the next start, so it is stale after the lane ended; whoever needs to know who WANTS an overlay asks `host/overlay-wanted`, which checks that the lane is active) |
+| `host/lane-start` | 5.6.1 / 5.6.2. Returns `{epoch}` or throws `{code}` (router maps a thrown object with a valid `code`). While that lane's run has its cancel flag set and has not finished unwinding (phase `stopping`, also a start still inside its own `getUserMedia`) it throws `LANE_STOPPING` (never `ALREADY_RUNNING`, which is only for a run that is `starting`, `running` or `reconnecting` and not cancelled). Before it starts the lane, the handler applies the message's `muted`, `captions`, `style` (and, for the tab lane, `tab.originalVolume`) to the host settings like a `host/settings` would, except that speech mute is ONE flag: a lane that starts next to a running one follows the flag the host already has. |
+| `host/lane-stop` | `lane` absent: stop both, else that lane (5.7). Always succeeds, ALSO when the lane is still `starting`: the stop sets the run's cancel flag, so a start that is inside `getUserMedia`, the resume wait or the permission query abandons itself (5.6). A stop that arrives before any start is a no-op (the SW re-sends it after the start answers, 6.3 step 7). The answer comes after an abandoned start has cleaned up, bounded by `LIMITS.startSettleMs` (3 s), so a Stop can take up to 3 s while `getUserMedia` hangs; `host/lane-start` answers after the engine START, not after `ready`. |
 | `host/settings` | Replace `settings` (4.2.2): `speechMuted` -> both lanes' `setMuted`; `tabOriginalVolume` -> graph gain; `captions` -> lane overlay routing on/off (send `clear` when turned off; turning ON only re-enables routing: the SW attaches the overlay, 6.6); `style` -> push `style` frames to overlay ports and re-emit caption frames. |
 | `host/overlay-wanted` | `lanes` = `['tab']` when (tab lane active && `captions.tab` && `tabLane.facts().tabId === message.tabId`), plus `'mic'` when (mic lane active && `captions.mic` && `message.active === true`). `wanted = lanes.length > 0 && (overlayHub.has(tabId) \|\| overlayHub.count() < LIMITS.maxOverlayPorts)`. Side effect: `active === true` records `micActiveTabId = tabId` (the tab you look at); `active === false` clears it when it equals `tabId`; a change of `micActiveTabId` re-routes the mic lane (5.6.3). So mic captions can NEVER be attached to a tab that is not the active tab of the last focused window. |
 | `host/overlay-result` | Record the SW's attach outcome for `tabId`: `ok:false` -> every lane in `lanes` gets `overlay: 'unavailable'` (state frame; the mic lane's value is reset to `unknown` when `micActiveTabId` changes). For `ok:true` nothing (the port arriving marks `attached`). |
@@ -1040,7 +1072,7 @@ through to a real microphone request. The spread copies the getter values of `cr
 ### 5.5 The lane engine (`createLaneEngine`)
 
 ```js
-createLaneEngine({ lane, deps, env, timers, platform, onChange }) -> Readonly<{
+createLaneEngine({ lane, deps, env, platform, onChange }) -> Readonly<{   // no `timers`: the engine clock is env.setTimeout/clearTimeout/now
   start({ key, request: { targetLanguage, model }, voiceGender, muted, sessionId }): { ready, done },  // throws Error{code}
   stop(): Promise<object | undefined>,     // resolves with the engine's lastResult
   setMuted(muted: boolean): void,
@@ -1080,7 +1112,7 @@ host at 10 Hz; `0.25` = LEVEL_FULL_SCALE_RMS of the web app).
 
 ### 5.6 The lanes
 
-Both lanes implement the same contract (`createTabLane` / `createMicLane`, both `({ env, deps, timers, onChange })`; `params` of `start` = the validated `host/lane-start` message plus the host-assigned `epoch`):
+Both lanes implement the same contract (`createTabLane` / `createMicLane`, both `({ env, deps, timers, onChange })`, the tab lane also `includeVideo = TAB_CAPTURE_INCLUDE_VIDEO`; both are `createLaneController` with a lane-specific `acquire` (steps 3-6 of 5.6.1, steps 2-3 of 5.6.2) and `release`; `params` of `start` = the validated `host/lane-start` message plus the host-assigned `epoch`):
 
 ```js
 Readonly<{
@@ -1090,10 +1122,14 @@ Readonly<{
   setMuted(muted: boolean): void,
   setOriginalVolume(percent: number): void,        // tab lane applies it to the gain; mic lane no-op
   phase(): Phase,
-  facts(): { tabId: number | null, epoch: number, targetLanguage, hostError: string | null, stopRequested: boolean },
+  facts(): { tabId: number | null, epoch: number, targetLanguage, hostError: string | null, stopRequested: boolean,
+            starting: boolean /* acquiring the input */, stopping: boolean /* the whole teardown */ },
   snapshot(): object | null,                       // engine snapshot
   level(): number,
   dispose(): Promise<void>,
+  refusal(): string | null,                        // the code a start would be refused with right now ('LANE_STOPPING' | 'ALREADY_RUNNING'), or null; consumes nothing
+  currentRun(): object | null,                     // internal seam of tab-lane.js (the run that holds the graph)
+  isActive(): boolean,                             // phase is starting|running|reconnecting
 }>
 ```
 
@@ -1102,7 +1138,7 @@ Start/stop concurrency rules (review issue "no stop is honored while a start is 
 - Every ACCEPTED start creates a run `{ epoch, cancelled: false }` and keeps its promise in `startPromise`. `stop()` sets `run.cancelled = true` on the current run FIRST, in every phase (also `starting`), then tears down whatever exists.
 - `start` re-checks `run.cancelled` after EVERY await (mic: the permission query; tab: `getUserMedia`, then `graph.attach`) and on a hit runs `abandon(run)`: the full 5.7 teardown of everything the run created so far (raw tracks, graph, engine streams, engine, contexts), phase `off` (never `error`), and rejects with `Error{code:'START_CANCELLED'}`. A stream that resolves AFTER the stop (a `getUserMedia` that was pending) is stopped by the `abandon` path: no raw track and no capture indicator survive a cancelled start.
 - `stop()` on a `starting` lane also awaits `startPromise` (bounded by `LIMITS.startSettleMs`, injected timers) before it reports phase `off`, so when `stop()` resolves nothing created by the abandoned run is still alive. The start itself never calls the public `stop()` (it would await its own promise): it calls the internal `abandon(run, options)` = the teardown of 5.7 steps 1-4 and 6 WITHOUT the step-5 wait; the public `stop()` = `abandon` + that wait.
-- `start()` while the lane phase is `starting|running|reconnecting` rejects `ALREADY_RUNNING`; while it is `stopping` it rejects `LANE_STOPPING` (a Stop followed at once by Start, the natural way to change the language, must not be silently dropped: the SW waits for the lane to settle before minting, 6.3 step 3).
+- `start()` while the lane phase is `starting|running|reconnecting` rejects `ALREADY_RUNNING`; while it is `stopping`, or its run has the cancel flag set and has not finished unwinding (a start that a Stop overtook but that is still inside `getUserMedia`), it rejects `LANE_STOPPING` (a Stop followed at once by Start, the natural way to change the language, must not be silently dropped: the SW waits for the lane to settle before minting, 6.3 step 3).
 - `epoch` = the host's counter incremented once per accepted lane start (used by frames and by the overlay's "hide until next session" rule).
 
 #### 5.6.1 Tab lane start (steps are in this exact order)
@@ -1168,6 +1204,8 @@ Start/stop concurrency rules (review issue "no stop is honored while a start is 
 - When a lane's captions setting turns off, or the lane ends, the host sends `clear {lane}` to the ports it was
   feeding; a port that no lane needs any more gets `bye` and is closed by the host (after `LIMITS.statusLingerMs` when
   the lane ended in error).
+- The hub forgets a port at once when it tells it `bye`, but disconnects it from its side only 250 ms later (`closeDelayMs`: a frame posted in the same turn as `disconnect()` may be dropped, whether real Chrome delivers it is unverified, and the overlay closes its own port on `bye` anyway); only a REPLACED port is disconnected immediately.
+- A lane that ended in `error` keeps showing what it last said in the panel preview (8.2.3 rule 16): the last caption frame of THIS run (same epoch) stays, marked `live:false`; a requested stop sends an empty frame; another run's rows are never shown. After a run the lane keeps only a slim snapshot (status, error, model, route; no captions) and forces a status that is not terminal to `stopped`.
 
 #### 5.6.4 Mute, unmute and blocked output
 
@@ -1176,7 +1214,7 @@ Start/stop concurrency rules (review issue "no stop is honored while a start is 
 `engine.resumeAudio()`. If the playback context stays suspended (autoplay policy: unverified in offscreen
 documents, `[assumption A3]`) the engine reports `output: 'blocked'`, the panel shows `ext.output.blocked` (NOT the web
 app's `sim.output.blocked`, which tells the user to press the very button they just pressed), and captions continue;
-v1 has no other remedy (see K3 in section 14). Checklist 13.7 records the blocked/unblocked outcome explicitly.
+v1 has no other remedy (see K3 in section 14). Checklist 13.7 records the blocked/unblocked outcome explicitly. A mute toggled while a start is still acquiring its input has no engine to act on yet: the lane applies its newest value when the engine is created.
 
 ### 5.7 Stop and cleanup order (both lanes; each step swallows its own failure)
 
@@ -1202,17 +1240,26 @@ closed, listeners removed.
 ### 5.8 Panel hub and disconnect grace
 
 ```js
-createPanelHub({ timers, graceMs = LIMITS.panelGraceMs, initialGraceMs = LIMITS.panelInitialGraceMs,
-                 onHello, onAllGone }) -> Readonly<{ accept(port): boolean, broadcast(frame): void, count(): number,
-                                                     armInitialGrace(): void, dispose(): void }>
+createPanelHub({ runtime, timers, graceMs = LIMITS.panelGraceMs, initialGraceMs = LIMITS.panelInitialGraceMs,
+                 maxPorts = LIMITS.maxPanelPorts, rearmBaseMs = 3000, maxRearms = 3,
+                 onHello, onAllGone, roleOf }) -> Readonly<{ accept(port): boolean, broadcast(frame): void,
+                     sendTo(port, frame): boolean, count(): number, armInitialGrace(): void, armGrace(): void,
+                     rearm(reason): boolean, dispose(): void }>
+// `runtime` gives senderRole its id and origin; `roleOf` is a seam for tests; `sendTo` is the hello reply; `armGrace()` is 5.7 step 6
 ```
 - `accept` validates (4.4), registers, listens to `onMessage` (`hello` -> `onHello(port)`, which sends the full state
   and the latest captions frames) and `onDisconnect`. A new accepted port cancels any pending grace timer.
 - When the LAST panel port disconnects, a `graceMs` timer starts; on expiry `onAllGone('panel-gone')` runs: the host stops all
   lanes (5.7) and sends `runtime.sendMessage({ v:1, target:'sw', type:'sw/host-idle', hostId, reason:'panel-gone' })`. The
   initial grace (no panel ever connected) does the same with reason `'initial-grace'`. If that send rejects, the host retries
-  it once after 500 ms (injected timers); if it still fails the panel-side `sw/host-probe` and the next Start reconcile
-  (6.11).
+  it once after 500 ms (injected timers). The report is one-shot per absence, so an answer that is not final would leave an idle
+  offscreen document (and `interp.host.v1.up`) for good: an answer of `{closed:false}` (the SW still saw a start of its own in
+  flight, 6.9), or two failed sends, make the host call `panelHub.rearm(reason)`, which arms ONE more report of the same reason
+  on the injected clock after 3 s, then 6 s, then 12 s, at most 3 repeats in all (4 asks, about 21 s of coverage; constants
+  `REARM_BASE_MS = 3000`, `MAX_REARMS = 3`, overridable through `rearmBaseMs` / `maxRearms`). `{closed:true}` and a refusal
+  (`ok:false`: `FORBIDDEN`, `INVALID_MESSAGE`) are final and never repeated. Any accepted panel port cancels a pending repeat and
+  resets the chain (a panel that connects is a fresh start for the whole report cycle, and its own disconnect arms its own grace);
+  `dispose()` cancels it too. After the cap a lost report is reconciled by the panel-side `sw/host-probe` and the next Start (6.11).
 - `broadcast(frame)` sends to every port; per-port dedupe of identical JSON; a `postMessage` that throws removes the port.
 - The hub never relies on `sidePanel.onClosed` (fires for "replaced" too, Chrome 142+): only a real port
   disconnect counts. Whether a panel that is merely HIDDEN by another side-panel entry keeps its port is NOT known
@@ -1264,7 +1311,7 @@ right for an extension, `ext.*` where a review found it wrong):
 
 | LaneState | Text key |
 |---|---|
-| `phase:'off'`, no error | `sim.status.idle` |
+| `phase:'off'`, no error | `sim.status.idle`; `ext.status.off` when the lane's checkbox is off (a switched-off lane is not "ready to start") |
 | local `awaiting` (Start pressed, waiting for the toolbar-icon click; panel-local, never in `LaneState`) | `ext.status.awaitingArm` (nothing is being "checked": the flow is blocked on the user) |
 | `phase:'starting'`, `engineStatus` `preparing` or null | `sim.status.preparing` |
 | `phase:'starting'`, `engineStatus:'connecting'` | `sim.status.connecting` |
@@ -1276,7 +1323,7 @@ right for an extension, `ext.*` where a review found it wrong):
 | `output` `blocked` | `ext.output.blocked` ("Chrome blocked playback of interpreted speech from this extension. Captions continue."; NOT the web app's `sim.output.blocked`, which tells the user to press the button they just pressed) |
 | `output` `delayed` / `catching-up` / `unavailable` | `sim.output.delayed` / `.catching_up` / `.unavailable` (dash becomes underscore); `muted` and `ready` are not shown per lane (the global mute note covers `muted`) |
 | `gap` `input` / `audio` / `reception` | `ext.gap.input` / `sim.gap.audio` / `sim.gap.reception` in `#<lane>-gap` (`sim.gap.input` says "microphone input", wrong for the tab lane) |
-| route line while `running` | `` `${t(fallback ? 'ext.route.fallback' : route === 'translation' ? 'sim.route.translation' : 'sim.route.flash')} · ${model}` `` (`sim.route.fallback` says "the default model failed", but the tab lane's default is the translation model, and the flash fallback may ANSWER what it hears) |
+| route line while `running` | `` `${t(fallback ? 'ext.route.fallback' : route === 'translation' ? 'sim.route.translation' : 'sim.route.flash')} · ${model}` `` in `#<lane>-route` (not a live region; `ext.route.fallback` is only a short label, "Backup model", so it can sit in front of the model id); while `fallback` is true the WARNING `ext.route.fallbackNote` ("A backup model is interpreting. It may answer what it hears instead of translating.") goes into the persistent live region `#<lane>-route-note` (`sim.route.fallback` says "the default model failed", but the tab lane's default is the translation model, and the flash fallback may ANSWER what it hears) |
 
 Overall pill (8.2.3 rule 4): `ext.status.failed` only when NO lane is running; when one lane failed and the other runs, `ext.status.partial`.
 
@@ -1325,7 +1372,7 @@ seam, (2) makes the symptom visible, (3) points the manual check at the worst ca
 
 - Seam: `engine/worker-timers.js` exports `TIMER_MODE` (`'realm'` | `'worker'`; the v1 value is `'realm'`) and
   `createWorkerTimers({ Worker, url, realm }) -> { setTimeout, clearTimeout, now, dispose }`. `host.js` builds the ENGINE clock
-  from it. `'realm'` = the realm's `setTimeout`, `clearTimeout`, `performance.now` (exactly D4's "real timers"). `'worker'` =
+  from it (`createEngineClock({ mode = TIMER_MODE, realm, Worker })`: the realm clock unchanged in `'realm'` mode, worker-driven timers in `'worker'` mode). `'realm'` = the realm's `setTimeout`, `clearTimeout`, `performance.now` (exactly D4's "real timers"). `'worker'` =
   `setTimeout(fn, ms)` posts `{ t: 'set', id, ms }` to a dedicated module worker
   (`new Worker(new URL('./timer-worker.js', import.meta.url), { type: 'module' })`, which the build closure follows, 10.3) whose
   script runs the real timer and posts `{ t: 'fire', id }` back; the main thread runs `fn` on that message (a message event is a
@@ -1362,8 +1409,7 @@ createServiceWorker({ adapter: createChromeAdapter() }).register();
 
 ```js
 // extension/background/sw-core.js
-createServiceWorker({ adapter, now = () => Date.now(), setTimeout = globalThis.setTimeout,
-                      clearTimeout = globalThis.clearTimeout }) -> Readonly<{
+createServiceWorker({ adapter, now = () => Date.now(), setTimeout = globalThis.setTimeout }) -> Readonly<{
   register(): void,                       // registers every listener SYNCHRONOUSLY, then starts bootstrap() (not awaited)
   bootstrap(): Promise<void>,
   handlers: Readonly<{ onActionClicked, onMenuClicked, onInstalled, onStartup, onTabRemoved, onTabUpdated,
@@ -1447,16 +1493,19 @@ lets the thrown `Error{code}` become `{ok:false, code}`. In-memory state: `const
 //   a rejection ("Receiving end does not exist", "The message port closed before a response was received"), `undefined`,
 //   a non-object or a response without `ok === true` all become { ok:false, code: res?.code ?? 'HOST_UNAVAILABLE' }
 ```
-The panel, options and permission pages use the same normalization for SW-bound messages (`sendToSw`: identical mapping; a rejection means the SW could not be reached, and every SW-bound call is one whose failure the page can show or ignore).
+Only the side panel sends SW-bound messages; its `sendToSw` (in `panel/controller.js`) uses the identical normalization (a rejection means the SW could not be reached, and every SW-bound call is one whose failure the page can show or ignore); the options and permission pages send none.
 (review: with a fake that resolves `undefined` for "listeners exist but nobody answered" and a real Chrome that probably rejects,
 `res.ok` on `undefined` would be a `TypeError` mapped to `INTERNAL`; success now REQUIRES `res?.ok === true`,
 `[assumption A24]`.) Steps, in this exact order:
 
-0. `if (starting.has(lane))` -> throw `ALREADY_RUNNING` (in-memory; the host repeats the check authoritatively). Otherwise
+0. `inFlight = starting.get(lane)`: when it exists throw `LANE_STOPPING` if `inFlight.cancelled` and `ALREADY_RUNNING` otherwise (in-memory; the host repeats the
+   check authoritatively). A start that a Stop already cancelled still holds the lane until it has unwound (a hung `getUserMedia` inside the host can keep it there
+   for a long time); answering `ALREADY_RUNNING` to the NEXT press would be wrong twice: nothing is running, and the panel deliberately ignores that code, so
+   the press would vanish without a word. `LANE_STOPPING` is what the panel shows as "still stopping, press Start again" (8.2.5). Otherwise
    `run = { cancelled: false }; starting.set(lane, run)`; the whole body runs in `try { ... } finally { if (starting.get(lane) === run) starting.delete(lane); }`.
    After every `await` below: `if (run.cancelled) throw START_CANCELLED` (a Stop pressed meanwhile; 6.11).
 1. Read `settings = readSettings(storage.local)` and `key = resolveKey({ personal: readKey(storage.local),
-   builtin: BUILTIN_KEYS })`. No key -> throw `CREDENTIAL_REQUIRED`. (The SW is the only context that reads the key.)
+   builtin: BUILTIN_KEYS })`. No key -> throw `CREDENTIAL_REQUIRED`. (The SW is the only context that reads the key.) A storage failure while reading the settings or the key is `INTERNAL`: `STORAGE_FAILED` is a panel/options notice code and does not cross the protocol (4.9).
 2. Tab lane only:
    a. `tab = await tabs.get(tabId)`; failure -> `TAB_GONE`. If `tab.url` is a string whose scheme is not in
       `['http:', 'https:', 'file:']` -> `TAB_UNSUPPORTED` (no mint attempted). `chrome:`, `chrome-extension:`,
@@ -1469,14 +1518,15 @@ The panel, options and permission pages use the same normalization for SW-bound 
 4. `await ensureOffscreen()` (mutex + zombie recovery; 6.3.1). Then write `interp.host.v1 = {v:1, up:true, hostId, at}` if it changed.
 5. Build the `host/lane-start` message from settings (`laneRequestOf`, `voiceGender`, `muted: settings.speechMuted`,
    `captions: settings.lanes[lane].captions`, `style: hostSettingsOf(settings).style`; tab lane: `tab: { tabId, originalVolume: settings.lanes.tab.originalVolume }` and `streamId` added in step 6).
-6. Tab lane only: `streamId = await mintStreamId(tabId)` (6.4). This is the LAST awaited step before the send: the id
+6. Tab lane only: `streamId = await mintStreamId(tabId, lane)` (6.4). This is the LAST awaited step before the send: the id
    is single-use and "expires after a few seconds" `[verified-doc]` (exact TTL unknown), so nothing slow may sit between
-   mint and consume, and nothing may store or re-send it.
-   `res = await sendToHost(message)`. `res.ok === false` -> throw `Error{code: res.code}`. Exactly ONE retry, only for
-   `HOST_UNAVAILABLE` (the document was not listening yet): `await ensureOffscreen()` then send the same message again.
+   mint and consume, and nothing may store or re-send it. A Stop that lands DURING the mint strands that single-use id until it expires (nothing is sent: sending it would break "stop wins"); a Start inside the id's lifetime then goes through the recovery of 6.4 and can end in `TAB_CAPTURE_BUSY` (rare; unmeasured in a real browser).
+   `res = await sendToHost(message)`. Exactly ONE retry, only for `HOST_UNAVAILABLE` (the document was not listening yet):
+   `await ensureOffscreen()` (then the cancel check) and send the same message again.
 7. "Stop wins": after the answer, `if (run.cancelled)` -> `sendToHost('host/lane-stop', { lane })` (idempotent; this covers a stop
-   that reached the host BEFORE the start did, and a start the host accepted just before the stop) and throw `START_CANCELLED`.
-   Otherwise remove `interp.lastStop.v1` (a new run began) and fire-and-forget `afterLaneStarted(lane, tabId)` (6.7). Failure paths
+   that reached the host BEFORE the start did, and a start the host accepted just before the stop) and throw `START_CANCELLED`, even when
+   the host refused the start (a cancelled start is silent in the panel, a refusal would not be). Otherwise `res.ok === false` -> throw
+   `Error{code: res.code}`; on success remove `interp.lastStop.v1` (a new run began) and fire-and-forget `afterLaneStarted(lane, tabId)` (6.7). Failure paths
    never leave a half-started state: the host cleans its own lane (5.6) and the SW holds nothing to undo.
 
 #### 6.3.1 `ensureOffscreen()` (mutex, handshake by ping, zombie recovery)
@@ -1515,9 +1565,12 @@ const ensureOffscreen = () => exclusive(async () => {
 ### 6.4 The mint (`mintStreamId`) and error mapping
 
 ```js
-async function mintStreamId(tabId, { retry = true } = {}) {
+async function mintStreamId(tabId, lane) {
   try { return await tabCapture.getMediaStreamId({ targetTabId: tabId }); }
-  catch (error) { return mapMintError(error, tabId, retry); }
+  catch (error) {
+    if (isActiveStreamError(error)) return recoverActiveStream(tabId, lane);   // the ONE case with a recovery (below)
+    throw await mapMintError(error, tabId);                                     // the others map to a code at once
+  }
 }
 ```
 
@@ -1533,10 +1586,10 @@ Exact error strings (Chromium source, `[verified-doc]`; the fake browser reprodu
 
 Recovery for `Cannot capture a tab with an active stream.` (only one attempt of each step):
 1. `ping = sendToHost('host/ping')` (a FRESH ping, never a cached one). If `ping.lanes.tab` is `starting|running|reconnecting|stopping` -> throw `ALREADY_RUNNING`.
-2. If `retry`: wait 250 ms (a stop just completed may still be releasing the registry) and mint again with `retry:false`.
+2. Wait 250 ms (a stop just completed may still be releasing the registry) and mint again, once (any other mint error is mapped by the table above).
 3. Still active, and a fresh ping shows BOTH host lanes `off|error`: this is an orphaned capture our own dead document held (or a
    leftover after a crash): `closeHost({ except: lane })` (it ignores this very start but refuses while another lane is starting),
-   `ensureOffscreen()`, mint again with `retry:false`.
+   `ensureOffscreen()`, mint again, once.
 4. Still failing (or the mic lane is running so step 3 was skipped): throw `TAB_CAPTURE_BUSY` (another extension or
    tool captures the tab; we cannot release it).
 
@@ -1632,11 +1685,11 @@ required for `tabs.create`. The SW never calls `getUserMedia` (no `document`).
 ### 6.9 Closing the host: `sw/host-idle` and `closeHost()`
 
 `sw/host-idle { hostId, reason }` (sender role `offscreen`): a FRESH `ping = sendToHost('host/ping')`. If the ping fails while
-`interp.host.v1.up` is true, the host is already gone: write `up:false` and `lastStop`. Otherwise, if `starting.size === 0` (no start is in
+`interp.host.v1.up` is true, the host is already gone: write `up:false` and `lastStop` (with the reason the host reported) and answer `{closed:false}`. Otherwise, if `starting.size === 0` (no start is in
 flight in this SW: a start that has passed `ensureOffscreen` and the mint but has not yet delivered `host/lane-start` is invisible to
 `host/ping`, so the in-memory set is the only thing that can see it) and `ping.panels === 0` and both lanes are `off|error` ->
 `closeHost({ except: null })`, write `interp.lastStop.v1 = { v:1, reason, at }` and answer `{closed:true}`; otherwise `{closed:false}` (a
-panel reconnected, or a start is under way). `closeHost({ except })` runs inside the mutex: it refuses (returns `false`) while a lane other than
+panel reconnected, or a start is under way). The host does not take `{closed:false}` for an answer that ends the matter: it asks again 3 s, 6 s and 12 s later, at most 3 times, unless a panel connects meanwhile (5.8), so a start that was in flight when the first report arrived can never leave an idle offscreen document (and `interp.host.v1.up`) behind. `closeHost({ except })` runs inside the mutex: it refuses (returns `false`) while a lane other than
 `except` is in `starting`; else `offscreen.closeDocument()` (an error "No current offscreen document." is ignored), then writes
 `interp.host.v1 = {v:1, up:false, hostId:null, at}`. The SW closes the host ONLY through this path, through the orphan-capture recovery of
 6.4, through `sw/host-probe` (6.11), and never while a lane is running. `ext.error.HOST_UNAVAILABLE` therefore no longer arises from a close
@@ -1662,7 +1715,7 @@ whenever the start is still inside `ensureOffscreen` or the mint (review).
 
 `sw/host-probe {}` (sender role `panel`) -> `probeHost`: compare `interp.host.v1.up` with reality. `getContexts` finds no offscreen
 document but `up` is true -> write `up:false` and `lastStop { reason:'host-lost' }`, answer `{up:false}`. A document exists but a fresh
-ping fails (renderer crash left a zombie) -> `closeHost`, same `lastStop`, `{up:false}`. Otherwise `{up:true}`. The panel calls it when its
+ping fails (renderer crash left a zombie) -> `closeHost`, same `lastStop`, `{up:false}`. Otherwise `{up:true}` (also writing `up:true` when a live host answers while the flag said down: it heals in both directions). The panel calls it when its
 port dropped and it did not ask for a stop (8.2.7), so the stale `up:true` flag ("connect will disconnect immediately") heals itself.
 
 
@@ -1702,14 +1755,16 @@ stored value is `'auto'` or absent. The model defaults and their rationale are 5
 ### 7.2 Validation, normalization, migration (`extension/lib/settings.js`, group B)
 
 ```js
-export const DEFAULT_SETTINGS; export const CAPTION_SIZE = Object.freeze({ min: 1, max: 2, step: 0.125, initial: 1.5 });
+export const DEFAULT_SETTINGS;                                      // = createDefaultSettings('ko'), the listing of 7.1
+export { CAPTION_SIZE };                                            // Object.freeze({ min: 1, max: 2, step: 0.125, initial: 1.5 }), defined in lib/constants.js
 export function createDefaultSettings(uiLanguage = 'en')            // frozen
 export function normalizeSettings(raw)                              // total: never throws; frozen; unknown fields dropped
-export function migrateSettings(raw)                                // raw from storage (any shape) -> normalized v1
+export const MIGRATIONS                                             // frozen {} (the hook for a future v2)
+export function migrateSettings(raw, migrations = MIGRATIONS)       // raw from storage (any shape) -> normalized v1
 export function hostSettingsOf(settings)                            // HostSettings (4.2.2), no key, no language/model
 export function laneRequestOf(settings, lane)                       // { targetLanguage, model }
 export async function readSettings(area)                            // area = adapter.storage.local
-export async function writeSettings(area, settings)                 // area.set({[key]: normalizeSettings(settings)})
+export function writeSettings(area, settings)                      // normalizes, area.set({[key]: ...}), resolves with the settings; writers to one area run one after another
 export async function updateSettings(area, mutate)                  // read -> mutate(current) -> write; returns the new settings
 export async function readKey(area) / writeKey(area, value) / deleteKey(area) / hasKey(area)
 export function resolveKey({ personal, builtin })                   // personal wins; else builtin[0]; else null
@@ -1722,7 +1777,7 @@ Rules of `normalizeSettings` (each is a test):
   tab `originalVolume` integer clamped to 0..100 (non-finite -> 65); `captions` boolean.
 - `captions.size` = nearest valid step (`clampCaptionSize` semantics, implemented ONCE in `lib/constants.js` and shared with
   `protocol.js`'s validator; parity test against `app/preferences.js`); `position`, `display` enums; `showSource` boolean;
-  `maxLines` integer 1..6 (else 3); `autoHideSeconds` integer 0..60 (else 8). The enum lists (`VOICE_GENDERS`,
+  `maxLines` integer 1..6 (else 3); `autoHideSeconds` integer 0..60 (else 8): these two are replaced by their default, not clamped, which is why the options page checks the range itself and never lets an out-of-range typed value reach this rule (7.3). The enum lists (`VOICE_GENDERS`,
   `TARGET_LANGUAGES`, positions, displays) and the ranges live in `constants.js` too.
 - Output `v` is always 1; unknown top-level or lane fields are dropped; result deep-frozen.
 - `migrateSettings(raw)`: `raw` nullish or not an object -> defaults; otherwise `normalizeSettings(raw)`. There is no
@@ -1748,14 +1803,14 @@ through 6.6; Next = applies from the next start.
 | `#opt-key-toggle` | `button`, `aria-controls="opt-key"` (NO `aria-pressed`: the visible label already swaps, the double-state pattern the mute button avoids) | label swaps `ext.options.keyShow` / `ext.options.keyHide` | none | — | — |
 | `#opt-key-save` | `button.btn-primary` | `common.save` | calls `storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'})` FIRST and refuses to save when it rejects (`#opt-key-status` = `ext.error.STORAGE_FAILED`); then writes the key, clears the input | see above | Next |
 | `#opt-key-delete` | `button` | `settings.deleteKey` | deletes the key | — | Next |
-| `#opt-key-status` | `p[role=status]` | `settings.keyStored` / `settings.noKey` / `settings.keySavedBrowser` / `settings.keyDeleted` / `ext.key.builtin` | derived | never shows key characters | — |
+| `#opt-key-status` | `p[role=status]` | `settings.keyStored` / `settings.noKey` / `ext.key.savedBrowser` / `settings.keyDeleted` / `ext.key.builtin` (the app's `settings.keySavedBrowser` is not used: its Korean text is in a formal register) | derived | never shows key characters | — |
 | `#opt-key-guide` | `a[target=_blank][rel="noopener noreferrer"]` | `keyGuide.createLink` + visible `keyGuide.newTab` | `KEY_GUIDE_URL` | — | — |
 | `#opt-key-note` | `p` | `ext.keyStorage`, then `settings.keyStorageWarning` | — | — | — |
 | `#opt-ui-language` | `select` + hint `#opt-ui-language-hint` (`ext.options.uiLanguageHint`: panel and options follow this; captions drawn on web pages, the toolbar tooltip and the context-menu title follow Chrome's own language because they come from `chrome.i18n`) | `language.ui` (options `language.auto`, `language.ko`, `language.en`, `language.ja`) | `uiLanguage` | enum | Live (page re-renders) |
 | `#opt-target-tab` | `select` | `ext.lane.tab.title` + `language.target` | `lanes.tab.targetLanguage` | ko/en/ja | Next |
 | `#opt-target-mic` | `select` | `ext.lane.mic.title` + `language.target` | `lanes.mic.targetLanguage` | ko/en/ja | Next |
-| `#opt-model-tab` | `select`, options = `LIVE_MODELS` with text `sim.model0..2` by index | `ext.options.modelTab` (+ hint `#opt-model-tab-hint`, `ext.options.modelTabHint`) | `lanes.tab.model` | in `LIVE_MODELS` | Next |
-| `#opt-model-mic` | `select` | `ext.options.modelMic` (+ hint `ext.options.modelMicHint`) | `lanes.mic.model` | in `LIVE_MODELS` | Next |
+| `#opt-model-tab` | `select`, options = `LIVE_MODELS` with text `ext.options.modelLive`, `sim.model1`, `sim.model2` by index (`sim.model0` carries the app's "(default)" tag, which is true for the microphone only, so the tab select shows the same model untagged) | `ext.options.modelTab` (+ hint `#opt-model-tab-hint`, `ext.options.modelTabHint`) | `lanes.tab.model` | in `LIVE_MODELS` | Next |
+| `#opt-model-mic` | `select`, options text `sim.model0..2` by index | `ext.options.modelMic` (+ hint `ext.options.modelMicHint`) | `lanes.mic.model` | in `LIVE_MODELS` | Next |
 | `#opt-voice` | `select` (`sim.voice.female`, `sim.voice.male`) | `sim.voice` (+ hint `sim.voiceRestart`) | `voiceGender` | enum | Next |
 | `#opt-volume` | `input[type=range]` 0-100 step 5 + `output#opt-volume-value` | `ext.tab.originalVolume` | `lanes.tab.originalVolume` | int | Live |
 | `#opt-captions-tab` | checkbox | `ext.captions.show` (with lane title) | `lanes.tab.captions` | bool | Live |
@@ -1764,8 +1819,8 @@ through 6.6; Next = applies from the next start.
 | `#opt-caption-position` | `select` (`ext.options.position.top`, `.bottom`) | `ext.options.captionPosition` | `captions.position` | enum | Live |
 | `#opt-caption-display` | `select` (`captionOnly.display.dark`, `.light`, `.mono`) | `captionOnly.display` | `captions.display` | enum | Live |
 | `#opt-caption-source` | checkbox | `sim.captions.showSource` | `captions.showSource` | bool | Live |
-| `#opt-caption-lines` | `input[type=number]` min 1 max 6 | `ext.options.captionLines` | `captions.maxLines` | int 1..6 | Live |
-| `#opt-caption-hide` | `input[type=number]` min 0 max 60 | `ext.options.autoHide` | `captions.autoHideSeconds` | int 0..60 | Live |
+| `#opt-caption-lines` | `input[type=number]` min 1 max 6 | `ext.options.captionLines` (the label states the range, "1-6") | `captions.maxLines` | int 1..6; anything else (0, 7, 2.5, empty) puts the STORED value back, writes nothing and shows no "Saved." | Live |
+| `#opt-caption-hide` | `input[type=number]` min 0 max 60 | `ext.options.autoHide` (the label states the range, "0-60") | `captions.autoHideSeconds` | int 0..60; anything else restores the stored value the same way | Live |
 | `#opt-privacy-audio` | `p` | `ext.privacy.audio` | — | — | — |
 | `#opt-privacy-free` | `p` | `ext.privacy.freeTier` (on the free tier, Google may use the audio and results to improve its products and people may review them; source in 14.5) | — | — | — |
 | `#opt-privacy-page` | `p` | `ext.privacy.page` (says captions are drawn into the page, in a protected container, only on the tab you look at for the microphone lane) | — | — | — |
@@ -1801,7 +1856,7 @@ they are the last-used values as well as the defaults).
 - Markup lives in `.html` written by group D; behavior in controllers written by group C. The contract between them is
   the element ids (this section, 1.5, 7.3) and the `data-i18n*` attributes. D MUST NOT rename an id; C MUST NOT query an
   id that is not in this document (a test asserts: every `getElementById('x')` / `#x` id used by a controller exists in
-  its page, and every id in this document exists in the page).
+  its page, and every id in this document exists in the page). Each controller exports the ids it touches as a frozen list that this test reads: `PANEL_ELEMENT_IDS` (43 ids, `panel/controller.js`), `OPTIONS_ELEMENT_IDS` (24, `options/controller.js`) and `PERMISSION_ELEMENT_IDS` (`perm-request`, `perm-close`, `perm-status`, `perm-help`, `permission/controller.js`). `panel/view-model.js` also exports `LANE_TITLE_KEY` (`{tab: 'ext.lane.tab.title', mic: 'ext.lane.mic.title'}`, the lane names of the status line).
 - Styling: link `../../styles.css` (byte-identical copy of the web app's stylesheet, built into `dist/extension/styles.css`)
   and reuse `.btn .btn-primary .card .badge .notice .text-sub`, the tokens and the focus ring. Panel-only classes go in
   `panel.css`, options/permission classes in `pages.css`. No new colors (DESIGN.md), no `url()`, no `@import`, no
@@ -1836,7 +1891,7 @@ error notice depend on it): every element marked `<!-- live -->` is a PERSISTENT
 text; the controller writes `textContent` when the note applies and sets `textContent = ''` when it does not, and the CSS collapses
 an empty one (`:empty { margin: 0; padding: 0; border: 0; min-height: 0; }`, NOT `display: none`, which would remove the region from
 the accessibility tree again). The controller maps ids to fixed keys in one constant table (literal `ext.*` keys, so the i18n checker
-validates them). Elements that are not live regions (`#tab-tabline`, `#tab-route`, meters, `#close-note`) may still use `hidden`.
+validates them). Elements that are not live regions (`#tab-tabline`, `#tab-route`, `#mic-route`, meters, `#close-note`) may still use `hidden`. The per-lane status lines `#tab-status` / `#mic-status` are plain text with NO role (the pill and the notices already announce every state change; announcing it a second time was a finding of the UX review of the built panel).
 
 ```html
 <!doctype html>
@@ -1876,13 +1931,14 @@ validates them). Elements that are not live regions (`#tab-tabline`, `#tab-route
       <label class="field field-check"><input id="tab-captions" type="checkbox"><span data-i18n="ext.captions.show"></span></label>
       <p id="tab-tabline" class="text-sub" hidden></p>
       <p id="tab-arm-note" class="notice" role="status"></p><!-- live: ext.arm.needed | ext.arm.waiting | ext.arm.ready | ext.error.TAB_UNSUPPORTED (+ pin/shortcut hint) -->
-      <p id="tab-status" class="text-sub" role="status"></p>
+      <p id="tab-status" class="text-sub"></p><!-- not live: the pill and the notices announce state changes -->
       <p id="tab-route" class="text-sub" hidden></p>
+      <p id="tab-route-note" class="notice" role="status"></p><!-- live: ext.route.fallbackNote while a backup model interprets -->
       <p id="tab-output" class="text-sub" role="status"></p><!-- live -->
       <p id="tab-gap" class="text-sub" role="status"></p><!-- live: ext.gap.input | sim.gap.audio | sim.gap.reception -->
       <meter id="tab-level" min="0" max="100" value="0" data-i18n-label="ext.level.tab" hidden></meter>
       <p id="tab-notice" class="notice" role="alert"></p><!-- live (assertive): the error notice of the lane -->
-      <div id="tab-preview" class="caption-preview" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
+      <div id="tab-preview" class="caption-preview" role="region" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
     </section>
 
     <section id="card-mic" class="card lane-card" aria-labelledby="mic-title" data-lane="mic">
@@ -1899,13 +1955,14 @@ validates them). Elements that are not live regions (`#tab-tabline`, `#tab-route
       <p id="mic-captions-hint" class="text-sub" data-i18n="ext.captions.micHint"></p>
       <p id="mic-permission-status" class="text-sub" role="status"></p>
       <button id="btn-mic-allow" type="button" class="btn" hidden data-i18n="ext.permission.allowButton"></button>
-      <p id="mic-status" class="text-sub" role="status"></p>
+      <p id="mic-status" class="text-sub"></p><!-- not live -->
       <p id="mic-route" class="text-sub" hidden></p>
+      <p id="mic-route-note" class="notice" role="status"></p><!-- live: ext.route.fallbackNote -->
       <p id="mic-output" class="text-sub" role="status"></p><!-- live -->
       <p id="mic-gap" class="text-sub" role="status"></p><!-- live -->
       <meter id="mic-level" min="0" max="100" value="0" data-i18n-label="seq.inputLevel" hidden></meter>
       <p id="mic-notice" class="notice" role="alert"></p><!-- live (assertive) -->
-      <div id="mic-preview" class="caption-preview" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
+      <div id="mic-preview" class="caption-preview" role="region" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
     </section>
 
     <p id="no-lane-note" class="notice" role="status"></p><!-- live: ext.status.noLane -->
@@ -1925,11 +1982,11 @@ validates them). Elements that are not live regions (`#tab-tabline`, `#tab-route
     <p id="usage-note" class="text-sub" role="status"></p><!-- live: ext.usage.twoSessions while both lanes are enabled (+ ext.usage.quotaHint when emphasized) -->
 
     <div class="button-row"><!-- sticky at the bottom of the panel (8.2.2) -->
-      <button id="btn-start" type="button" class="btn btn-primary" aria-describedby="key-missing no-lane-note"></button>
+      <button id="btn-start" type="button" class="btn btn-primary" aria-disabled="true" aria-describedby="key-missing no-lane-note"></button><!-- aria-disabled, NEVER disabled: it stays focusable so its description is reachable; the controller ignores the click -->
       <button id="btn-mic-permission" type="button" class="btn icon-btn" data-i18n-label="permission.request" data-i18n-tip="permission.request">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" class="icon"><!-- microphone path --></svg></button>
       <button id="btn-mute" type="button" class="btn icon-btn" data-muted="true">
-        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" class="icon"><!-- speaker path --></svg></button>
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" class="icon"><!-- speaker path; then a second <path class="icon-slash">, the slash, which panel.css shows only while data-muted="true" --></svg></button>
       <button id="btn-options" type="button" class="btn" data-i18n="ext.options.title"></button>
     </div>
 
@@ -1940,7 +1997,7 @@ validates them). Elements that are not live regions (`#tab-tabline`, `#tab-route
 ```
 
 Notes: `#btn-start` and `#btn-mute` labels are set by the controller (they swap: `common.start`/`common.stop`/`common.cancel`, `ext.sound.on`/`ext.sound.off`, the latter for BOTH `aria-label`
-and `title`); their `aria-label`/text is never literal. `hidden` is the HTML attribute (the controller toggles it) but only on the non-live elements named above. The SVG paths are inline
+and `title`); their `aria-label`/text is never literal. `#btn-start` carries `aria-disabled="true"` in the markup and the controller toggles that attribute (`aria-disabled` is removed when Start is available; the native `disabled` property is not used anywhere in the panel). `hidden` is the HTML attribute (the controller toggles it) but only on the non-live elements named above. The SVG paths are inline
 path data only (no text, no `<title>`). The microphone-permission button's status line is `#mic-permission-status`. `#btn-key-options` has its own label (`ext.key.enter`) so a screen-reader
 list does not show two buttons both named "Options". Note that `#howto` starts with the "keep the panel open" step because closing the panel stops every lane (5.8).
 
@@ -1956,13 +2013,14 @@ list does not show two buttons both named "Options". Note that `#howto` starts w
   `#echo-note` and `#close-note` sit ABOVE the row in the DOM so they scroll with the content and are never hidden under it.
   A static CSS test asserts the sticky rule; checklist 13.29 checks Start/Stop/mute are reachable without scrolling at 700 px.
 - `#btn-mute[data-muted="true"]`: danger styling (border and icon color `--danger`, fill `--surface-alt`) so the "red when muted"
-  cue of the screenshot exists AND the state is carried by label text + `#mute-note`.
+  cue of the screenshot exists AND the state is carried by label text + `#mute-note`, AND by a SHAPE: the icon has a second path `.icon-slash` (a slash across the speaker, filled with `currentColor`, so forced colors keep it) that `panel.css` hides by default and shows only for `#btn-mute[data-muted="true"]` (CSS only, no controller code; the first build drew the same glyph in both states and told them apart by colour alone, checklist 13.47).
 - Empty live regions collapse (`:empty` rule of 8.2.1), so a note that does not apply takes no room.
 - `#status-pill[data-state]`: `styles.css` defines only `recording|connected|warning|error` for `.badge[data-state]`. `panel.css` therefore
   defines the three panel-only values itself: `idle` neutral (default border), `starting` = the `warning` look (dashed `--warning` border),
   `running` = the `connected` look (solid `--success` border); `warning` and `error` come from `styles.css`. The text is always present.
-- `.caption-preview`: max 4 rows, `font-size` 1rem, rows separated by 1 px `--border`, `partial` rows `--text-muted` with a
+- `.caption-preview` (the `div` is `role="region"` with an `aria-label` and `tabindex="0"`, 8.2.6): max 4 rows, `font-size` 1rem, rows separated by 1 px `--border`, `partial` rows `--text-muted` with a
   3 px dashed accent start bar, `interrupted` rows a 3 px solid danger start bar, `skipped` rows muted; `max-height: 10rem; overflow-y: auto`.
+- Beyond the attribute table below, `panel.css` also has `#key-missing:has(> #key-missing-text:empty)` (the key notice holds a span and a button, so it is never `:empty` itself; `:has()` is Chrome 105+, the extension needs 116) and `.caption-flag` (the text label the controller puts before a skipped or interrupted preview row); the preview rows are the direct children of `.caption-preview`, styled through `[data-status]` and `[data-skipped="true"]`.
 - All hover effects only inside `@media (hover: hover)`; all transitions off under `prefers-reduced-motion: reduce`;
   `forced-colors` must keep borders visible (use `border`, not only `background`).
 
@@ -1977,6 +2035,8 @@ asserts that `panel.css` contains a rule for every selector in this table:
 | `[data-emphasis="true"]` on `#usage-note` | quota-suspect error with both lanes enabled (rule 12) | `font-weight: 700; border-inline-start: 4px solid var(--warning); padding-inline-start: var(--space-2)`; the emphasis is ALSO in the text (`ext.usage.quotaHint` is appended), so it reaches screen readers |
 | `#status-pill[data-state]` = `idle`, `starting`, `running` | rule 4 | see the pill bullet above |
 | `#btn-mute[data-muted="true"]` | `speechMuted` | see the mute bullet above |
+| `.icon-slash`, `#btn-mute[data-muted="true"] .icon-slash` | the slash path of the mute icon | `display: none` by default, `display: inline` while muted (shape cue) |
+| `.btn[aria-disabled="true"]` on `#btn-start` | Start is unavailable (no key, or no lane enabled) | drawn like `:disabled`, no hover effect; this one rule lives in `styles.css` (shared with the web app), `panel.css` adds nothing |
 | `.notice:empty`, `.text-sub:empty` | live region without text | zero margin, padding, border and min-height (still rendered) |
 
 #### 8.2.3 The pure view model (`extension/panel/view-model.js`, group C)
@@ -1995,6 +2055,9 @@ buildViewModel({
   localErrors,         // { tab: string | null, mic: string | null } codes from a failed sw/lane-start
   stopReason,          // null | 'panel-gone' | 'host-lost': from interp.lastStop.v1 (fresh, no lane running) or a port lost unexpectedly
   previews,            // { tab: CaptionFrame | null, mic: CaptionFrame | null }
+  capturedTitle,       // string | null: the title of the CAPTURED tab, resolved by the controller with tabs.get (rule 10)
+  language,            // 'ko' | 'en' | 'ja': echoed as ViewModel.language
+  has,                 // (key) => boolean, the loaded dictionary's key test, handed to errorKeyFor (optional: a built-in table of the ext.error.* and error.* keys is the default)
 }) -> deeply frozen ViewModel
 ```
 
@@ -2006,7 +2069,7 @@ ViewModel = {
   "noLane": false,
   "stopNote": null | "ext.notice.panelGone" | "ext.notice.hostLost",
   "closeNote": false,                                   // any lane starting|running|reconnecting|stopping: "closing this panel also stops interpretation"
-  "primary": { "mode": "start|stop", "key": "common.start|common.stop|common.cancel", "disabled": false },
+  "primary": { "mode": "start|stop", "key": "common.start|common.stop|common.cancel", "disabled": false },   // disabled is rendered as aria-disabled="true" plus an ignored click (8.2.6), never as the native attribute
   "lanes": { "tab": LaneVM, "mic": LaneVM },
   "micPermission": { "state": "granted", "textKeys": ["permission.title", "permission.granted"], "attention": false, "allowButton": false },
   "mute": { "muted": true, "labelKey": "ext.sound.on", "noteVisible": true },
@@ -2018,6 +2081,7 @@ LaneVM = {
   "phase": "off|awaiting|starting|running|reconnecting|stopping|error",     // 'awaiting' = local pending, waiting for arm
   "status": { "key": "sim.status.idle", "params": {} },                       // rendered through ext.lane.statusLine
   "route": null | { "textKey": "sim.route.flash", "model": "gemini-3.8-live" },
+  "routeNote": null | "ext.route.fallbackNote",                                 // the backup-model warning, in its own live region (rule 6)
   "output": null | "ext.output.blocked",
   "gap": null | "ext.gap.input" | "sim.gap.audio" | "sim.gap.reception",
   "notice": null | { "key": "ext.error.TAB_ENDED", "params": {}, "attention": "options|permission|null" },
@@ -2032,11 +2096,11 @@ LaneVM = {
 
 Derivation rules (each is a unit test in `tests/extension-panel.test.mjs`):
 1. Lane phase: from `host.lanes[lane].phase` when `host` is not null; else `off`. If `pending[lane]`: `awaiting` when the lane is the tab
-   lane, not armed and the host does not run it; otherwise `starting`.
+   lane, not armed and the host does not run it; otherwise `starting`. A host phase that is already `starting|running|reconnecting|stopping` wins over a local `pending` flag (a Start whose `sw/lane-start` has not answered yet does not drag a running lane back to "starting"), and a lane with a local error and an idle host is `phase: 'error'`, so the pill and the notice agree.
 2. `primary.mode = 'stop'` when any lane phase is `starting|running|reconnecting|stopping|awaiting`, else `'start'`.
    `primary.key`: `common.start` in mode `start`; in mode `stop`, `common.cancel` when every lane that is not `off` is `awaiting` (nothing has
    started yet: the only thing to abort is the wait for the toolbar-icon click), else `common.stop`. `noLane = (mode === 'start' && !settings.lanes.tab.enabled && !settings.lanes.mic.enabled)`
-   (shows `#no-lane-note`). `primary.disabled = (mode === 'start' && (!keyPresent || noLane))`. Stop/Cancel is never disabled.
+   (shows `#no-lane-note`). `primary.disabled = (mode === 'start' && (!keyPresent || noLane))`. Stop/Cancel is never disabled. The controller renders `disabled` as `aria-disabled="true"` on `#btn-start` and `onPrimary` returns at once while it is set (8.2.6).
 3. `keyMissing = !keyPresent`.
 4. Pill precedence (lanes that are enabled OR not `off` participate; E = lanes in `error`, R = lanes in `starting|awaiting|running|reconnecting`):
    E nonempty and R empty -> `warning` / `sim.status.stopped` when every error code is `TAB_ENDED` or `TAB_GONE` (not an alarm), else `error` /
@@ -2046,8 +2110,8 @@ Derivation rules (each is a unit test in `tests/extension-panel.test.mjs`):
    "Checking permissions and audio readiness" would be false); else any `starting` -> `starting` / `sim.status.connecting` (or `sim.status.preparing` when a
    lane's `engineStatus` is null or `preparing`); else any `running` -> `running` / `sim.status.running`; else `idle` / `sim.status.idle`.
 5. Lane status line = `ext.lane.statusLine` with `{lane: t('ext.lane.<lane>.title'), status: t(status.key, status.params)}`; status key by the table of 5.11
-   (a local `awaiting` phase uses `ext.status.awaitingArm`).
-6. `route` only while `phase === 'running'`: `{ textKey: fallback ? 'ext.route.fallback' : route === 'translation' ? 'sim.route.translation' : 'sim.route.flash', model }`.
+   (a local `awaiting` phase uses `ext.status.awaitingArm`; an idle lane whose checkbox is off reads `ext.status.off`, not `sim.status.idle`).
+6. `route` only while `phase === 'running'`: `{ textKey: fallback ? 'ext.route.fallback' : route === 'translation' ? 'sim.route.translation' : 'sim.route.flash', model }`, rendered as `label · model` in `#<lane>-route`; `ext.route.fallback` is only the short label ("Backup model"). `routeNote = 'ext.route.fallbackNote'` while running with `fallback`, else null: the warning is rendered into the persistent live region `#<lane>-route-note` (a sentence appended to a non-live line would never be announced), and the region is emptied when it does not apply.
 7. `output`: `ext.output.blocked`, `sim.output.delayed|catching_up|unavailable` only while `running` (rendered in `#tab-output` / `#mic-output`); `muted`/`ready` -> null.
    `gap`: `ext.gap.input` / `sim.gap.audio` / `sim.gap.reception` from `LaneState.gap` while `running|reconnecting`, else null.
 8. `notice` priority: `localErrors[lane]` > host `errorCode` (phase `error`) > mic permission (`denied` with mic enabled, or `prompt` with a
@@ -2055,12 +2119,13 @@ Derivation rules (each is a unit test in `tests/extension-panel.test.mjs`):
    The key comes from `errorKeyFor(code, has, lane)`; `attention` follows 5.11 (`options` for key failures, `permission` for `MICROPHONE_DENIED`, else null).
    `MICROPHONE_DENIED` becomes `ext.error.MICROPHONE_EXPIRED` when `micPermission === 'prompt' && micWasGranted` (a one-time grant expired).
    `NEEDS_ARM`, `ALREADY_RUNNING` and `START_CANCELLED` never become notices; `LANE_STOPPING` does. When BOTH lanes' notices are key failures (the same key),
-   only the tab card keeps it (`notice = null` for the mic lane): one problem is announced once, not once per lane.
-9. `armNote` (tab lane only): `null` while the lane is `starting|running|reconnecting`; target tab not capturable -> `ext.error.TAB_UNSUPPORTED`; armed -> `ext.arm.ready`
+   only the tab card keeps it (`notice = null` for the mic lane): one problem is announced once, not once per lane. A local `TAB_UNSUPPORTED` recorded on an earlier page is ignored while the target tab is known to be unsupported (the arm note already names it), and a local `MICROPHONE_DENIED` is cleared by the controller the moment the permission becomes `granted` (8.2.4 step 3).
+9. `armNote` (tab lane only): `null` while the lane is `starting|running|reconnecting` and while its checkbox is off; target tab not capturable -> `ext.error.TAB_UNSUPPORTED`; `null` too while the lane's own error notice already says what to do about the icon
+   (`TAB_INPUT_LOST`, `TAB_ENDED`, `TAB_GONE`, `TAB_UNSUPPORTED` or a code of `TAB_CAPTURE_CODES`: "click the icon" twice, or "ready" next to a notice that says "click the icon", only adds noise or contradicts it); armed -> `ext.arm.ready`
    (no attention); not armed and the lane is enabled -> `ext.arm.waiting` with `attention: true` when `pending.tab` (Start was pressed: the icon click will start it), else
    `ext.arm.needed` (idle: the icon click only gets the tab ready, Start is still to be pressed; no attention). The two keys are DIFFERENT because their promises differ.
    `hintKeys` (`['ext.arm.pinHint']`) and `shortcut` (rendered by the controller as `t('ext.arm.shortcut', { shortcut })`; omitted when the shortcut is null, i.e. unassigned or unknown) are attached only to `needed` and `waiting`. An error notice of `TAB_ENDED`, `TAB_GONE` or `TAB_INPUT_LOST` never sets
-   `pending.tab`: the arm that follows shows `ext.arm.ready`, whose text does not claim an auto-start, and the notice itself says "click the icon, then press Start".
+   `pending.tab` (no auto-start after an error): the arm note stays empty while such a notice shows, and the notice itself says "click the icon, then press Start".
 10. `tabline`: shown when the tab lane is `starting|running|reconnecting` and a title is known: `ext.tab.target` with `{title}`
     (the title of the CAPTURED tab, resolved by the controller with `tabs.get(host.lanes.tab.tabId)`).
 11. `mute.muted = settings.speechMuted`; `labelKey = muted ? 'ext.sound.on' : 'ext.sound.off'` (they name the INTERPRETED speech); `noteVisible = muted && (tab.enabled || mic.enabled)`;
@@ -2081,33 +2146,35 @@ Derivation rules (each is a unit test in `tests/extension-panel.test.mjs`):
 #### 8.2.4 Panel controller (`extension/panel/controller.js`, group C)
 
 ```js
-createPanelController({ document, adapter, i18n /* mutable holder: { current } */, loadI18n, settingsApi, hostLink,
-                        timers, navigator }) -> Readonly<{ start(): Promise<void>, dispose(): void, viewModel(): ViewModel }>
+createPanelController({ document, adapter, i18n /* mutable holder: { current } */, loadI18n, settingsApi,
+                        createHostLink /* factory, default host-link.js */, timers, navigator })
+  -> Readonly<{ start(): Promise<void>, dispose(): void, viewModel(): ViewModel }>
 ```
 
 `start()`:
-1. Read settings (`readSettings`) and `keyPresent`; resolve i18n (`loadExtensionI18n`, settings language else `navigator.languages`); `applyI18n(document, i18n)`.
+1. Read settings (`readSettings`; on the very first run, when `interp.settings.v1` does not exist, write `createDefaultSettings(selectLanguage(navigator.languages))` so the two target languages follow the browser language, as the options page does too) and `keyPresent`; resolve i18n (`loadExtensionI18n`, settings language else `navigator.languages`); `applyI18n(document, i18n)`.
 2. `windowId = (await adapter.windows.getCurrent()).id`; `targetTab = tabs.query({active:true, windowId})[0]`; resolve `armed` from `storage.session['interp.armed.v1']`;
    `shortcut` from `adapter.commands?.getAll()` (the entry named `_execute_action`, its `shortcut` string; an empty string means unassigned and becomes null, as does a failure); `stopReason` from
    `storage.session['interp.lastStop.v1']` when its `at` is within 60 s and no lane runs.
 3. Subscribe: `storage.onChanged` (`local`: settings, key; `session`: armed, host, lastStop), `tabs.onActivated` / `tabs.onUpdated` (target tab changes), mic
    `PermissionStatus.onchange` (`navigator.permissions.query({name:'microphone'})`, feature-detected; failure -> `'unknown'`; a `granted` value sets the panel-local
-   `micWasGranted`).
+   `micWasGranted` and clears a local `MICROPHONE_DENIED` refusal: its notice would send the user to an Allow button that is gone and the pill would keep saying "failed"; the next Start writes a fresh result).
 4. `hostLink` (8.2.7): connect when `interp.host.v1.up` is true.
-5. Render = `applyViewModel(document, viewModel, i18n)`: only `textContent`, attributes, `hidden`, `value`, `checked`, `disabled`. Live regions follow the rule of 8.2.1
+5. Render = `applyViewModel(document, viewModel, i18n)`: only `textContent`, attributes (among them `aria-disabled` on `#btn-start`), `hidden`, `value`, `checked`. Live regions follow the rule of 8.2.1
    (write text or `''`, never toggle `hidden`).
 
 Every user event writes settings first (`updateSettings` with a one-field mutator) and then performs its command.
 
 #### 8.2.5 Interaction flows (state machine of the panel)
 
-Local pending state per lane: `pending.tab`, `pending.mic` (booleans), `localErrors`, and a `startRun` counter that Stop increments.
+Local pending state per lane: `pending.tab`, `pending.mic` (booleans), `localErrors`, and a `startRun` counter that Stop increments. Internally the controller keeps `awaiting` (a Start waiting for the toolbar-icon click) and `inFlight` (a `sw/lane-start` under way, per lane) apart and hands the view model `pending = { tab: awaiting || inFlight.tab, mic: inFlight.mic }`; one flag for both would send a duplicate start when the armed record changes during a call.
 
+- `#btn-start` while `primary.disabled` (no key, or no lane enabled): the click is ignored (`onPrimary` returns at once: no message, no notice, no pill change); the button is `aria-disabled`, not `disabled`, so it still receives the click.
 - `#btn-start` when `mode === 'start'`: `startEnabled()`:
   1. Clear `localErrors` and `stopReason`; `run = ++startRun`. For each enabled lane, in the order tab, then mic (sequential: await the first `sw/lane-start` before the second; before
      EACH lane and after each await: `if (run !== startRun) return`, so a Stop pressed meanwhile also prevents the second lane from being sent):
   2. Mic: if `micPermission` is `denied` or `prompt` set `localErrors.mic = 'MICROPHONE_DENIED'` (no message sent; `attention` on the permission buttons), continue; `granted` and `unknown` (no Permissions API) proceed and the host preflight decides.
-  3. Tab: if the target tab is not capturable -> `localErrors.tab = 'TAB_UNSUPPORTED'`; if not armed -> `pending.tab = true` (state `awaiting`, `ext.arm.waiting`), continue.
+  3. Tab: no target tab -> `localErrors.tab = 'TAB_GONE'`; a target tab that is not capturable -> nothing for the tab lane (a silent no-op: the arm note `ext.error.TAB_UNSUPPORTED` is the one explanation, an alert and a "failed" pill would only repeat it; the microphone lane of the same Start still runs); if not armed -> `pending.tab = true` (state `awaiting`, `ext.arm.waiting`), continue.
   4. Otherwise `pending[lane] = true` for the duration of the call (state `starting`; Stop/Cancel is therefore available immediately) and `sendMessage(makeMessage('sw/lane-start', {lane, tabId?}))`; then clear `pending[lane]`.
      `ok` -> nothing more (state arrives over the port); `{ok:false, code}`: `NEEDS_ARM` -> `pending.tab = true` (and the armed record is gone so the note reappears);
      `ALREADY_RUNNING` and `START_CANCELLED` -> ignore; other codes (including `LANE_STOPPING`) -> `localErrors[lane] = code`.
@@ -2132,13 +2199,13 @@ Local pending state per lane: `pending.tab`, `pending.mic` (booleans), `localErr
 - DOM order equals visual order (no CSS `order`). Tab order: `#tab-enabled`, `#tab-target`, `#tab-volume`, `#tab-captions`, `#tab-preview`, `#mic-enabled`,
   `#mic-target`, `#mic-captions`, `#btn-mic-allow`, `#mic-preview`, `#howto`, `#btn-start`, `#btn-mic-permission`, `#btn-mute`, `#btn-options` (`#btn-key-options` and `#btn-mic-allow`
   are in the order only while they are not `hidden`).
-- Live regions (persistent, never `hidden`, text written by the controller; rule of 8.2.1): `#status-pill`, every `*-status`, `*-arm-note`, `*-output`, `*-gap`, `*-apply-next`, `#mute-note`,
-  `#echo-note`, `#no-lane-note`, `#stop-note`, `#key-missing`, `#usage-note` are `role="status"` (implicit polite). The lane error notices `#tab-notice` / `#mic-notice` are `role="alert"`
+- Live regions (persistent, never `hidden`, text written by the controller; rule of 8.2.1): `#status-pill`, `#tab-arm-note`, `*-route-note`, `*-output`, `*-gap`, `*-apply-next`, `#mic-permission-status`, `#mute-note`,
+  `#echo-note`, `#no-lane-note`, `#stop-note`, `#key-missing`, `#usage-note` are `role="status"` (implicit polite). The per-lane status lines `#tab-status` / `#mic-status` are NOT live regions (no role, no `aria-live`): the pill and the notices already announce every state change they show, and saying it twice was noise. The route lines `#<lane>-route` are not live either; their warning is `#<lane>-route-note`. The lane error notices `#tab-notice` / `#mic-notice` are `role="alert"`
   (assertive): an error is what a person who cannot see the panel most needs to hear. A problem shared by both lanes (a rejected key) is announced ONCE (rule 8 of 8.2.3), not once per lane.
-  Caption previews are `aria-live="off"` and focusable (`tabindex="0"`, `aria-label` `sim.captions.latest`); captions are NOT announced anywhere in v1 (no partial reads, as in the web app;
+  Caption previews are `role="region"`, `aria-live="off"` and focusable (`tabindex="0"`, `aria-label` `sim.captions.latest`; the role makes the label a name that is announced, a bare `div` gets none); captions are NOT announced anywhere in v1 (no partial reads, as in the web app;
   the overlay is not live either, 8.5.2): a screen-reader user can read the preview on focus, and that is the whole story today (an opt-in "announce final rows" mode is a possible later addition).
-- The controller never moves focus on a state change. `aria-disabled` is not used: a disabled Start is `disabled`, and `#btn-start` carries `aria-describedby="key-missing no-lane-note"`
-  so a keyboard or screen-reader user who lands on it hears WHY it is disabled.
+- The controller never moves focus on a state change. `aria-disabled` is used for Start ONLY: a natively `disabled` button is skipped by Tab, so its reason could never be reached from the keyboard. Start therefore stays focusable with `aria-disabled="true"`
+  and `aria-describedby="key-missing no-lane-note"` while it is unavailable, the controller ignores its click (8.2.5), and `styles.css` draws `.btn[aria-disabled="true"]` like `:disabled`; a keyboard or screen-reader user who lands on it hears WHY it cannot start. That this is announced as intended is unverified (13.31, 13.49).
 - Every control has an accessible name from a `<label>` or an i18n `aria-label`; icon buttons carry no visible text and an `aria-label`; meters carry an `aria-label`. The two buttons that used to
   share the name "Options" are now `ext.key.enter` (in the key notice) and `ext.options.title` (in the row).
 - Targets >= 44 px; visible focus ring from styles.css; state never by color alone.
@@ -2147,10 +2214,11 @@ Local pending state per lane: `pending.tab`, `pending.mic` (booleans), `localErr
 #### 8.2.7 Host link (`extension/panel/host-link.js`, group C)
 
 ```js
-createHostLink({ adapter, onState, onCaptions, onConnection, timers }) -> Readonly<{ connect(): void, disconnect(): void, connected(): boolean }>
+createHostLink({ adapter, onState, onCaptions, onConnection }) -> Readonly<{ connect(): void, disconnect(): void, connected(): boolean }>
+// onState(uiState), onCaptions(captionFrame), onConnection(connected, { bye }): `bye` says whether the host announced its own end before the port closed (an expected loss)
 ```
 `connect()` opens `adapter.runtime.connect({ name: PORT_NAMES.panel })`, immediately posts `{v:1,type:'hello'}`, routes `state`/`captions`/`bye` frames to the callbacks (frames are
-validated: `v === 1`, known `type`, size, shape; invalid frames are dropped), and on `onDisconnect` sets `connected() = false`, calls `onConnection(false)` and does NOT reconnect by itself.
+validated: `v === 1`, known `type`, size, shape; invalid frames are dropped), and on `onDisconnect` sets `connected() = false`, calls `onConnection(false, { bye })` and does NOT reconnect by itself (the panel's own `disconnect()`, on dispose or when the host flag goes down, is not a loss and calls nothing; every port handler first checks `port === current`).
 The controller reconnects on (a) start, (b) `interp.host.v1.up` turning true, (c) a successful `sw/lane-start` response. A port with no receiver disconnects immediately (no host): the panel then shows the idle state.
 UNEXPECTED loss (review: it used to end in a silent "idle"): when `onConnection(false)` arrives, the last state had a lane in `starting|running|reconnecting`, the host did not send `bye`, and this
 panel sent no stop within the last 5 s, the controller sets `stopReason = 'host-lost'` (shows `ext.notice.hostLost`) and sends `sw/host-probe`, which reconciles the stale `interp.host.v1.up` flag (6.11) so the
@@ -2160,9 +2228,9 @@ port is not retried against a document that no longer exists. If the SW's `lastS
 
 | State | When | Visible / changed elements (keys) |
 |---|---|---|
-| Idle | no lane running, key present, a lane enabled | pill `idle` `sim.status.idle`; lane status lines `sim.status.idle`; `#btn-start` = `common.start`, enabled; `#mute-note` when muted |
-| Key missing | no personal key and no built-in key | `#key-missing` text (`ext.key.missing`) + `#btn-key-options` (`ext.key.enter`); `#btn-start` disabled and described by it |
-| No lane enabled | both checkboxes off, mode `start` | `#no-lane-note` (`ext.status.noLane`); `#btn-start` disabled |
+| Idle | no lane running, key present, a lane enabled | pill `idle` `sim.status.idle`; lane status lines `sim.status.idle` (`ext.status.off` for a lane whose checkbox is off); `#btn-start` = `common.start`, available; `#mute-note` when muted |
+| Key missing | no personal key and no built-in key | `#key-missing` text (`ext.key.missing`) + `#btn-key-options` (`ext.key.enter`); `#btn-start` `aria-disabled="true"` and described by it (its click is ignored) |
+| No lane enabled | both checkboxes off, mode `start` | `#no-lane-note` (`ext.status.noLane`); `#btn-start` `aria-disabled="true"` |
 | Tab: not armed | tab lane enabled, target tab not armed, Start NOT pressed | `#tab-arm-note` = `ext.arm.needed` + `ext.arm.pinHint` (+ the shortcut) (no attention: the icon click only gets the tab ready, then Start) |
 | Tab: armed | target tab armed | `#tab-arm-note` = `ext.arm.ready` ("ready, press Start") |
 | Tab: unsupported page | target tab URL scheme not capturable | `#tab-arm-note` = `ext.error.TAB_UNSUPPORTED` |
@@ -2177,7 +2245,7 @@ port is not retried against a document that no longer exists. If the SW's `lastS
 | Muted note | `speechMuted` and a lane enabled | `#mute-note`; `#btn-mute[data-muted="true"]` with label `ext.sound.on` |
 | Echo warning | speech ON and the mic lane enabled | `#echo-note` = `ext.sound.echoWarning` |
 | Output blocked/delayed | engine output state | `#<lane>-output` = `ext.output.blocked`, `sim.output.delayed` etc. |
-| Model fallback | `fallback: true` | `#<lane>-route` uses `ext.route.fallback` |
+| Model fallback | `fallback: true` | `#<lane>-route` = `ext.route.fallback` ("Backup model") `· model`; `#<lane>-route-note` (live) = `ext.route.fallbackNote` |
 | Overlay unavailable | a lane `overlay: 'unavailable'` while running with captions on | that lane's notice = `ext.error.OVERLAY_UNAVAILABLE` (mentions reloading the page); preview still shows captions |
 | Apply next | a running lane's language/model differs from settings | that card's `#<lane>-apply-next` (`ext.applyNext`) |
 | Stopped for a reason | `interp.lastStop.v1` fresh (within 60 s) and no lane running, or an unexpected port loss | `#stop-note` = `ext.notice.panelGone` / `ext.notice.hostLost`; cleared by the next Start |
@@ -2188,10 +2256,10 @@ port is not retried against a document that no longer exists. If the SW's `lastS
 Ids are in 7.3; inside a section the DOM order is the row order of the 7.3 table. Structure (DOM order): `h1#opt-title` (`ext.options.title`), `p#opt-lead` (`ext.options.lead`), section key (`h2#opt-h-key` text `settings.key`), section lanes
 (`h2#opt-h-lanes`: language, model, voice, volume, captions-per-lane, `p#opt-defaults-hint` `ext.options.defaultsHint`), section captions (`h2#opt-h-captions`), section privacy (`h2#opt-h-privacy`),
 `p#opt-saved`. Controller: `createOptionsController({ document, adapter, i18n, loadI18n, settingsApi, timers })` -> `{ start(), dispose() }`. Behavior:
-- Loads settings and shows them; every `change` writes ONE field through `updateSettings` and shows `#opt-saved` for 2000 ms; `storage.onChanged` re-renders (panel edits show up live).
+- Loads settings and shows them; every `change` writes ONE field through `updateSettings` and shows `#opt-saved` for 2000 ms (the two number fields, `#opt-caption-lines` and `#opt-caption-hide`, check their range first: a value outside it, a fractional one or an empty one puts the STORED value back and writes and says nothing, because `normalizeSettings` would otherwise turn it into a default while "Saved." was shown, 7.2); `storage.onChanged` re-renders (panel edits show up live).
 - Key: `#opt-key-save` trims and validates (`validateKey`); invalid -> `#opt-key-status` = `error.INVALID_KEY`; valid -> `await adapter.storage.local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'})` (a rejection or a
-  missing API -> the key is NOT written, `#opt-key-status` = `ext.error.STORAGE_FAILED`), then `writeKey`, clear `#opt-key`, status `settings.keySavedBrowser`, thereafter `settings.keyStored`.
-  `#opt-key-delete` -> `deleteKey`, status `settings.keyDeleted`, thereafter `settings.noKey` (or `ext.key.builtin` when the build carries a key). `#opt-key-toggle` switches `#opt-key` between `password` and `text`
+  missing API -> the key is NOT written, `#opt-key-status` = `ext.error.STORAGE_FAILED`), then `writeKey`, clear `#opt-key`, status `ext.key.savedBrowser` (not the app's `settings.keySavedBrowser`: its Korean text is in a formal register), which stays until the next key action; a page that is opened afterwards reports `settings.keyStored`.
+  `#opt-key-delete` -> `deleteKey`, status `settings.keyDeleted` (until the next key action; a page that is opened afterwards reports `settings.noKey`, or `ext.key.builtin` when the build carries a key). `#opt-key-toggle` switches `#opt-key` between `password` and `text`
   (the label swaps `ext.options.keyShow` / `ext.options.keyHide`; no `aria-pressed`). The stored key is NEVER read back into the input.
 - `#opt-key-guide` opens `KEY_GUIDE_URL` in a new tab with `rel="noopener noreferrer"`.
 - Language change re-renders the page (`applyI18n` again, `html lang`).
@@ -2200,9 +2268,11 @@ Ids are in 7.3; inside a section the DOM order is the row order of the 7.3 table
 
 ### 8.4 Microphone-permission page (`extension/permission/mic-permission.html`)
 
+The entry `mic-permission.js` reads `uiLanguage` from `storage.local` for the page's language (the controller itself takes a ready I18n instance).
+
 Purpose (D5): obtain the microphone permission for the extension origin, because neither the offscreen document nor (probably) the side panel can show the prompt `[verified-doc / assumption A14]`.
-Ids: `h1#perm-title` (`ext.permission.title`), `p#perm-lead` (`ext.permission.lead`), `p#perm-always` (`ext.permission.chooseAlways`), `button#perm-request` (`permission.request`), `p#perm-status[role=status]`,
-`p#perm-help` (`ext.permission.blockedHelp`, hidden unless denied), `button#perm-close` (`common.close`). `#perm-status` is a persistent live region (8.2.1 rule): its text changes, it is never hidden.
+Ids: `h1#perm-title` (`ext.permission.title`), `p#perm-lead` (`ext.permission.lead`), `p#perm-always` (`ext.permission.chooseAlways`), `button#perm-request` (`ext.permission.allowButton`), `p#perm-status[role=status]`,
+`p#perm-help[role=status]` (`ext.permission.blockedHelp`), `button#perm-close` (`common.close`). `#perm-status` and `#perm-help` are persistent live regions (8.2.1 rule): their text is written (`#perm-help` only after a denial) and cleared, and neither is ever `hidden` (a region that appears together with its text is often not announced). The allow action has ONE name: `ext.permission.allowButton` on this page's button and on the panel's `#btn-mic-allow`, the same words as the page title `ext.permission.title` and as the notices that send the user there (`ext.error.MICROPHONE_DENIED`, `ext.error.MICROPHONE_EXPIRED`); only the panel's icon button `#btn-mic-permission` keeps `permission.request` (two visible buttons with the same name next to each other would be worse).
 
 `createPermissionController({ document, navigator, window, i18n, timers })` flow:
 1. Status `permission.checking`; `permissions.query({name:'microphone'})` (feature-detected). `granted` -> step 4.
@@ -2211,7 +2281,7 @@ Ids: `h1#perm-title` (`ext.permission.title`), `p#perm-lead` (`ext.permission.le
    "Allow on every visit" that the first draft quoted in all three languages. Whether the same three appear for an extension origin is unverified `[assumption A14]`; checklist 13.8 records the labels the owner
    actually sees. A one-time grant expires (page close, navigation, about 16 h for some grants, per the capture scout), after which the panel shows `ext.error.MICROPHONE_EXPIRED` instead of the generic
    denial (8.2.3 rule 8). Status `permission.prompt`.
-3. Outcome: success -> stop every track immediately -> step 4. `NotAllowedError` / `SecurityError` -> status `permission.denied` + `#perm-help` visible. `NotFoundError` -> `permission.noDevice` + `permission.noDeviceHint`.
+3. Outcome: success -> stop every track immediately -> step 4. `NotAllowedError` / `SecurityError` -> status `permission.denied` + the text of `#perm-help` written (`ext.permission.blockedHelp`; every other branch clears it). `NotFoundError` -> `permission.noDevice` + `permission.noDeviceHint`.
    `NotReadableError` -> `permission.busy` + `permission.busyHint`. Any other error -> `permission.denied`.
 4. Granted: status `permission.granted`, show `ext.permission.done` ("Allowed. This tab closes in a moment."), call `window.close()` after 2000 ms (timers injected; long enough to read the line); `#perm-close` also closes.
 `#perm-request` repeats step 2. The microphone is never left on: tracks are stopped in every branch (a test asserts it).
@@ -2224,13 +2294,13 @@ Ids: `h1#perm-title` (`ext.permission.title`), `p#perm-lead` (`ext.permission.le
 - Wire constants live in ONE frozen object literal `const WIRE = Object.freeze({ port: 'interp-overlay/1', v: 1, maxRows: 6, maxRowChars: 400 });` (pinned by tests without a cross-group import, 3.5).
 - Idempotent: `const KEY = Symbol.for('interp.overlay.v1'); if (globalThis[KEY]) return;` then `globalThis[KEY] = Object.freeze({ dispose })`. A second injection does nothing.
 - At load it does NOT connect. It listens on `chrome.runtime.onMessage` for `content/overlay-attach` (accepted only from `sender.id === chrome.runtime.id && sender.tab === undefined`,
-  `v === 1`, `target === 'content'`) and answers `{ok:true}` in EVERY case. Attach is IDEMPOTENT while connected (review: several triggers can send it within milliseconds): if a port is already open it does nothing more; otherwise it
+  `v === 1`, `target === 'content'`, `type === 'content/overlay-attach'`) and answers `{ok:true}` for EVERY message it accepts (also when a port is already open and also when `connect` throws); a message that fails the trust check gets no answer at all (answering what the overlay refuses would fake a success). Attach is IDEMPOTENT while connected (review: several triggers can send it within milliseconds): if a port is already open it does nothing more; otherwise it
   calls `chrome.runtime.connect({ name: WIRE.port })`, stores that port as `current`, posts `{v:1,type:'hello'}` and handles frames. Every port handler (`onMessage`, `onDisconnect`) first checks `port === current` and
   does nothing when it is not (a late disconnect of a port the host replaced can never dispose the UI now owned by the new one).
 - Orphan guard: every `chrome.*` access is wrapped in `try`; before use it checks `chrome.runtime?.id`. If the id is gone (extension reloaded/updated) or the port disconnects for good, it removes its DOM and listeners
   (`dispose()`) and never throws into the page. On `port.onDisconnect` (for `current`) it disposes the UI and clears `current` but keeps the `onMessage` listener, so a later `content/overlay-attach` (new lane) can attach again.
-- It never reads the page: the only page properties it touches are `document.documentElement`, `document.fullscreenElement` (plus that element's `tagName` and `isConnected`), `document.visibilityState` and the `fullscreenchange` / `visibilitychange` events.
-  It sets no attribute or class on page elements, adds no listener on page elements, and appends exactly one element (the host); the fullscreen handling of 8.5.3 moves that same element temporarily and always restores it.
+- It never reads the page: the only page properties it touches are `document.documentElement`, `document.fullscreenElement` (plus that element's `tagName`, `isConnected` and `shadowRoot`, and one `appendChild` call on it under strategy 1 of 8.5.3), `document.visibilityState` and the `fullscreenchange` / `visibilitychange` events.
+  It sets no attribute or class on page elements, adds no listener on page elements, and appends exactly one element (the host), created when the FIRST frame is accepted and not at attach, so a port that never reaches a host (no receiver, or the host closes it at once) leaves no mutation on the page at all; the fullscreen handling of 8.5.3 moves that same element temporarily and always restores it.
 - Strings (lane names, region label, status rows) come from `chrome.i18n.getMessage` (`_locales`, 9.3): content scripts cannot load the ext dictionary. The names are `overlayRegion`, `overlayHide`, `overlayLaneTab`, `overlayLaneMic`, `overlayGap`,
   `overlayReconnecting`, `overlayStopped`. A missing message renders an empty string, never a key name. They follow CHROME's UI language, not `settings.uiLanguage` (the panel and options do): with Chrome in English and the
   UI language set to Korean, the panel is Korean and the chips on the page are English. Pushing resolved strings in the attach message was considered and rejected (7 short labels; the SW would need its own dictionary fetch and a menu
@@ -2269,7 +2339,7 @@ Ids: `h1#perm-title` (`ext.permission.title`), `p#perm-lead` (`ext.permission.le
   `.lane, .rows { display: flex; flex-direction: column; justify-content: flex-end; min-height: 0; }`
   **Overflow anchoring (review: the newest row is LAST, and a plain block with `overflow: hidden` clips the BOTTOM edge, so a long sentence hid exactly the line being spoken):** `justify-content: flex-end` on the column makes an overflowing
   container overflow at its START edge, so it is the OLDEST lines that clip; the bound is about 8 visual lines at the current size (`max-height` above), and a top fade
-  `.wrap { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.5em); mask-image: linear-gradient(to bottom, transparent 0, #000 1.5em); }` (no `url()`) hides the cut. A static CSS test asserts these rules; checklist
+  `.wrap { mask-image: linear-gradient(to bottom, transparent 0, #000 1.5em), linear-gradient(#000, #000); mask-size: 100% 100%, 40px 40px; mask-position: 0 0, right 0 top 0; mask-repeat: no-repeat; }` (plus the `-webkit-` spellings; no `url()`) hides the cut: the first layer is the fade, the second an opaque 40 px square over the close button's corner, so the button itself is never faded (the fade alone was the first build). A static CSS test asserts these rules; checklist
   13.30 checks long sentences at size 2.0 in a 500 px-high window (the fake DOM has no layout, so only a manual check proves it).
   `.wrap[data-position="top"] { top: 16px; }` `.wrap[data-position="bottom"] { bottom: 16px; }` `.wrap[hidden] { display: none; }` `.close { position: absolute; top: 4px; inset-inline-end: 4px; pointer-events: auto;
   min-width: 28px; min-height: 28px; ... }` `.row[data-status="partial"] { color: var(--muted); border-inline-start: 3px dashed var(--accent); padding-inline-start: 8px; }`
@@ -2289,30 +2359,30 @@ Ids: `h1#perm-title` (`ext.permission.title`), `p#perm-lead` (`ext.permission.le
 
   The same test computes WCAG contrast ratios with a small pure helper over this table and the panel tokens (text pairs >= 4.5:1, non-text borders and bars >= 3:1) so today's passing pairs stay passing.
 - `--size` = the style frame `size` (1..2). z-index is the maximum 32-bit value; the overlay never uses `position: sticky/absolute` relative to page ancestors (it is `fixed` under the host which is `fixed` under `documentElement`).
-- RTL is not needed (ko/en/ja); `text-align: start`, logical properties used anyway.
+- The captions are ko/en/ja (left-to-right), so the overlay does not follow the page's direction: the host pins `direction: ltr` and `unicode-bidi: isolate` and each row carries `dir="auto"` (the CSS `all` shorthand does not reset `direction`, above); `text-align: start` and logical properties are used anyway.
 - The overlay has no focus trap and never calls `focus()`. The close button is keyboard-reachable only by tabbing to it (it is in the page's tab order at the end of the DOM, an accepted limitation `[assumption A16]`). There is no `aria-live` on the overlay
   (partial captions would flood screen readers), and NO surface announces captions in v1: the panel previews are `aria-live="off"` too (8.2.6). A screen-reader user can read the panel preview on focus; that is a stated limitation, not a solved case.
 
 #### 8.5.3 Frame handling and display rules
 
-State: `style` (from the last `style` frame, defaults `{size:1.5, position:'bottom', display:'dark', maxLines:3, autoHideSeconds:8}`), `lanes = { tab: null | frame, mic: null | frame }`, `dismissedEpoch = { tab: -1, mic: -1 }`,
-`status = { tab: null | 'reconnecting' | 'stopped', mic: ... }`, `gapUntil` (time or 0), `prevGaps = { tab: {input,audio,reception}, mic: ... }` (all false).
+State: `style` (from the last `style` frame, defaults `{size:1.5, position:'bottom', display:'dark', maxLines:3, autoHideSeconds:8}`), `lanes = { tab: null | frame, mic: null | frame }`, `dismissedEpoch = { tab: null, mic: null }` (`null`, or the epoch that was on screen when the user pressed close; `null` and not `-1`, because a lane that has only a status row, a `stopped` status followed by `clear`, has no frame epoch), the last accepted epoch per lane,
+`status = { tab: null | 'reconnecting' | 'stopped', mic: ... }`, `gapOn` (a boolean with its own 8 s timer), `prevGaps = { tab: {input,audio,reception}, mic: ... }` (all false).
 
 - `style` frame: validate ranges (size 1..2, position, display, maxLines 1..6, autoHideSeconds 0..60), store, re-render. Out-of-range values keep the previous value.
-- `captions` frame for `lane`: ignore if the frame is malformed, larger than 16384 characters when stringified, or `lane` unknown. **Ignore when `frame.epoch <= dismissedEpoch[lane]`** (one rule; the earlier text said `<` in one place and "same or older" in another, and with `<` the very next frame
+- `captions` frame for `lane`: ignore if the frame is malformed, larger than 16384 characters when stringified, or `lane` unknown. **Ignore when `dismissedEpoch[lane]` is set and `frame.epoch <= dismissedEpoch[lane]`** (one rule; the earlier text said `<` in one place and "same or older" in another, and with `<` the very next frame
   of the same epoch, about 100 ms later, re-showed the overlay, so the close button looked broken). Store it. Rows shown per lane = the last `maxLines` rows of `frame.rows` that are NOT `skipped` (chronological, newest LAST; the host already selected them). The newest row is at the
   bottom in both `top` and `bottom` positions. `partial` rows are muted with a dashed bar; `final` rows are plain; `interrupted` rows are muted with a solid danger bar and are dropped as soon as a newer row exists in the lane.
-  Text is set with `textContent` after defensive truncation to 400 characters keeping the END; `lang` = `frame.lang`.
+  Text is set with `textContent` after defensive truncation to 400 characters keeping the END; `lang` = `frame.lang` (an unknown `lang` is drawn without a `lang` attribute instead of dropping the frame; rows are validated for `text` (a string) and `status` (`final|partial|interrupted`) only, and `skipped` counts only when it is `true`).
   Gap line (review: the sticky flag made the warning permanent after one hiccup): on a `false -> true` transition of any `gaps` flag of the frame compared with `prevGaps[lane]` (reset when the epoch changes) the overlay shows `.gap` for about 8 s
   (`gapUntil`, a page-realm timer) and then hides it; a later new transition shows it again.
 - `status` frame for `lane` (`phase` in `reconnecting|stopped|running`): `running` clears `status[lane]`; `reconnecting` sets it and it stays until `running` or `bye`; `stopped` sets it and a timer of about 8 s clears it. Each lane with a status renders one `.status` row
   (`overlayReconnecting` / `overlayStopped`). Without this channel captions vanished on an error or a reconnect with no explanation exactly when the user was looking at the page (review).
 - There is NO toggle inside the overlay for source text, size or position: `showSource`, `size`, `position`, `display`, `maxLines`, `autoHideSeconds` are options-page settings that the host applies while building rows and `style` frames (Live).
-- `clear {lane}`: drop that lane's rows AND reset `dismissedEpoch[lane] = -1` and `prevGaps[lane]` (so the panel's captions checkbox off/on, which makes the host send `clear`, brings a dismissed overlay back). The lane's `status` row is kept. `bye`: dispose the UI and close the port.
+- `clear {lane}`: drop that lane's rows AND reset `dismissedEpoch[lane] = null` and `prevGaps[lane]` (so the panel's captions checkbox off/on, which makes the host send `clear`, brings a dismissed overlay back). The lane's `status` row is kept. `bye`: dispose the UI and close the port; after `bye` or a disconnect every dismissal is forgotten, so a host that resumes a lane at the same epoch on a new port shows it again.
 - Empty state: when there are no rows in any lane and no status row and no gap line, the whole `.wrap` is `hidden` (nothing is drawn over the page).
 - Auto-hide after silence: every accepted `captions` frame whose rows differ from the previous frame of that lane (JSON compare) restarts a timer of `autoHideSeconds`; on expiry the rows are hidden (the port stays open); the next differing frame shows them again.
   `autoHideSeconds === 0` never hides. Status and gap rows have their own 8 s timers. Timers use `setTimeout` from the page realm.
-- Dismiss: the `×` button hides the wrap and records `dismissedEpoch[lane] = frame.epoch` (the last epoch seen) for every lane shown; while a lane is dismissed neither its rows nor its status row render; frames with `epoch <= dismissedEpoch[lane]` are ignored;
+- Dismiss: the `×` button hides the wrap and records `dismissedEpoch[lane] = frame.epoch` (the last epoch seen) for every lane shown (it also hides a gap line that is showing and cancels its timer); while a lane is dismissed neither its rows nor its status row render; frames with `epoch <= dismissedEpoch[lane]` are ignored;
   a NEW lane start (higher `epoch`) shows the overlay again, and so does `clear {lane}`.
 - Visibility: while `document.visibilityState === 'hidden'` nothing is rendered (`hidden`); on `visibilitychange` to visible the last frames render again.
 - Fullscreen (review: appending the host into an arbitrary page element contradicted "appends exactly one element / never breaks the page"; elements that cannot render light-DOM children make the overlay vanish while it is removed from `documentElement`):
@@ -2342,7 +2412,7 @@ State: `style` (from the last `style` frame, defaults `{size:1.5, position:'bott
 - App dictionaries (reused): `app/i18n/{ko,en,ja}.json` (810 keys, identical key sets). Copied by the build to
   `dist/extension/app/i18n/`.
 - Extension dictionaries: `extension/i18n/{ko,en,ja}.json` (group D): flat dotted keys, ALL keys start with `ext.`, string
-  values, identical key sets and `{placeholders}` in the three languages. 113 keys (9.2). Validated by the patched
+  values, identical key sets and `{placeholders}` in the three languages. 117 keys (9.2). Validated by the patched
   `scripts/check-i18n.mjs` (12.1): prefix, parity, placeholders, no collision with an app key, and every source and HTML
   file under `extension/` checked against the union of app and ext keys.
 - Chrome's own `_locales/{en,ko,ja}/messages.json`: manifest name/description, action title, shortcut description, context-menu
@@ -2355,16 +2425,16 @@ State: `style` (from the last `style` frame, defaults `{size:1.5, position:'bott
 - The extension offers ko/en/ja for BOTH the UI and the interpretation languages (`SUPPORTED_LANGUAGES`); the two-way mode is
   not offered (D10). Language labels are `language.ko|en|ja` in the CURRENT UI language (not the screenshot's bilingual labels).
 
-### 9.2 The complete `ext.*` key list (113 keys; generated from one source and machine-checked on 2026-09-29: key shape,
+### 9.2 The complete `ext.*` key list (117 keys; the tables below were regenerated by script from `extension/i18n/{ko,en,ja}.json` on 2026-09-29 (a diff of every cell reports 0 differences) and the machine checks were re-run on the delivered dictionaries: key shape,
 `ext.` prefix, no collision with the 810 app keys, placeholder parity across languages, description <= 132 characters,
 name <= 45 characters, the `ext.error.*` set equal to `EXTENSION_ERROR_CODES` plus `OVERRIDDEN_ENGINE_CODES`, the mute hint naming the
-mute button label exactly, and the D12 marker words `측정` / `estimate` / `実測` in `ext.usage.twoSessions`)
+mute button label exactly, and the D12 marker words `측정` / `estimate` / `実測` in `ext.usage.twoSessions`; the dictionaries win over this text if they ever disagree: `tests/extension-html.test.mjs` pins the wording that matters)
 
 Placeholders: `{lane}` and `{status}` in `ext.lane.statusLine` (lane title and status text), `{percent}` in `ext.volume.value` (integer), `{title}` in
 `ext.tab.target` (tab title, at most 60 characters, rendered with `textContent`), `{count}` in `ext.status.reconnecting` (integer 1..3), `{shortcut}` in
 `ext.arm.shortcut` (the shortcut text from `commands.getAll`). Tone is 9.1. Wording was revised after the UX review: arming copy is split by state,
 quota copy names a next step, the microphone-permission copy no longer quotes a Chrome label that does not exist, and the sound button names what it controls (the
-INTERPRETED speech, not the tab's sound).
+INTERPRETED speech, not the tab's sound). It was revised once more after the review of the built extension: the caption-lines and auto-hide labels state their ranges (1-6, 0-60), the backup-model warning moved to its own key `ext.route.fallbackNote` (`ext.route.fallback` is now a short label), a switched-off lane reads `ext.status.off`, the tab model select reads `ext.options.modelLive` (no "(default)" tag), the key-saved status is `ext.key.savedBrowser` (the app's Korean text is in a formal register), and the English microphone page title reads "Allow microphone" like its button. The four keys that did not exist in the first draft are `ext.status.off`, `ext.route.fallbackNote`, `ext.key.savedBrowser` and `ext.options.modelLive`.
 
 **Brand and manifest (paired with _locales)**
 
@@ -2399,16 +2469,19 @@ INTERPRETED speech, not the tab's sound).
 | `ext.usage.twoSessions` | 둘을 함께 켜면 통역 세션이 두 개 열려서 Google 무료 한도(또는 요금)를 약 두 배 빠르게 쓸 수 있어요. 측정한 값은 아니에요. | Turning both on opens two sessions, so your Google free quota (or charges) may go about twice as fast. This is an estimate, not a measurement. | 両方をオンにするとセッションが2つ開くため、Googleの無料枠（または料金）の消費が約2倍になる可能性があります。実測値ではありません。 |
 | `ext.usage.quotaHint` | 통역을 둘 다 켜 두면 한도를 더 빨리 써요. 하나만 켜 보세요. | Having both on uses the limit faster. Try with just one. | 両方をオンにすると枠を早く使い切ります。1つだけにしてみてください。 |
 | `ext.status.noLane` | 켜 둔 통역이 없어요. 탭 오디오나 마이크를 하나 이상 켜세요. | No interpretation is turned on. Turn on tab audio or the microphone. | オンになっている通訳がありません。タブの音声かマイクを1つ以上オンにしてください。 |
+| `ext.status.off` | 꺼져 있어요 | Off | オフ |
 | `ext.status.awaitingArm` | 탭 준비를 기다리는 중이에요 | Waiting for the tab to be ready | タブの準備を待っています |
 | `ext.status.failed` | 통역에 실패했어요 | Interpretation failed | 通訳に失敗しました |
 | `ext.status.partial` | 한쪽만 통역 중이에요 | Only one of the two is interpreting | どちらか一方のみ通訳中です |
 | `ext.status.reconnecting` | 연결이 끊겨 다시 연결하는 중이에요 ({count}/3). 자막이 잠시 멈출 수 있어요. | Connection lost. Reconnecting ({count}/3). Captions may pause. | 接続が切れたため再接続しています（{count}/3）。字幕が一時停止することがあります。 |
 | `ext.gap.input` | 오디오 일부를 보내지 못해서 자막이 빠질 수 있어요. | Some audio was not sent, so some captions may be missing. | 音声の一部を送信できなかったため、字幕が欠ける可能性があります。 |
 | `ext.output.blocked` | Chrome이 이 확장 프로그램의 통역 음성 재생을 막았어요. 자막은 계속 나와요. | Chrome blocked playback of interpreted speech from this extension. Captions continue. | Chromeがこの拡張機能の通訳音声の再生をブロックしました。字幕は引き続き表示されます。 |
-| `ext.route.fallback` | 선택한 모델에 연결하지 못해 보조 모델로 통역 중이에요. 영상 속 말에 통역이 대답할 수 있어요. | The selected model could not connect, so a backup model is interpreting. It may answer what it hears instead of translating. | 選択したモデルに接続できないため、補助モデルで通訳しています。聞こえた発言に返答してしまうことがあります。 |
+| `ext.route.fallback` | 예비 모델 | Backup model | 予備モデル |
+| `ext.route.fallbackNote` | 예비 모델이 통역 중이에요. 들리는 말에 통역 대신 대답할 수 있어요. | A backup model is interpreting. It may answer what it hears instead of translating. | 予備モデルが通訳しています。聞こえた内容を通訳せずに返答することがあります。 |
 | `ext.key.missing` | Gemini API 키가 필요해요. 옵션에서 키를 입력하세요. | A Gemini API key is required. Enter it in Options. | Gemini APIキーが必要です。オプションで入力してください。 |
 | `ext.key.builtin` | 이 빌드에는 기본 키가 들어 있어요. 개인 키를 저장하면 개인 키를 먼저 써요. | This build includes a default key. A personal key you save is used first. | このビルドには既定のキーが含まれています。個人キーを保存すると、個人キーが優先されます。 |
 | `ext.key.enter` | API 키 입력 | Enter API key | APIキーを入力 |
+| `ext.key.savedBrowser` | 키를 이 브라우저에 저장했어요. | Key saved in this browser. | キーをこのブラウザに保存しました。 |
 | `ext.notice.panelGone` | 패널을 닫아서 통역이 멈췄어요. 다시 하려면 시작을 누르세요. | Interpretation stopped because the panel was closed. Press Start to run it again. | パネルを閉じたため通訳が停止しました。もう一度実行するには開始を押してください。 |
 | `ext.notice.hostLost` | 통역 엔진이 예기치 않게 멈췄어요. 시작을 눌러 다시 실행하세요. | The interpretation engine stopped unexpectedly. Press Start to run it again. | 通訳エンジンが予期せず停止しました。開始を押してもう一度実行してください。 |
 | `ext.panel.closeStops` | 패널을 닫으면 통역도 멈춰요. | Closing this panel also stops interpretation. | パネルを閉じると通訳も停止します。 |
@@ -2439,6 +2512,7 @@ INTERPRETED speech, not the tab's sound).
 | `ext.options.defaultsHint` | 패널을 열 때 처음 선택돼 있을 값이에요. 패널에서 바꾼 값도 여기에 저장돼요. | These are the values selected when the panel opens. Changes made in the panel are saved here too. | パネルを開いたときに最初に選ばれている値です。パネルで変更した値もここに保存されます。 |
 | `ext.options.modelTab` | 탭 오디오 모델 | Tab audio model | タブ音声のモデル |
 | `ext.options.modelMic` | 마이크 모델 | Microphone model | マイクのモデル |
+| `ext.options.modelLive` | Gemini 3.8 Live | Gemini 3.8 Live | Gemini 3.8 Live |
 | `ext.options.modelTabHint` | 탭 소리에는 번역 전용 모델(Gemini 3.5 Live Translate)을 권장해요. 영상 속 말에 통역이 대답하는 일이 거의 없어요. 모델은 다음 시작부터 적용돼요. | For tab audio, the translation-only model (Gemini 3.5 Live Translate) is recommended: it usually does not answer what it hears in a video. The model applies from the next start. | タブの音声には翻訳専用モデル（Gemini 3.5 Live Translate）をおすすめします。動画の中の発言に通訳が返答することはほとんどありません。モデルは次回の開始から適用されます。 |
 | `ext.options.modelMicHint` | 마이크에는 기본 모델(Gemini 3.8 Live)을 권장해요. 모델은 다음 시작부터 적용돼요. | For the microphone, the default model (Gemini 3.8 Live) is recommended. The model applies from the next start. | マイクには既定のモデル（Gemini 3.8 Live）をおすすめします。モデルは次回の開始から適用されます。 |
 | `ext.options.uiLanguageHint` | 패널과 옵션의 언어예요. 웹페이지에 뜨는 자막의 안내 문구, 툴바 툴팁, 메뉴 이름은 Chrome의 언어를 따라가요. | The language of the panel and options. Labels on captions drawn into web pages, the toolbar tooltip and the menu item follow Chrome's own language. | パネルとオプションの言語です。ウェブページに表示される字幕の案内文、ツールバーのツールチップ、メニュー名はChromeの言語に従います。 |
@@ -2448,8 +2522,8 @@ INTERPRETED speech, not the tab's sound).
 | `ext.options.captionPosition` | 자막 위치 | Caption position | 字幕の位置 |
 | `ext.options.position.top` | 위쪽 | Top | 上 |
 | `ext.options.position.bottom` | 아래쪽 | Bottom | 下 |
-| `ext.options.captionLines` | 자막 줄 수 | Caption lines | 字幕の行数 |
-| `ext.options.autoHide` | 조용해지면 자막 숨기기(초, 0은 숨기지 않음) | Hide captions after silence (seconds, 0 keeps them) | 無音が続いたら字幕を隠す（秒、0は隠さない） |
+| `ext.options.captionLines` | 자막 줄 수 (1~6) | Caption lines (1–6) | 字幕の行数（1〜6） |
+| `ext.options.autoHide` | 조용해지면 자막 숨기기 (0~60초, 0은 숨기지 않음) | Hide captions after silence (0–60 seconds; 0 keeps them) | 無音が続いたら字幕を隠す（0〜60秒、0は隠さない） |
 | `ext.keyStorage` | 키는 이 브라우저의 확장 프로그램 저장소에만 보관하고 Google 외에는 보내지 않아요. | The key is kept only in this browser's extension storage and is sent to no one but Google. | キーはこのブラウザの拡張機能ストレージにのみ保存し、Google以外には送信しません。 |
 | `ext.privacy.audio` | 통역하는 동안 선택한 오디오(탭 소리, 마이크)가 Google Gemini로 전송돼요. | While interpreting, the audio you selected (tab audio, microphone) is sent to Google Gemini. | 通訳中は、選択した音声（タブの音声、マイク）がGoogle Geminiに送信されます。 |
 | `ext.privacy.freeTier` | 결제 계정을 연결하지 않은 무료 한도로 쓰면, Google이 입력한 오디오와 결과를 서비스 개선에 쓰고 사람이 검토할 수 있어요. 중요한 통화나 회의에는 쓰지 마세요. | On the free tier (no billing account linked), Google may use the audio you send and the results to improve its products, and people may review them. Do not use it for sensitive calls or meetings. | 請求先アカウントを連携していない無料枠では、送信した音声と結果がGoogleのサービス改善に使われ、担当者が確認することがあります。機密性の高い通話や会議には使わないでください。 |
@@ -2459,7 +2533,7 @@ INTERPRETED speech, not the tab's sound).
 
 | key | ko | en | ja |
 |---|---|---|---|
-| `ext.permission.title` | 마이크 허용 | Allow the microphone | マイクを許可 |
+| `ext.permission.title` | 마이크 허용 | Allow microphone | マイクを許可 |
 | `ext.permission.lead` | 내 말을 통역하려면 이 확장 프로그램이 마이크를 쓸 수 있어야 해요. 허용해도 시작을 누르기 전에는 마이크를 켜지 않아요. | To interpret your speech, this extension needs to use the microphone. Even after you allow it, the microphone stays off until you press Start. | 自分の話を通訳するには、この拡張機能がマイクを使えるようにする必要があります。許可しても、開始を押すまでマイクはオンになりません。 |
 | `ext.permission.chooseAlways` | 허용 창이 뜨면 ‘이번만 허용’은 고르지 말고, 계속 허용되는 항목을 고르세요. | When the prompt appears, do not choose Allow this time; choose the option that keeps the microphone allowed. | 許可の確認が表示されたら「今回のみ許可」は選ばず、今後も許可される項目を選んでください。 |
 | `ext.permission.done` | 허용됐어요. 이 탭은 곧 닫혀요. | Allowed. This tab closes in a moment. | 許可されました。このタブはまもなく閉じます。 |
@@ -2705,10 +2779,9 @@ the source (SW, overlay) must exist in all three files (test). `extDescription` 
 `language.target`, `language.ui`; `sim.status.idle|preparing|connecting|running|stopping|stopped`;
 `sim.output.delayed|catching_up|unavailable`; `sim.route.translation|flash`;
 `sim.headphonesStart`; `sim.captions.empty|latest|showSource|partial|final|interrupted|skipped`; `sim.gap.audio|reception`;
-`sim.voice`, `sim.voice.female`, `sim.voice.male`, `sim.voiceRestart`; `sim.model0`, `sim.model1`, `sim.model2` (index in `LIVE_MODELS`; `sim.model0` says "(default)", which is the WEB APP's default: the options hints
-name the recommended model per lane instead of relabelling the options, because the model names are not i18n data and a key family for three names costs more than it earns);
+`sim.voice`, `sim.voice.female`, `sim.voice.male`, `sim.voiceRestart`; `sim.model0`, `sim.model1`, `sim.model2` (index in `LIVE_MODELS`; `sim.model0` says "(default)", which is the WEB APP's default and true for the microphone only: the microphone select keeps it, the tab select shows the same model as `ext.options.modelLive`, "Gemini 3.8 Live" without the tag, and the options hints name the recommended model per lane, because the model names are not i18n data and a key family for three names costs more than it earns);
 `display.captions.size|value|range`; `captionOnly.display`, `captionOnly.display.dark|light|mono`; `settings.key`, `settings.keyPlaceholder`,
-`settings.keyStorageWarning`, `settings.keyStored`, `settings.noKey`, `settings.keySavedBrowser`, `settings.keyDeleted`, `settings.deleteKey`;
+`settings.keyStorageWarning`, `settings.keyStored`, `settings.noKey`, `settings.keyDeleted`, `settings.deleteKey`;
 `keyGuide.createLink`, `keyGuide.newTab`; `permission.title|request|granted|denied|prompt|checking|noDevice|noDeviceHint|busy|busyHint`;
 `seq.inputLevel`; `error.unknown`, `error.INVALID_KEY` (typed into the options key field; NOT via `errorKeyFor`) and the generic `error.<CODE>` keys that `errorKeyFor` still falls back to
 (`error.CREDENTIAL_MISMATCH`, `error.NETWORK_ERROR`, `error.UNAVAILABLE`, `error.TIMEOUT`, `error.SETTINGS_UNSUPPORTED`, `error.SAFETY_BLOCKED`, `error.INVALID_RESULT`).
@@ -2716,7 +2789,7 @@ name the recommended model per lane instead of relabelling the options, because 
 Reviewed and REPLACED by `ext.*` overrides because their app wording is wrong or has no next step in an extension: `sim.status.failed` ("Listening failed"), `sim.status.replacing` (engine jargon),
 `sim.output.blocked` (tells the user to press the button they just pressed), `sim.route.fallback` ("the default model failed": not true for the tab lane), `sim.gap.input` ("microphone input", wrong for the tab lane),
 `sim.mute` / `sim.enableSound` (they read as if they control the tab's sound), `error.DAILY_LIMIT`, `error.TOKEN_LIMIT`, `error.UNKNOWN_429`, `error.SESSION_LIMIT`, `error.MODEL_UNSUPPORTED`, `error.STORAGE_FAILED`,
-`error.IP_DENIED`, `error.CREDENTIAL_FORBIDDEN` (see 4.6.2).
+`error.IP_DENIED`, `error.CREDENTIAL_FORBIDDEN` (see 4.6.2), `settings.keySavedBrowser` (its Korean text is in the formal register of the app; the extension uses `ext.key.savedBrowser`) and the "(default)" tag of `sim.model0` on the tab select (`ext.options.modelLive`).
 
 Deliberately NOT reused (wrong platform wording for an extension): `sim.direct`, `sim.personalKey`, `sim.seatAudio`, `sim.hub`, `sim.builtin*`,
 `sim.error.*` (all of them, see 4.6.2), `permission.help.*`, `permission.gestureOnly`, `error.BROWSER_INTERRUPTED` (says "the app left the
@@ -2739,7 +2812,7 @@ export function createFallbackI18n({ language } = {}) -> I18n     // 3-key Engli
 - Language negotiation: `language` (one of `ko|en|ja`) when valid, else `selectLanguage(languages)` (pass `navigator.languages`; the loader never reads
   a global). The controller passes `settings.uiLanguage` when it is not `'auto'`. Runtime change: `i18n.setLanguage(code)` then `applyI18n`.
 - Fallback chain: per key `current language -> en -> error.unknown` (built into `createI18n`; unknown keys are never echoed). If the load throws, the
-  page uses `createFallbackI18n()` and renders `error.unknown`-style text with a Retry (`common.retry`) that calls the loader again.
+  page uses `createFallbackI18n()` (every label then reads the same `error.unknown` sentence): the side panel and the options page retry the loader silently three times (after 2 s, 6 s and 18 s) and re-render when one succeeds; the permission page has no retry. There is NO Retry button in the markup (KNOWN, NOT FIXED: UX review 14, checklist 13.51); the first draft promised one (`common.retry`).
 - Import rule: `lib/i18n.js` may import `app/i18n/index.js` and `app/i18n/boot-fallback.js` (R4).
 
 ### 9.6 Dynamic key families (explicit `has()` tests, because the checker only sees literals)
@@ -2748,7 +2821,7 @@ export function createFallbackI18n({ language } = {}) -> I18n     // 3-key Engli
 `sim.status.<status>` for `idle|preparing|connecting|running|stopping|stopped` (the statuses the panel still takes from the app; `reconnecting` and `failed` are `ext.status.*`);
 `sim.output.<state with '-' replaced by '_'>` for `delayed|catching-up|unavailable`; `sim.gap.<audio|reception>`; `language.<ko|en|ja>`;
 `permission.<granted|denied|prompt|checking>`; `captionOnly.display.<dark|light|mono>`;
-`ext.lane.<tab|mic>.title`; `ext.options.position.<top|bottom>`; `sim.model<i>` for `i < LIVE_MODELS.length`. For every code that can appear in a
+`ext.lane.<tab|mic>.title`; `ext.options.position.<top|bottom>`; `sim.model<i>` for `i < LIVE_MODELS.length` (the tab select uses `ext.options.modelLive` in place of `sim.model0`). For every code that can appear in a
 `LaneState.errorCode` or a `sw/lane-start` error, `errorKeyFor(code, i18n.has, lane)` resolves, for BOTH lanes, to a key that exists (test over `ERROR_CODES` plus the extension codes),
 never to a `sim.error.*` key, and for the tab lane never to a key whose text says "microphone" (`MICROPHONE_UNAVAILABLE`, `BROWSER_INTERRUPTED`, `MICROPHONE_DENIED` -> `ext.error.TAB_INPUT_LOST`).
 
@@ -2779,12 +2852,17 @@ export const ALLOWED_PERMISSIONS;      // frozen sorted array, 10.5
 export const EXTENSION_PAGES;          // ['extension/engine/host.html', 'extension/permission/mic-permission.html'] (pages not in the manifest)
 export const KEY_SLOT = 'export const BUILTIN_KEYS = Object.freeze([]);';
 export const KEY_FILE = 'extension/lib/builtin-key.js';
+export const EXTRA_FILES;             // ['styles.css', 'app/audio/capture-worklet.js', 'app/i18n/{ko,en,ja}.json'] (10.2 step 3c)
+export const EXTENSION_CODES;          // frozen list of the 16 codes of 10.7
 export async function buildExtension({ root = projectRoot, out = join(root, 'dist', 'extension'), clean = false,
   zip = false, builtinKeyFile = null, zipFn = defaultZip } = {}) -> Promise<Readonly<{
     out: string, files: string[] /* sorted POSIX paths relative to out */, version: string,
     builtinKeys: number, zip: string | null }>>
-export async function computeImportClosure({ root, entries }) -> Promise<Readonly<{ files: string[], graph: Map<string, string[]> }>>
-export function lintManifest(manifest, { fileExists }) -> string[]        // list of EXTENSION_MANIFEST_* reasons, [] = ok
+export async function computeImportClosure({ root, entries, classicScripts = [] }) -> Promise<Readonly<{ files: string[] /* the app/ subset */, graph: Map<string, string[]> /* every walked file -> its sorted dependencies */ }>>
+export function lintManifest(manifest, { fileExists, messages }) -> string[]   // list of EXTENSION_MANIFEST_* reasons, [] = ok; `messages` = { en, ko, ja }, the parsed _locales files
+export async function isOwnOutput(out) -> Promise<boolean>              // 10.2 step 4
+export function parseArguments(args) -> Readonly<{ out, clean, zip, builtinKeyFile }>   // throws EXTENSION_ARGUMENT_INVALID
+export async function runCli(args, { stdout, stderr, build }) -> Promise<number>        // the exit code; prints only the lines below
 export async function decodePng(bytes) / encodePng({ width, height, rgb }) / downscale4(image)    // icons, exported for tests
 ```
 
@@ -2798,30 +2876,33 @@ CLI flags: each flag once; `--out`, `--builtin-key-file` take a value; `--clean`
 ### 10.2 Steps of `buildExtension`
 
 1. Validate targets (10.7): resolve `root`/`out`; refuse unsafe `out` before touching anything.
-2. Read `extension/manifest.json`; parse; `lintManifest` (10.5) with `fileExists` bound to the SOURCE tree
-   (`extension/...` paths) and to generated icon names; any reason -> `EXTENSION_MANIFEST_INVALID`.
+2. Read `extension/manifest.json` and the three `_locales` files; parse (a parse failure is the reason `EXTENSION_MANIFEST_JSON`); `lintManifest` (10.5) with `fileExists` bound to the SOURCE tree
+   (`extension/...` paths) and to generated icon names and with `messages` = the parsed `_locales` tables; any reason -> `EXTENSION_MANIFEST_INVALID`.
 3. Compute the copy set:
    a. every file under `extension/` (recursive; names checked, symlinks refused) except `extension/manifest.json` and
       `extension/_locales/**` (those go to the output root); allowed file types under `extension/`: `.js`, `.html`, `.css`, `.json`;
    b. `computeImportClosure` (10.3) from all JS and HTML entries -> the `app/` subset;
-   c. fixed extras: `styles.css`, `app/audio/capture-worklet.js`, `app/i18n/ko.json`, `app/i18n/en.json`, `app/i18n/ja.json`.
+   c. fixed extras (`EXTRA_FILES`): `styles.css`, `app/audio/capture-worklet.js`, `app/i18n/ko.json`, `app/i18n/en.json`, `app/i18n/ja.json`.
+   Everything is read into memory (and the icons are built) BEFORE the output directory is touched, so a refusal leaves the previous build alone.
 4. Prepare `out`: absent -> create; present and empty -> use it; present and non-empty -> if `isOwnOutput(out)` (a `manifest.json` whose `name` is
    `__MSG_extName__` and `default_locale` is `en`) remove ONLY that directory tree and recreate it (no flag needed); else if `clean === true` and `out`
    is inside `<root>/dist/` do the same; otherwise `EXTENSION_OUT_EXISTS`.
 5. Write files in sorted order, bytes verbatim, mirroring the repo layout (3.2). Write `manifest.json` re-serialized:
    `JSON.stringify(manifest, null, 2) + '\n'`. Write the four icons (10.4).
-6. Key handling (10.6) when `builtinKeyFile !== null`.
-7. Post-build scan (unkeyed build): no built file may match `SECRET_PATTERNS` (imported from `scripts/check-release.mjs`);
-   a match -> delete nothing, throw `EXTENSION_SECRET_FOUND` (the build fails loudly). A keyed build exempts exactly `KEY_FILE`.
+6. Key handling (10.6) when `builtinKeyFile !== null`; in EVERY build the slot `KEY_SLOT` must occur exactly once in the output copy of `KEY_FILE`, else `EXTENSION_KEY_SLOT_INVALID` (so an unkeyed build can never ship a list someone filled in the source).
+7. Secret scan over the bytes about to be written (not over the finished folder): no text file (`.js`, `.html`, `.css`, `.json`) may match `SECRET_PATTERNS` (imported from `scripts/check-release.mjs`);
+   a match -> throw `EXTENSION_SECRET_FOUND` before anything is written (the build fails loudly). A keyed build exempts exactly `KEY_FILE`.
 8. Optional zip (10.8). Return the frozen result.
+
+Order in the code: 1, 2, 3, then 6 and 7, then 4 and 5, then 8. Steps 6 and 7 come before the output is prepared, so a refused build writes nothing at all (no half-written folder).
 
 Determinism: sorted order, no timestamps, verbatim bytes; two builds of the same tree are byte-identical (test).
 
 ### 10.3 Import-closure computation (`computeImportClosure`)
 
-- Roots: the manifest's `background.service_worker`, `side_panel.default_path`, `options_ui.page`, every `content_scripts[].js`, and
-  `EXTENSION_PAGES`. HTML roots contribute their `<script src>` and `<link rel="stylesheet" href>` references (relative only).
-- For every JS file (comments stripped first with the same routine the privacy test uses) collect specifiers with these
+- Roots: the manifest's `background.service_worker`, `side_panel.default_path`, `options_ui.page`, every `content_scripts[].js`,
+  `EXTENSION_PAGES` and every `.js` / `.html` file under `extension/` (the tree is copied whole, so the closure must also cover a module no entry reaches, or the built folder could import a file it does not contain). HTML roots contribute their `<script src>` and `<link rel="stylesheet" href>` references (relative only).
+- For every JS file (comments stripped first with the build's own `stripComments`, a scanner that leaves string, template and regular-expression literals alone: the privacy test's two-regexp routine is enough for checking bans, but it would delete real code after a string such as `'http://*/*'`, and a missed import silently ships an incomplete extension) collect specifiers with these
   patterns, all requiring a string literal:
   - static: `/\b(?:import|export)\s+(?:[^'"]*?\sfrom\s*)?(['"])([^'"\n]+)\1/g` (covers `import x from`, `export * from`, side-effect `import 'x'`);
   - dynamic: `/\bimport\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g`;
@@ -2832,11 +2913,11 @@ Determinism: sorted order, no timestamps, verbatim bytes; two builds of the same
   A specifier must resolve to an existing regular, non-symlink file with extension `.js`, `.json` or `.css` under `app/` or `extension/` (or `styles.css` at the root);
   otherwise `EXTENSION_IMPORT_UNRESOLVED`.
 - Import rules R1-R7 (3.3) are checked on every edge; a violation -> `EXTENSION_IMPORT_FORBIDDEN`. In particular the closure must never
-  contain `app/main.js` or `app/security/builtin-key.js` (test).
+  contain `app/main.js` or `app/security/builtin-key.js` (test). R3 is checked here, not in `lintManifest`: a content script (`classicScripts`, and everything under `extension/overlay/`) must compile with `vm.Script` and contain no `import(`, else `EXTENSION_IMPORT_FORBIDDEN`.
 - The result `files` is the sorted set of repo-relative POSIX paths under `app/`. Expected size today (measured on 2026-09-29 with a regexp walk over static
   imports from `config.js`, `engine/sim.js`, `platform.js`, `providers/gemini/live-config.js`, `i18n/index.js`, `i18n/boot-fallback.js`, `engine/listen-state.js`,
   `security/shared-key.js`): 43 JavaScript files, none of them `app/main.js` or `app/security/builtin-key.js`; the worklet (via `new URL(...)`) and the three
-  dictionaries (extras) come on top. The number is informational, not asserted.
+  dictionaries (extras) come on top. The number is informational, not asserted. Delivered (a build of 2026-09-29 into a scratch directory): `EXTENSION_BUILT ... files=98 version=0.1.0` = `manifest.json`, 3 `_locales` files, 4 icons, `styles.css`, 47 `app/` files (43 closure modules, the worklet, 3 dictionaries) and 42 `extension/` files; a second run into the same directory (with `--zip`) succeeded too.
 
 ### 10.4 The manifest (`extension/manifest.json`, group A; full content) and icons
 
@@ -2912,7 +2993,7 @@ and every `description` under `commands` are `__MSG_<name>__` references whose `
 no `host_permissions`, `optional_permissions`, `optional_host_permissions`, `web_accessible_resources`, `externally_connectable`, `content_security_policy`,
 `incognito` other than absent, `action.default_popup`; `background.type === 'module'` and its file exists; `side_panel.default_path`, `options_ui.page`, every `content_scripts[].js`
 and every icon path exist (source paths for `extension/...`, the generated icon list for `icons/...`); content-script `matches` are exactly `http://*/*` and `https://*/*`,
-`all_frames === false`, `run_at === 'document_idle'`; no content script JS contains `import`/`export` (R3); the `_execute_action` command exists with a non-`global` suggested key.
+`all_frames === false`, `run_at === 'document_idle'`; the `_execute_action` command exists with a non-`global` suggested key. (R3, no `import`/`export` in a content script, needs file contents and is checked by the closure walk, 10.3.) The reason strings are `EXTENSION_MANIFEST_` + `NOT_OBJECT`, `MANIFEST_VERSION`, `VERSION`, `MINIMUM_CHROME_VERSION`, `DEFAULT_LOCALE`, `LOCALE_FILE`, `MESSAGE_REFERENCE`, `PERMISSIONS`, `FORBIDDEN_KEY`, `BACKGROUND`, `PATH_MISSING`, `CONTENT_SCRIPTS`, `COMMAND` and `MESSAGE_LIMITS` (plus `JSON`, from the build, for a manifest that does not parse).
 `extDescription` (every language) is at most 132 characters and `extName` at most 45.
 
 ### 10.6 Built-in key (D8): default OFF, mirrors `scripts/stage-release.mjs`
@@ -2933,7 +3014,7 @@ and every icon path exist (source paths for `extension/...`, the generated icon 
 | Code | When |
 |---|---|
 | `EXTENSION_ARGUMENT_INVALID` | unknown/duplicate flag, missing value, boolean flag with a value |
-| `EXTENSION_OUT_INVALID` | `out` equals the repo root or contains it; `out` is inside the repo but not inside `<root>/dist/`; `out` is a symlink; a keyed build whose `out` is not inside `<root>/dist/`; `out` is a file |
+| `EXTENSION_OUT_INVALID` | `out` equals the repo root or contains it; `out` is inside the repo but not inside `<root>/dist/`; `out` is a symlink; a keyed build whose `out` is not inside `<root>/dist/`; `out` is a file; with `--zip`, the generated zip name exists and is not a regular file |
 | `EXTENSION_OUT_EXISTS` | `out` exists and is non-empty, is NOT an own output, and (`clean` is false or `out` is not inside `<root>/dist/`) |
 | `EXTENSION_SOURCE_MISSING` | a required source (`extension/manifest.json`, an icon source, `styles.css`, a `_locales` file) is absent |
 | `EXTENSION_SOURCE_INVALID` | a source is a symlink or not a regular file; an `extension/` file has a type outside `.js/.html/.css/.json` |
@@ -2964,8 +3045,8 @@ Tests inject a fake `zipFn` (no real `zip` process, no dependency on the host).
 ## 11. Test plan
 
 All tests are `node:test`, top-level `tests/<name>.test.mjs` (the glob `tests/*.test.mjs` does not recurse), zero npm dependencies, no jsdom,
-no browser, no real audio (D13). Injected fakes only. `node --test tests/*.test.mjs` currently reports 1011 tests, all passing (re-run on
-2026-09-29); every new file must keep the whole suite green and must not edit an existing test file.
+no browser, no real audio (D13). Injected fakes only. `node --test tests/*.test.mjs` reported 1011 tests, all passing, when this plan was written
+(2026-09-29) and 1789 at delivery (the counts per file are below the table); every new file had to keep the whole suite green and not edit an existing test file.
 
 Two kinds of test file (review: a test file that mixes them makes "the file passes" meaningless at a group's delivery, and the old graph made group A unable to pass its own acceptance):
 - FIXTURE tests use only injected fakes, embedded fixture data or temp-dir fixture roots. They pass as soon as the owning group has landed (and its stated dependencies).
@@ -2999,18 +3080,20 @@ Hard rules for every test author:
 | `tests/extension-audio-graph.test.mjs` | B | after B | `createTabAudioGraph`: raw -> gain -> destination wiring, gain = percent/100, `setOriginalVolume` clamps, a NEW destination per `createEngineStream`, `releaseEngineStream`, `onEnded` fires once when a raw track ends, a handler registered BEFORE `attach` still fires when a track ends DURING the resume wait (and when every raw track is already ended at attach), `stop()` during the resume wait makes `attach` reject `START_CANCELLED` and creates nothing afterwards, `rawEnded()`, `stop` order (raw tracks first, then disconnect, then `context.close`), idempotent stop (also before `attach`), suspended context after `resume` -> rejects `TAB_AUDIO_BLOCKED` AND stops the raw tracks (tab audio restored), `attach` uses no `await` between the caller's `getUserMedia` resolution and its own first call (asserted by call ordering); `createLanePlatform`: `isUserActive()` true, `document.hidden` false, `isSecureContext` true, real timers (or the injected engine clock), `page` events are no-ops, tab override of `getUserMedia` never touches `navigator.mediaDevices`, mic platform uses `navigator.mediaDevices.getUserMedia` | `fake-audio` |
 | `tests/extension-timers.test.mjs` | B | after B | `createWorkerTimers` with a FAKE `Worker` (no real worker is spawned): `setTimeout` posts `{t:'set'}` and runs the callback on the `fire` message, `clearTimeout` posts `{t:'clear'}` and forgets the callback, an `error` event or a constructor failure falls back to the realm timers and re-arms pending ones, `dispose` terminates, `TIMER_MODE` is `'realm'` in v1 and `'realm'` makes `host.js`'s engine clock the realm's own | fake `Worker`, fake clock |
 | `tests/extension-lanes.test.mjs` | B | after B | `createLaneEngine`: one fresh isolated config per start, key installed via `setPersonal`+`select`, `liveVoicePreference.set` called with the gender, request shape has NO `sourceLanguage`/`languages`/`signal`, `muted:true` only when muted, own playback context per lane and closed on stop, `dispose` order; `createTabLane` start sequence of 5.6.1 (order asserted with a call log, including `onEnded` registered BEFORE `attach`; `TAB_CAPTURE_FAILED` on `getUserMedia` rejection; graph stop restores tab audio on engine start failure; `handle.done` mapping: requested stop -> `off`, `failed` -> `error` with code and graph teardown, unrequested stop -> `BROWSER_INTERRUPTED`); CANCELLATION (F13): stop during `getUserMedia` (a stream that resolves AFTER the stop has every track stopped, no engine is created, phase `off`, the start rejects `START_CANCELLED`), stop during the resume wait, stop during the mic permission query, stop that lands before any start is a no-op, stop awaits the in-flight start (bounded), a raw track that ends during the resume wait ends the run with `TAB_ENDED`, start while `stopping` -> `LANE_STOPPING`, start while `starting` or `running` -> `ALREADY_RUNNING`; `TAB_CAPTURE_INCLUDE_VIDEO` both constraint shapes; `createMicLane` preflight (`prompt`/`denied` -> `MICROPHONE_DENIED` without starting the engine; missing `permissions.query` proceeds); mic capture failure surfaces as `MICROPHONE_DENIED`; stop order 5.7 with injected failures in each step (later steps still run); two lanes (tab + mic) run concurrently on isolated configs, one failing (`INVALID_KEY` on one socket) leaves the other `running`; `SESSION_LIMIT` handling; model defaults per lane | `fake-audio`, `tests/fixtures/live.mjs` sockets, real `createSimEngine` |
-| `tests/extension-host.test.mjs` | B | after B | `createLaneHost` with a fake browser: only the six known `runtime` members are used (the offscreen fake has exactly those); handlers of 5.2 (`host/ping` incl. `tabId`, `host/lane-start` validation, `ALREADY_RUNNING` and `LANE_STOPPING`, `host/lane-stop` incl. while `starting`, `host/settings` live mute/volume/captions/style, `host/overlay-wanted` rules incl. `active`, `host/overlay-result` for both lanes, `host/tab-removed`); panel hub (hello -> state + captions, per-port dedupe, cap of `maxPanelPorts`, wrong role/name refused, grace stop after `panelGraceMs` then exactly one `sw/host-idle {reason:'panel-gone'}` (retried once when the send rejects), reconnect within grace cancels, initial grace of `panelInitialGraceMs` -> reason `initial-grace`); overlay hub (accept rules: name, role `content`, `frameId 0`, integer `tab.id`, `canAccept`; ONE port per tab: a second port REPLACES the first, the old port is disconnected by the hub, and a LATE `onDisconnect` of the old port neither deletes nor disposes the new one; LRU eviction at `maxOverlayPorts`; routing: tab lane frames only to the captured tab, mic lane frames only to the port of `micActiveTabId` and NEVER to a background tab, moving `micActiveTabId` sends `clear {lane:'mic'}` to the old port and the latest frame to the new; `clear`/`bye`/`status`; `bye` after an error is delayed by `statusLingerMs`; frames never contain the key, the stream id or `sessionId`); coalescing at the fake clock (<= 10 frames/s per key); tab removed and track ended both stop the tab lane with `TAB_ENDED`; mute applies to both lanes and calls `resumeAudio` on unmute; state frames match 4.6.1 shape and size | `fake-chrome`, `fake-audio`, socket fixtures |
+| `tests/extension-host.test.mjs` | B | after B | `createLaneHost` with a fake browser: only the six known `runtime` members are used (the offscreen fake has exactly those); handlers of 5.2 (`host/ping` incl. `tabId`, `host/lane-start` validation, `ALREADY_RUNNING` and `LANE_STOPPING`, `host/lane-stop` incl. while `starting`, `host/lane-stop {lane}` stops ONLY that lane and a start the host refuses (microphone permission denied, a bad stream id) leaves the other, running lane alone, `host/settings` live mute/volume/captions/style, `host/overlay-wanted` rules incl. `active`, `host/overlay-result` for both lanes, `host/tab-removed`); panel hub (hello -> state + captions, per-port dedupe, cap of `maxPanelPorts`, wrong role/name refused, grace stop after `panelGraceMs` then one `sw/host-idle {reason:'panel-gone'}` per report (retried once after 500 ms when the send rejects; a `{closed:false}` answer, or two failed sends, make the hub repeat the report with the same reason 3 s, 6 s and 12 s later, at most 3 times and with no timer left behind; `{closed:true}` or a refusal is never repeated; a panel port cancels the chain and restores the cap and an answer to an older report is void; `dispose` cancels it; one end-to-end case with the REAL SW core and the REAL host: a Start held in `getUserMedia`, the panel closed, the worker answers `closed:false`, the host asks again and the second answer closes the document), both port hubs enforce the sender ROLE (an options or permission page that has `sender.tab` and `frameId 0` is no overlay, and on a fresh hub with room to spare it is no panel), reconnect within grace cancels, initial grace of `panelInitialGraceMs` -> reason `initial-grace`); overlay hub (accept rules: name, role `content`, `frameId 0`, integer `tab.id`, `canAccept`; ONE port per tab: a second port REPLACES the first, the old port is disconnected by the hub, and a LATE `onDisconnect` of the old port neither deletes nor disposes the new one; LRU eviction at `maxOverlayPorts`; routing: tab lane frames only to the captured tab, mic lane frames only to the port of `micActiveTabId` and NEVER to a background tab, moving `micActiveTabId` sends `clear {lane:'mic'}` to the old port and the latest frame to the new; `clear`/`bye`/`status`; `bye` after an error is delayed by `statusLingerMs`; frames never contain the key, the stream id or `sessionId`); coalescing at the fake clock (<= 10 frames/s per key); tab removed and track ended both stop the tab lane with `TAB_ENDED`; mute applies to both lanes and calls `resumeAudio` on unmute; state frames match 4.6.1 shape and size | `fake-chrome`, `fake-audio`, socket fixtures |
 | `tests/extension-chrome-adapter.test.mjs` | C | after C | `createChromeAdapter` walks the adapter and the NESTED `ADAPTER_SURFACE` in parallel and they match (an extra method on the fake `chrome` is not copied; a member absent from a real namespace is SKIPPED, never bound: a fake `runtime` without `getContexts` yields an adapter without it and no throw); namespaces absent in the fake stay `undefined`; the offscreen fake (exactly `id, getURL, sendMessage, connect, onMessage, onConnect`) yields only those; `commands.getAll`, `runtime.onStartup` present when the fake has them; methods bound; frozen; the file contains the only `chrome` identifier besides the overlay | `fake-chrome` |
 | `tests/extension-i18n-loader.test.mjs` | C | after C (needs the real dictionaries: D's `extension/i18n/*.json` from M1) | `loadExtensionI18n` with an injected `fetch` over `file:` URLs of the real dictionaries: merge, negotiation (`language` beats `languages`), fallback per key, `I18N_LOAD_FAILED` on http error/invalid JSON/blank value/missing `error.unknown`/non-`ext.` key/abort, no cause retained; `createFallbackI18n`; `applyI18n` on a parsed HTML skeleton (text, `-label`, `-tip`, `-hint`, `document.title`, idempotence, no `innerHTML`) | `extension-dom` |
 | `tests/extension-arming.test.mjs` | C | after C | `createArming`: arm/isArmed/get/clear, eviction beyond 32, serialized read-modify-write (interleaved calls lose nothing), `onTabUpdated` keeps same-origin (including `pushState`-like url changes) and clears cross-origin, non-http(s) and unparsable urls; `originOf` table | fake session storage |
-| `tests/extension-sw.test.mjs` | C | after C | with the fake browser and a STUB host (a fake offscreen context answering `host/*`): top-level listener registration (exactly the NINE of 6.1, none inside a promise, NO `runtime.onConnect`, NO `commands.onCommand`); `bootstrap` calls `setPanelBehavior({openPanelOnActionClick:false})` and `setAccessLevel('TRUSTED_CONTEXTS')` on EVERY start including after `sw.kill()`, and `runtime.onStartup` runs it too; `onActionClicked`: `sidePanel.open` is the FIRST call in the same synchronous turn (strict gesture model), then the armed record; menu path same; `sw/lane-start` order of 6.3 (key check, arming check, stopping-lane wait, `ensureOffscreen`, mint LAST — asserted by a call log: no await-able call between `getMediaStreamId` and the `host/lane-start` send other than the send itself), the MUTEX (ten concurrent `ensureOffscreen()` calls create ONE document, reasons exactly `['USER_MEDIA']`; `sw/host-idle` never closes while a start is in flight; a zombie document whose host never answers is closed and recreated ONCE, then `HOST_UNAVAILABLE`; `host/lane-start` is re-sent once after `HOST_UNAVAILABLE`), `sendToHost` tolerance (real-Chrome-style rejection "The message port closed before a response was received", `undefined`, a non-object and `{ok:false}` all become a machine code; success needs `res?.ok === true`; run once with each of the fake's two no-responder modes), a SW sender WITHOUT `url` (the fake's url-less mode) is still `'sw'` for the host and is never `FORBIDDEN`; ping handshake retries then `HOST_UNAVAILABLE`, `NEEDS_ARM` on the exact kGrantError text and the record cleared, the recovery of 6.4 for `Cannot capture a tab with an active stream.` (ALREADY_RUNNING / retry / close-recreate with a FRESH ping / `TAB_CAPTURE_BUSY`), the other mint strings, `TAB_UNSUPPORTED` before any mint for `chrome:` urls, `TAB_GONE`; `LANE_STOPPING` wait (a lane `stopping` at the ping settles before the mint; still stopping after `stopWaitMs` -> `LANE_STOPPING` and NO mint); CANCELLATION: `sw/lane-stop` during `ensureOffscreen`, during the mint and between mint and send each ends in `START_CANCELLED` and a `host/lane-stop` reaching the host (stop wins), a stop that reaches the host BEFORE the start still ends with the lane off, a stop after a SW kill still forwards; stream id single-use and expiring in the fake (a stale id would be rejected: the SW never reuses one); settings forwarding only when the host flag is up; `onStorageChanged` compares old and new: captions false->true attaches the overlay (tab lane through `host/ping.tabId`, mic lane to the active tab) and true->false does not; `sw/host-idle` closes only when panels 0 and lanes off and records `interp.lastStop.v1` with the reason; `sw/host-probe` heals a stale `up:true` (no document; a zombie document) and records `host-lost`; `sw/permission-open` creates or focuses one tab; `considerOverlay`/`attachOverlay` retries `[0,150,400,1000]`, injection fallback only for armed tabs, results reported for the lanes that wanted the overlay, the MIC lane is attached ONLY to the active tab of the last focused window (a background tab finishing loading is never attached for the mic; `tabs.onActivated` moves it); tab events (`onRemoved` clears + `host/tab-removed`, `onUpdated` cross-origin clears, `complete` re-attaches, `onActivated` re-attaches for mic captions); senders other than the panel are `FORBIDDEN`; SW kill/revive between every step keeps correctness (armed map, host flag, existing offscreen doc found) | `fake-chrome` |
-| `tests/extension-panel.test.mjs` | C | after C | `buildViewModel` rules 1-17 of 8.2.3 (table driven, one case per rule and per lane phase, pill precedence incl. `ext.status.partial`, `ext.status.awaitingArm` and the Cancel label, arm states with the `needed`/`waiting`/`ready` split, notice priority, key-failure notices shown once, `MICROPHONE_EXPIRED`, `applyNext` per lane, `usageNote` emphasis incl. `BUDGET_EXHAUSTED`, `echoNote`, `noLane`, `stopNote`); after `TAB_ENDED` an arm event must NOT leave a note that claims an auto-start; controller against the PARSED real `panel.html` (every id the controller uses exists, every id of 1.5 exists): start flows of 8.2.5 (sequential tab then mic with the `startRun` abort between lanes, pending arm and auto-start when the armed record appears, Stop/Cancel/uncheck send `sw/lane-stop` (never `host/lane-stop`) and clear pending, `NEEDS_ARM` response, `ALREADY_RUNNING` and `START_CANCELLED` ignored, `LANE_STOPPING` shown, mic permission gate), settings writes are one-field patches, volume throttling with the fake clock, mute toggle labels (`ext.sound.*` on `aria-label` and `title`), `#btn-start` label/disabled rules, textContent-only rendering (the fake element throws on `innerHTML`), the live-region rule (the listed regions are never `hidden`, empty text when not applicable, `#tab-notice`/`#mic-notice` are `role="alert"`), i18n language switch re-renders, host-link connect/disconnect/reconnect triggers, an unexpected port loss shows `ext.notice.hostLost` and sends `sw/host-probe`, `lastStop` shows `ext.notice.panelGone`, invalid frames dropped | `extension-dom`, `fake-chrome` |
-| `tests/extension-options.test.mjs` | C | after C | options controller against the parsed `options.html`: every id of 7.3 exists and is bound; each control writes exactly its setting and shows `#opt-saved`; key flow (trim, `validateKey`, `setAccessLevel` BEFORE `writeKey`, a rejecting or missing `setAccessLevel` refuses the save with `ext.error.STORAGE_FAILED` and writes nothing, input cleared, status keys, delete, show/hide toggle without `aria-pressed`, key never rendered into any element or attribute — scan the whole fake DOM for the key substring); storage failure shows defaults and `ext.error.STORAGE_FAILED`; language change re-renders; `links.js` parity: `KEY_GUIDE_URL` / `KEY_USAGE_URL` equal `app/config.js` `DOCUMENTATION_LINKS` (this file owns that parity test for `extension/lib/links.js`) | `extension-dom`, `fake-chrome` |
-| `tests/extension-permission.test.mjs` | C | after C | permission controller: query -> getUserMedia -> success stops EVERY track and closes after 2000 ms (fake clock); each error branch of 8.4; retry button; never leaves a track live | `extension-dom`, `fake-audio` |
-| `tests/extension-integration.test.mjs` | C | M3 (needs B, C, D) | end-to-end, silent: fake browser + REAL SW core + REAL lane host + REAL panel controller + fake audio + fake sockets: icon click arms and opens the panel; Start starts the tab lane; the key reaches the host in exactly ONE `host/lane-start` and appears in NO other delivery (scan every message, response, port frame and every delivery to a `content` context for the key and the stream id); captions appear in the panel and on the overlay port; mic + tab concurrent; mute default; volume slider changes the gain through storage -> SW -> host; Start then Stop within one fake second ends with no live raw track and no engine; ticking "Show captions on the page" mid-run attaches the overlay; mic captions reach only the active tab; panel close -> lanes stop after grace -> `sw/host-idle` -> offscreen closed and `lastStop` recorded; tab close -> tab lane `TAB_ENDED`, mic continues; cross-origin navigation clears arming; SW killed mid-session: settings edits still reach the host on the next event; quota error on one lane shows the notice and keeps the other running | everything |
+| `tests/extension-sw.test.mjs` | C | after C | with the fake browser and a STUB host (a fake offscreen context answering `host/*`): top-level listener registration (exactly ONE listener on each of the NINE events of 6.1, none inside a promise, NO `runtime.onConnect`, NO `commands.onCommand`); `bootstrap` calls `setPanelBehavior({openPanelOnActionClick:false})` and `setAccessLevel('TRUSTED_CONTEXTS')` on EVERY start including after `sw.kill()`, and `runtime.onStartup` runs it too; `onActionClicked`: `sidePanel.open` is the FIRST call in the same synchronous turn (strict gesture model), then the armed record; menu path same; `sw/lane-start` order of 6.3 (key check, arming check, stopping-lane wait, `ensureOffscreen`, mint LAST — asserted by a call log: no await-able call between `getMediaStreamId` and the `host/lane-start` send other than the send itself), the MUTEX (`closeHost` runs inside it too: an `ensureOffscreen` that begins during a close waits and gets a fresh document, and a close waits for an ensure that is still creating; ten concurrent `ensureOffscreen()` calls create ONE document, reasons exactly `['USER_MEDIA']`; `sw/host-idle` never closes while a start is in flight; a zombie document whose host never answers is closed and recreated ONCE, then `HOST_UNAVAILABLE`; `host/lane-start` is re-sent once after `HOST_UNAVAILABLE`), `sendToHost` tolerance (real-Chrome-style rejection "The message port closed before a response was received", `undefined`, a non-object and `{ok:false}` all become a machine code; success needs `res?.ok === true`; run once with each of the fake's two no-responder modes), a SW sender WITHOUT `url` (the fake's url-less mode) is still `'sw'` for the host and is never `FORBIDDEN`; ping handshake retries then `HOST_UNAVAILABLE`, `NEEDS_ARM` on the exact kGrantError text and the record cleared, the recovery of 6.4 for `Cannot capture a tab with an active stream.` (ALREADY_RUNNING / retry / close-recreate with a FRESH ping / `TAB_CAPTURE_BUSY`), the other mint strings, `TAB_UNSUPPORTED` before any mint for `chrome:` urls, `TAB_GONE`; `LANE_STOPPING` wait (a lane `stopping` at the ping settles before the mint; still stopping after `stopWaitMs` -> `LANE_STOPPING` and NO mint; a start of a lane whose previous start is cancelled but still unwinding answers `LANE_STOPPING` at once (Start, Stop, Start in one tick; a start hanging inside the host; both lanes), while an un-cancelled duplicate still answers `ALREADY_RUNNING`); CANCELLATION: `sw/lane-stop` during the settings and key read, during `tabs.get`, during the arm lookup, during `ensureOffscreen`, during the mint and between mint and send each ends in `START_CANCELLED` and a `host/lane-stop` reaching the host (stop wins), a stop that reaches the host BEFORE the start still ends with the lane off, a stop after a SW kill still forwards; stream id single-use and expiring in the fake (a stale id would be rejected: the SW never reuses one); settings forwarding only when the host flag is up; `onStorageChanged` compares old and new: captions false->true attaches the overlay (tab lane through `host/ping.tabId`, mic lane to the active tab) and true->false does not; `sw/host-idle` closes only when panels 0 and lanes off and records `interp.lastStop.v1` with the reason (a panel that reconnected after the grace stopped the lanes keeps the document); `sw/host-probe` heals a stale `up:true` (no document; a zombie document) and records `host-lost`; `sw/permission-open` creates or focuses one tab; `considerOverlay`/`attachOverlay` retries `[0,150,400,1000]`, injection fallback only for armed tabs, results reported for the lanes that wanted the overlay, the MIC lane is attached ONLY to the active tab of the last focused window (a background tab finishing loading is never attached for the mic; `tabs.onActivated` moves it); tab events (`onRemoved` clears + `host/tab-removed`, `onUpdated` cross-origin clears, `complete` re-attaches, `onActivated` re-attaches for mic captions); senders other than the panel are `FORBIDDEN`; SW kill/revive between every step keeps correctness (armed map, host flag, existing offscreen doc found) | `fake-chrome` |
+| `tests/extension-panel.test.mjs` | C | after C | `buildViewModel` rules 1-17 of 8.2.3 (table driven, one case per rule and per lane phase, pill precedence incl. `ext.status.partial`, `ext.status.awaitingArm` and the Cancel label, arm states with the `needed`/`waiting`/`ready` split, notice priority, key-failure notices shown once, `MICROPHONE_EXPIRED`, `applyNext` per lane, `usageNote` emphasis incl. `BUDGET_EXHAUSTED`, `echoNote`, `noLane`, `stopNote`); after `TAB_ENDED` an arm event must NOT leave a note that claims an auto-start; controller against the PARSED real `panel.html` (every id the controller uses exists, every id of 1.5 exists): start flows of 8.2.5 (sequential tab then mic with the `startRun` abort between lanes, pending arm and auto-start when the armed record appears, Stop/Cancel/uncheck send `sw/lane-stop` (never `host/lane-stop`) and clear pending, `NEEDS_ARM` response, `ALREADY_RUNNING` and `START_CANCELLED` ignored, `LANE_STOPPING` shown, mic permission gate), settings writes are one-field patches, volume throttling with the fake clock, mute toggle labels (`ext.sound.*` on `aria-label` and `title`), `#btn-start` label rules and `aria-disabled` (never `disabled`: the click is ignored while it is set, no message, no notice, no pill change), textContent-only rendering (the fake element throws on `innerHTML`), the live-region rule (the listed regions, among them `#<lane>-route-note`, are never `hidden`, empty text when not applicable, `#tab-notice`/`#mic-notice` are `role="alert"`; the per-lane status lines are not live, so a state change is announced once; the backup-model warning is written into `#<lane>-route-note` while the route line keeps label and model), a `MICROPHONE_DENIED` refusal recorded while the permission was missing is gone the moment it is granted (and only that refusal), Start on a known-unsupported page is a silent no-op for the tab lane while the microphone lane of the same Start still runs, an arm note is dropped where the lane's own notice already says what to do, an idle lane that is switched off reads `ext.status.off`, i18n language switch re-renders, host-link connect/disconnect/reconnect triggers, an unexpected port loss shows `ext.notice.hostLost` and sends `sw/host-probe`, `lastStop` shows `ext.notice.panelGone`, invalid frames dropped | `extension-dom`, `fake-chrome` |
+| `tests/extension-options.test.mjs` | C | after C | options controller against the parsed `options.html`: every id of 7.3 exists and is bound; each control writes exactly its setting and shows `#opt-saved`; key flow (trim, `validateKey`, `setAccessLevel` BEFORE `writeKey`, a rejecting or missing `setAccessLevel` refuses the save with `ext.error.STORAGE_FAILED` and writes nothing, input cleared, status keys, delete, show/hide toggle without `aria-pressed`, key never rendered into any element or attribute — scan the whole fake DOM for the key substring; the saved status is `ext.key.savedBrowser`, with an exact Korean string pinned); the two number fields refuse an out-of-range or fractional value (table-driven, lines: 0, 7, 10, 2.5, -1, 1e3; hide: 61, 90, -1, 2.5, 1e3): the stored value comes back, nothing is written, no "Saved.", the boundaries 1, 6, 0 and 60 are accepted, and the labels state the ranges; the tab model select shows its first model without the "(default)" tag while the microphone select keeps it; storage failure shows defaults and `ext.error.STORAGE_FAILED`; language change re-renders; `links.js` parity: `KEY_GUIDE_URL` / `KEY_USAGE_URL` equal `app/config.js` `DOCUMENTATION_LINKS` (this file owns that parity test for `extension/lib/links.js`) | `extension-dom`, `fake-chrome` |
+| `tests/extension-permission.test.mjs` | C | after C | permission controller: query -> getUserMedia -> success stops EVERY track and closes after 2000 ms (fake clock); each error branch of 8.4; retry button; never leaves a track live; `#perm-help` is a persistent live region on every branch (text after a denial, empty otherwise, never `hidden`); the allow action has one name (`ext.permission.allowButton`) | `extension-dom`, `fake-audio` |
+| `tests/extension-integration.test.mjs` | C | M3 (needs B, C, D) | end-to-end, silent: fake browser + REAL SW core + REAL lane host + REAL panel controller + fake audio + fake sockets: icon click arms and opens the panel; Start starts the tab lane; the key reaches the host in exactly ONE `host/lane-start` and appears in NO other delivery (scan every message, response, port frame and every delivery to a `content` context for the key and the stream id); captions appear in the panel and on the overlay port; mic + tab concurrent; mute default; volume slider changes the gain through storage -> SW -> host; Start then Stop within one fake second ends with no live raw track and no engine; ticking "Show captions on the page" mid-run attaches the overlay; mic captions reach only the active tab; panel close -> lanes stop after grace -> `sw/host-idle` -> offscreen closed and `lastStop` recorded; tab close -> tab lane `TAB_ENDED`, mic continues; cross-origin navigation clears arming; SW killed mid-session: settings edits still reach the host on the next event; the dictionaries are fetched through a `file:` URL shim whose checkout root comes from the test file's own URL, so the file passes in any folder name (it used to hardcode `interp-app`); quota error on one lane shows the notice and keeps the other running | everything |
 | `tests/extension-fixtures.test.mjs` | D | after D (M1) | self-tests of the fakes: JSON round trip (typed arrays become objects, `Map` becomes `{}`), 64 MiB cap, fan-out and first-`sendResponse`-wins, "Receiving end does not exist", BOTH no-responder modes ("The message port closed before a response was received" rejection, and the `undefined` resolution), port fan-out and `disconnect()` semantics, SW idle kill at 30 s of fake time and revive, port `postMessage` resets the idle timer but opening a port does not, the SW sender's `url` present or ABSENT (mode), single offscreen document (`Only a single offscreen document may be created.`), the offscreen `runtime` has exactly six members, reasons validated, AUDIO_PLAYBACK-only auto-close, `closeDocument` error, storage areas and access levels (session invisible to content, local hidden after `TRUSTED_CONTEXTS`, and a mode where the content context HAS `chrome.storage` but its calls reject), grant model (no grant from `sidePanel.open` or a panel click; grant from action click, shortcut, menu; cleared on cross-origin navigation and tab close; `openPanelOnActionClick:true` suppresses dispatch and grant), exact error strings, stream-id single use and expiry, one capture per tab, strict gesture for `sidePanel.open`, fake audio classes (states, `resume`/`suspend`/`close`, destination stream, worklet frames, a throwing `fetch` in the env), fake DOM (`attachShadow` records `lastShadowRoot` and a closed root exposes `host.shadowRoot === null`, `adoptedStyleSheets`, `innerHTML` throws, `parseHtml`) | the fixtures themselves |
-| `tests/extension-overlay.test.mjs` | D | after D (M1 fixtures; NO dependency on B) | overlay.js in a `vm` sandbox with `fake-chrome` (content context) and the fake DOM: idempotent double injection; no connect at load; `content/overlay-attach` accepted only from the SW-shaped sender (`sender.tab` undefined, right id, `v`, `target`); attach while a port is open does NOT open a second port but still answers `{ok:true}`; a late `onDisconnect` of a replaced port does not dispose the new UI; connects `interp-overlay/1` and posts only `hello`; `WIRE` pinned against LITERAL values written in the test (`interp-overlay/1`, 1, 6, 400; the match with `protocol.js` is asserted in `extension-tree`); style frame validation; caption rendering rules of 8.5.3 (last `maxLines` rows, newest last, partial/final/interrupted styling attributes, skipped rows NOT rendered, truncation keeps the end, `lang`, gap line for about 8 s per false->true transition, `clear` (resets dismissal), `bye`), `status` frames (reconnecting persists until running, stopped clears after about 8 s, status alone shows the wrap), everything via `textContent` (fake element throws on `innerHTML`); auto-hide timers and re-show; dismiss: a same-epoch frame after dismissal stays hidden, a higher epoch re-shows, `clear {lane}` re-shows (off/on); hidden document renders nothing; fullscreen: strategy 1 re-parents under a plain container and restores on exit, on an exception and when the container is removed, refuses `VIDEO`/`CANVAS`/`IMG`/`IFRAME`/`INPUT` hosts, strategy 2 uses `popover` + `showPopover` for a bare `<video>` and strategy 3 does nothing when `showPopover` is absent; orphan guard (`chrome.runtime.id` undefined -> disposes without throwing); a throwing `render` disposes silently; host element styles via CSSOM (`all: initial`, `direction: ltr`, `unicode-bidi: isolate`, `pointer-events: none`, z-index max, and exactly those nine properties, all `!important`); every row carries `dir="auto"`; the shadow root is `mode: 'closed'` (`host.shadowRoot === null`, the test reads `lastShadowRoot`); constructable stylesheet primary and `<style>` fallback; no listener or attribute added to page elements other than the two document events | fake DOM, fake-chrome |
-| `tests/extension-html.test.mjs` | D | after D | every extension HTML file: R12; ids of 1.5, 7.3, 8.2.1, 8.3, 8.4 all present exactly once; `data-i18n*` keys exist in the union dictionary; DOM order of the panel ids equals the tab order of 8.2.6; the live regions of 8.2.1 carry a `role` and are NOT `hidden` and have no static text; `#tab-notice`/`#mic-notice` are `role="alert"`; `#btn-start` has `aria-describedby`; `styles.css` linked with the exact relative path; CSS files contain no `url(`, no `@import`, no `@font-face`, only tokens from `styles.css` or literal hex values that exist in `styles.css`; `panel.css` contains a rule for EVERY selector of the attribute table of 8.2.2 (data-attention, data-emphasis, the three panel-only `data-state` values, empty live regions) and the sticky rule of `.button-row`; the overlay token table (8.5.2) equals `styles.css` values (light/dark from `--light-*`/`--dark-*`, mono from the mono board block); overlay CSS text uses `prefers-reduced-motion` and `forced-colors`, the flex-end overflow anchor of 8.5.2 and no `url(`; a pure WCAG contrast helper asserts text pairs >= 4.5:1 and non-text borders/bars >= 3:1 over the overlay token table and the panel tokens | real files, `parseHtml` |
+| `tests/extension-overlay.test.mjs` | D | after D (M1 fixtures; NO dependency on B) | overlay.js in a `vm` sandbox with `fake-chrome` (content context) and the fake DOM: idempotent double injection; no connect at load; `content/overlay-attach` accepted only from the SW-shaped sender (`sender.tab` undefined, right id, `v`, `target`); attach while a port is open does NOT open a second port but still answers `{ok:true}`; a late `onDisconnect` of a replaced port does not dispose the new UI; connects `interp-overlay/1` and posts only `hello`; `WIRE` pinned against LITERAL values written in the test (`interp-overlay/1`, 1, 6, 400; the match with `protocol.js` is asserted in `extension-tree`); style frame validation; caption rendering rules of 8.5.3 (last `maxLines` rows, newest last, partial/final/interrupted styling attributes, skipped rows NOT rendered, truncation keeps the end, `lang`, gap line for about 8 s per false->true transition, `clear` (resets dismissal), `bye`), `status` frames (reconnecting persists until running, stopped clears after about 8 s, status alone shows the wrap), everything via `textContent` (fake element throws on `innerHTML`); auto-hide timers and re-show; dismiss: a same-epoch frame after dismissal stays hidden, a higher epoch re-shows, `clear {lane}` re-shows (off/on); a late captions frame of a port that was detached with `bye` draws nothing (the overlay is never resurrected); hidden document renders nothing; fullscreen: strategy 1 re-parents under a plain container and restores on exit, on an exception and when the container is removed, refuses `VIDEO`/`CANVAS`/`IMG`/`IFRAME`/`INPUT` hosts, strategy 2 uses `popover` + `showPopover` for a bare `<video>` and strategy 3 does nothing when `showPopover` is absent; orphan guard (`chrome.runtime.id` undefined -> disposes without throwing); a throwing `render` disposes silently; host element styles via CSSOM (`all: initial`, `direction: ltr`, `unicode-bidi: isolate`, `pointer-events: none`, z-index max, and exactly those nine properties, all `!important`); every row carries `dir="auto"`; the shadow root is `mode: 'closed'` (`host.shadowRoot === null`, the test reads `lastShadowRoot`); constructable stylesheet primary and `<style>` fallback; no listener or attribute added to page elements other than the two document events | fake DOM, fake-chrome |
+| `tests/extension-html.test.mjs` | D | after D | every extension HTML file: R12; ids of 1.5, 7.3, 8.2.1, 8.3, 8.4 all present exactly once; `data-i18n*` keys exist in the union dictionary; DOM order of the panel ids equals the tab order of 8.2.6; the live regions of 8.2.1 carry a `role` and are NOT `hidden` and have no static text; `#tab-notice`/`#mic-notice` are `role="alert"`; the per-lane status lines have no role and no `aria-live`; both caption previews are `role="region"` next to `tabindex="0"` and their `aria-label` binder; no element anywhere is natively `disabled` and only `#btn-start` carries `aria-disabled` (`styles.css` draws it like `:disabled`, hover skips it); the mute icon has two paths, the second `.icon-slash`; `#btn-start` has `aria-describedby`; the caption-lines and auto-hide labels state 1-6 and 0-60 in all three languages, `ext.permission.title` equals `ext.permission.allowButton` and the `MICROPHONE_DENIED` notice names that button exactly; `styles.css` linked with the exact relative path; CSS files contain no `url(`, no `@import`, no `@font-face`, only tokens from `styles.css` or literal hex values that exist in `styles.css`; `panel.css` contains a rule for EVERY selector of the attribute table of 8.2.2 (data-attention, data-emphasis, the three panel-only `data-state` values, empty live regions) and the sticky rule of `.button-row`; the overlay token table (8.5.2) equals `styles.css` values (light/dark from `--light-*`/`--dark-*`, mono from the mono board block); overlay CSS text uses `prefers-reduced-motion` and `forced-colors`, the flex-end overflow anchor of 8.5.2 and no `url(`; a pure WCAG contrast helper asserts text pairs >= 4.5:1 and non-text borders/bars >= 3:1 over the overlay token table and the panel tokens | real files, `parseHtml` |
+
+Delivered: the 24 files of the table exist (`tests/session-isolated.test.mjs` and the 23 `tests/extension-*.test.mjs`; nothing missing, nothing extra) and pass. Real counts, each file run ONCE with `node --test <file>` on 2026-09-29 after the hardening commit `7773fbc` (all pass, 0 fail, 0 skipped): `session-isolated` 8; `extension-arming` 9; `extension-audio-graph` 25; `extension-build` 64; `extension-chrome-adapter` 9; `extension-fixtures` 60; `extension-host` 61; `extension-html` 39; `extension-i18n-loader` 9; `extension-i18n` 5; `extension-integration` 11; `extension-lanes` 36; `extension-manifest` 29; `extension-options` 45; `extension-overlay` 63; `extension-panel` 69; `extension-permission` 24; `extension-protocol` 28; `extension-settings` 23; `extension-static` 36; `extension-sw` 53; `extension-timers` 13; `extension-tree` 24; `extension-ui-state` 35; together 778 tests. The whole suite is 1789 tests at delivery: the 1011 that existed before this work plus these 778. No test reads this document; `tests/privacy.test.mjs` scans it for key-shaped strings, `tests/extension-static.test.mjs` and `tests/extension-tree.test.mjs` read the real `extension/` tree.
 
 ### 11.2 Fake-chrome helper API (`tests/fixtures/fake-chrome.mjs`, group D) — the contract B and C code their tests against
 
@@ -3068,6 +3151,7 @@ export function createFakeBrowser({ extensionId = 'abcdefghijklmnopabcdefghijklm
 - Scripting/menus/i18n: `scripting.executeScript({ target:{tabId}, files })` rejects unless the tab holds an activeTab grant, else calls `browser.onInject(tabId, files)` (the test runs the overlay in a content context);
   `contextMenus.create` throws on a duplicate id, `removeAll` clears, `browser.menus` lists; `i18n.getMessage(name)` reads `messages`; `getUILanguage()` returns `'en'`.
 - Deliveries log: `browser.deliveries` records every message request/response and every port frame as `{ from, to, kind, json }` (already JSON-serialized) so tests can scan for the key or the stream id.
+- Delivered beyond the members above (see the header comment of `tests/fixtures/fake-chrome.mjs`): `browser.settle()`, `withGesture(fn)`, `pushState(tabId, url)`, `install(reason)`, `context.invalidate()` (the extension was reloaded under a content script), the hooks `onCreateOffscreen`, `onInject`, `onContentCreated`, `onTabCreate`, `onPanelOpen`, `onOpenOptions`, and the exported error strings (`NO_RECEIVER_ERROR`, `PORT_CLOSED_ERROR`, `GESTURE_ERROR`, ...). `createFakeAudioEnv({ browser, clock, sockets, autoplay, micPermission })` also takes `autoplay` (`'allowed'` or `'blocked'`) and `micPermission`, and returns `clock` next to the members listed in 11.3.
 
 ### 11.3 Fake audio and fake DOM helpers
 
@@ -3106,11 +3190,13 @@ on the element so a test can inspect what the page could not), `popover` / `show
 | D11 Chrome 116, feature detection, `_locales`, Load unpacked | `extension-manifest` (fixture), `extension-tree` (real manifest, mirrors), `extension-i18n` (locale files), `extension-sw` (`getContexts` used, no `hasDocument`), `extension-chrome-adapter` (absent members skipped) |
 | D12 free-tier footnote | `extension-tree` (`ext.usage.twoSessions` exists in 3 languages and contains a marker word for the not-measured statement: `측정` / `estimate` / `実測`), `extension-panel` (rule 12: the note is shown when both lanes are enabled) |
 | D13 silent tests only | every file above; `extension-static` asserts that none of `tests/extension-*.test.mjs` (EXCEPT itself), `tests/session-isolated.test.mjs` and every fixture matching `tests/fixtures/extension-*.mjs`, `fake-chrome.mjs`, `fake-audio.mjs` contains `afplay`, `getDisplayMedia`, `--use-fake-device-for-media-stream`, `puppeteer`, `playwright`, `chrome-launcher`, `osascript`, or a `child_process` import. The forbidden tokens are ASSEMBLED AT RUNTIME inside the scan (`['af', 'play'].join('')`), because the scan file would otherwise contain them itself. The only files allowed to import `child_process` are `extension-build.test.mjs` (argument-error tests) and `extension-tree.test.mjs` (real-root CLI build into a temp dir); both spawn only `node scripts/build-extension.mjs`. |
-| D14 no web-app edits | `extension-static` (`app/` never references `extension/`), the untouched existing 1011 tests; the section-12 edit list is the only change set |
+| D14 no web-app edits | `extension-static` (`app/` never references `extension/`), the untouched existing 1011 tests; the section-12 edit list is the only change set outside `extension/`, apart from the two backward-compatible `app/` files of the isolated slot (`2f6901a`, pinned by `session-isolated` and by the 1011 existing tests) |
 
 ---------------------------------------------------------------------------------------------------
 
 ## 12. Repo-gate edits (group A; the only edits outside `extension/`, D14)
+
+Delivered in `43febec` as specified below: `.gitignore` (the line `dist/`), `package.json` (the script `build:extension`), `scripts/check-i18n.mjs` (its diff against the parent commit equals the patch of 12.1 line for line, all 51 changed lines, compared by script on 2026-09-29) and `scripts/stage-release.mjs` (the one `export`). At delivery `node scripts/check-i18n.mjs` prints `I18N_OK languages=3 keys=810 files=123`. The two `app/` edits of the isolated Live slot are commit `2f6901a`. The instructions below are kept as written for the record.
 
 Apply in this order; after each edit run `node --test tests/*.test.mjs` (must stay 1011+ passing) and `node scripts/check-i18n.mjs`.
 
@@ -3262,20 +3348,20 @@ verbatim in `scripts/build-extension.mjs` (same shape regex, same one-key-per-li
 ### 12.5 New files (not edits)
 
 `scripts/build-extension.mjs`, `docs/extension.md`, the tests and fixtures of 11, everything under `extension/`. Verification that nothing else changed:
-`git status --short` shows only the files of section 3.1, the three edited files above (plus the two `app/` files the orchestrator already changed), and the pre-existing untracked entries.
+`git status --short` shows only the files of section 3.1, the three edited files above (plus the two `app/` files, committed since in `2f6901a`), and the pre-existing untracked entries.
 
 ---------------------------------------------------------------------------------------------------
 
 ## 13. Manual verification checklist (for the owner). Every item: NOT TESTED BY CLAUDE
 
 Nothing below has been run. Claude ran no browser, no capture, no microphone and no audio (owner rule, meeting in progress). Each item lists steps, the expected result and the fallback if it fails (K = risk of section 14, A = assumption).
-Use branded Chrome (the owner's is 154) with Developer mode on. Items 13.26-13.39 were added after the reviews of Revision 2; several exist only because a fake cannot prove them (announcements by a screen reader, layout, throttling, real process lifetime). Items 13.40-13.51 were added after the review of the BUILT extension (UX and security lenses): they are the human-only steps a fake DOM cannot do (how captions look over real video, glyphs, narrow widths, text expansion, voice, keyboard, Chrome's own site-access line). 13.42 and 13.51 record two defects that are KNOWN and NOT FIXED.
+Use branded Chrome (the owner's is 154) with Developer mode on. Items 13.26-13.39 were added after the reviews of Revision 2; several exist only because a fake cannot prove them (announcements by a screen reader, layout, throttling, real process lifetime). Items 13.40-13.51 were added after the review of the BUILT extension (UX and security lenses): they are the human-only steps a fake DOM cannot do (how captions look over real video, glyphs, narrow widths, text expansion, voice, keyboard, Chrome's own site-access line). 13.42 and 13.51 record two defects that are KNOWN and NOT FIXED. Rows 13.31, 13.33, 13.47, 13.48 and 13.49 were rewritten after the UX fixes to the built panel (a focusable `aria-disabled` Start, a slashed mute icon, range-checked number fields): their "At review time" wording is history, the expected results describe the delivered behavior, and all of them are still unrun.
 
 | # | Item | Status | Steps | Expected | If it fails |
 |---|---|---|---|---|---|
 | 13.1 | Build | NOT TESTED BY CLAUDE | `cd /Users/gai/work/interp-app && npm run build:extension` (run it twice: the second run must also succeed) | prints `EXTENSION_BUILT out=…/dist/extension files=… version=0.1.0` both times; no `EXTENSION_*` error. After EVERY later rebuild press Reload on the extension's card at `chrome://extensions` (Chrome does not watch the folder) | fix the code printed (10.7) |
 | 13.2 | Load unpacked | NOT TESTED BY CLAUDE | `chrome://extensions` -> Developer mode -> Load unpacked -> select `dist/extension`; pin the toolbar icon (puzzle-piece menu -> pin) | card "Live Interpreter" with no "Errors" button; "Inspect views: service worker"; keep the folder at a STABLE path (an unpacked extension's id derives from the path; moving it loses the stored key, K14) | read the error text; a manifest error means lint and Chrome disagree (K17) |
-| 13.3 | Key entry | NOT TESTED BY CLAUDE | click the toolbar icon on any http(s) page; panel opens with the key notice and a disabled Start; Options -> paste a Gemini key -> Save | status "Saved"/"Key saved in this browser"; the field is empty afterwards; Start becomes enabled; in a page's DevTools console (extension context of the content script) `chrome.storage` is either undefined OR present with calls that are rejected (A25: both are acceptable, K15) | K15: read the result of `storage.local.setAccessLevel` in the SW console; if Save refuses with the storage error text, `setAccessLevel` rejected |
+| 13.3 | Key entry | NOT TESTED BY CLAUDE | click the toolbar icon on any http(s) page; panel opens with the key notice and an unavailable Start (dimmed, `aria-disabled`); Options -> paste a Gemini key -> Save | status "Key saved in this browser." (`ext.key.savedBrowser`); the field is empty afterwards; Start becomes available; in a page's DevTools console (extension context of the content script) `chrome.storage` is either undefined OR present with calls that are rejected (A25: both are acceptable, K15) | K15: read the result of `storage.local.setAccessLevel` in the SW console; if Save refuses with the storage error text, `setAccessLevel` rejected |
 | 13.4 | Icon click arms + opens panel | NOT TESTED BY CLAUDE | open a normal https page with a video; click the toolbar icon | side panel opens in the same click; `#tab-arm-note` shows "This tab is ready. Press Start." | K1, K23: if the panel does not open, `sidePanel.open` lost the gesture; if the note stays "first click the toolbar icon…", the grant path differs |
 | 13.5 | Tab lane | NOT TESTED BY CLAUDE | play the video; enable Tab audio only; choose a target language; press Start | status "Checking permissions and audio readiness" -> Connecting -> Connected; NO immediate "forbidden"/`INTERNAL` notice on the very first Start (A23: the SW sender rule); the tab shows Chrome's capture indicator; original audio keeps playing at the slider volume WITHOUT a gap when Start is pressed; captions appear on the page if "Show captions on the page" is ticked; captions also in the panel preview | audio gap or silence: K3, A3, K4. No captions: check the panel preview first (host running?), then K13/overlay. `TAB_CAPTURE_FAILED`: K7 (flip `TAB_CAPTURE_INCLUDE_VIDEO`). Immediate failure with a FORBIDDEN-style error: A23 (`sender.url` of the SW), fake mode `swSenderHasUrl:false` shows the intended handling |
 | 13.6 | Passthrough volume | NOT TESTED BY CLAUDE | while running move the slider 0 -> 65 -> 100 | original audio level follows the slider live; 0 = silent original, captions continue | K4 (fan-out/graph) |
@@ -3303,9 +3389,9 @@ Use branded Chrome (the owner's is 154) with Developer mode on. Items 13.26-13.3
 | 13.28 | Mic-caption privacy (A28) | NOT TESTED BY CLAUDE | tick "Show captions on the page" for the MIC lane; in the PAGE's own console (main world) run `document.querySelector('interp-live-captions')?.shadowRoot` and try `document.querySelector('interp-live-captions')?.innerHTML`; open another tab in the background and let it finish loading | the shadow root is `null` and the host element exposes no caption text to the page; the background tab shows NO mic captions; switching to it makes them move there and clear from the previous tab | A28: if the root is reachable, switch to hiding mic captions from pages (keep them in the panel) |
 | 13.29 | Sticky controls | NOT TESTED BY CLAUDE | both lanes running, panel height about 700 px | Start/Stop and the mute button are reachable without scrolling; scrolling content never shows through the sticky row | 8.2.2 |
 | 13.30 | Overlay with long sentences | NOT TESTED BY CLAUDE | caption size 2.0, browser window about 500 px high, a long sentence | the NEWEST line is fully visible; older lines clip at the top edge | 8.5.2 anchor rule |
-| 13.31 | Screen reader and keyboard | NOT TESTED BY CLAUDE | VoiceOver (macOS): trigger the arm note, a key failure, a quota error, then use only the keyboard: Tab through the panel, press Start while the key is missing | the arm note and each error notice are announced (a failure shared by both lanes once); Start announces WHY it is disabled; nothing announces captions (limitation, 8.2.6) | record which notices were silent |
+| 13.31 | Screen reader and keyboard | NOT TESTED BY CLAUDE | VoiceOver (macOS): trigger the arm note, a key failure, a quota error, then use only the keyboard: Tab through the panel, press Start while the key is missing | the arm note and each error notice are announced (a failure shared by both lanes once); a state change is announced once (by the pill), not a second time by the lane status line (`#tab-status` / `#mic-status` are not live); Start takes focus while it is unavailable and its description (why it cannot start) is read, and pressing it changes nothing; the backup-model warning in `#<lane>-route-note` and the text of `#perm-help` on the permission page are announced when they appear; nothing announces captions (limitation, 8.2.6) | record which notices were silent; if Start is skipped by Tab it has become natively `disabled` again (8.2.6) |
 | 13.32 | UI-language split | NOT TESTED BY CLAUDE | Chrome in English, Options -> UI language Korean | panel and options Korean; the chips and status rows drawn on web pages and the toolbar tooltip stay English (documented in `ext.options.uiLanguageHint`) | 8.5.1 |
-| 13.33 | Fresh profile, no key | NOT TESTED BY CLAUDE | load the build in a new Chrome profile, open the panel | key notice with an "Enter API key" button; Start disabled and described; after entering a key the notice disappears | — |
+| 13.33 | Fresh profile, no key | NOT TESTED BY CLAUDE | load the build in a new Chrome profile, open the panel | key notice with an "Enter API key" button; Start unavailable (dimmed, `aria-disabled`, still focusable) and described by the key notice; after entering a key the notice disappears and Start looks normal | — |
 | 13.34 | Echo | NOT TESTED BY CLAUDE | both lanes on, speech unmuted, once with headphones and once with speakers | the echo warning is visible while speech is on and the mic lane enabled; RECORD whether the mic lane interprets the tab audio and the interpreted voice a second time through speakers | K9 |
 | 13.35 | Tab opened before install | NOT TESTED BY CLAUDE | open a page BEFORE loading the extension, load it, run the mic lane with page captions ticked on that page | the mic card shows "Captions cannot be shown on this page… reload it"; after reloading the page captions appear | 6.7 |
 | 13.36 | Captions toggled mid-run | NOT TESTED BY CLAUDE | start with "Show captions on the page" OFF, tick it mid-run, dismiss the bar with x, untick and tick again | the bar appears within about a second of ticking (no navigation or tab switch needed), clears when unticked, and comes back after untick/tick even though it was dismissed | 6.6 |
@@ -3319,9 +3405,9 @@ Use branded Chrome (the owner's is 154) with Developer mode on. Items 13.26-13.3
 | 13.44 | Panel at narrow width and in dark mode | NOT TESTED BY CLAUDE | drag the side panel to 320-400 px width with the UI language Japanese and both lanes on; then switch the operating system or Chrome to dark mode | the panel at 320-400 px width in ja (the sticky row wraps: Start basis 128 + 2 x 44 + "オプション" ~114 + gaps 24 = ~354 px > 288-328 px content width, computed, unrendered): Start, both icon buttons and Options stay reachable, nothing overlaps or is cut off, no horizontal scrollbar; in dark mode every label, note and border is readable | RECORD the width where the row breaks and how it wraps; 8.2.2 |
 | 13.45 | Text expansion | NOT TESTED BY CLAUDE | switch the UI language between Korean, English and Japanese (live) with both lanes on, the echo warning visible and one error notice showing; repeat at 150% browser zoom | no text is clipped, overlaps a control or pushes a control out of the panel or the options page; the longest notices wrap instead of scrolling sideways | RECORD the language, the element and the width |
 | 13.46 | Voice gender | NOT TESTED BY CLAUDE | Options -> `#opt-voice` = female; unmute; Start; listen; Stop; choose male; Start; listen; also change it WHILE running | the hint says "The voice change applies at the next start. To switch now, stop and start again."; the change takes effect only at the next start; RECORD how the interpreted voice sounds for male and for female (whether each sounds male or female) | if a voice does not change, the mapping is in `app/` and is shared with the web app: note the model |
-| 13.47 | Mute icon state cue | NOT TESTED BY CLAUDE | only the tab lane on; look at the mute button in both states (muted, which is the default, and unmuted) without hovering it | the state can be told apart WITHOUT colour and without the hover tooltip (a slashed speaker when muted is the look of the reference screenshot). At review time the icon was the same speaker glyph in both states and only its colour and border changed (UX review 3), so RECORD what you see | if the two states differ only by colour: draw a slash shown for the muted state (CSS only) |
-| 13.48 | Options number fields | NOT TESTED BY CLAUDE | in Options type out-of-range values into `#opt-caption-lines` (valid 1-6) and `#opt-caption-hide` (valid 0-60): 0, 10, 2.5, 61, -1; reopen Options | RECORD what each field shows, whether "Saved." appears and what is stored. At review time out-of-range values showed "Saved." and snapped to the DEFAULT (3 lines, 8 s), not to the previous value (UX review 2); the labels did not state the range | an invalid value should keep the previous value and show no "Saved." (or be clamped), and the label should say the range; 7.2 says out-of-range values are not clamped |
-| 13.49 | Keyboard-only variant of 13.31 | NOT TESTED BY CLAUDE | fresh profile with no key (as 13.33); use only the keyboard: Tab from the top of the panel through every control, press Enter on "Enter API key"; then save a key and Tab to Start and press Enter | focus reaches "Enter API key" and Enter opens Options; the key notice is read in reading order before the controls; with a key saved, Tab reaches Start and Enter starts. RECORD whether Start itself takes focus while the key is missing: a natively disabled button is skipped by Tab (HTML semantics, not run in Chrome), so 13.31's "Start announces WHY it is disabled" can be met only by a virtual-cursor screen reader, and with Tab only the notice tells the reason | if a control cannot be reached with Tab, note it; a focusable `aria-disabled` Start is the alternative to revisit in 8.2.6 (UX review 5) |
+| 13.47 | Mute icon state cue | NOT TESTED BY CLAUDE | only the tab lane on; look at the mute button in both states (muted, which is the default, and unmuted) without hovering it | the state can be told apart WITHOUT colour and without the hover tooltip: the muted icon (the default) has a slash across the speaker, the unmuted one has none (a second icon path shown only while `data-muted="true"`, CSS only, 8.2.2; the first build drew the same glyph in both states and only its colour and border changed, UX review 3, fixed). Not looked at in a browser: RECORD whether the slash is clearly visible at 24 px in light mode, dark mode and forced colors | if it is hard to see, draw it thicker or move it; if the two states still look alike, the CSS rule for `.icon-slash` did not apply |
+| 13.48 | Options number fields | NOT TESTED BY CLAUDE | in Options type out-of-range values into `#opt-caption-lines` (valid 1-6) and `#opt-caption-hide` (valid 0-60): 0, 10, 2.5, 61, -1; reopen Options | the labels state the ranges ("1-6", "0-60"); each out-of-range or fractional value is refused: the field shows the previous stored value again, no "Saved." appears and nothing is stored (also reopen Options to see what is stored); a valid value (1 or 6, 0 or 60) is accepted and confirmed with "Saved.". At review time out-of-range values showed "Saved." and snapped to the DEFAULT (3 lines, 8 s) instead of the previous value (UX review 2, fixed in the options controller). RECORD what each field shows, in particular what the browser's own number input does before the controller sees the value | if a refused value stays in the field or "Saved." shows, the range check of the options controller did not run (7.3) |
+| 13.49 | Keyboard-only variant of 13.31 | NOT TESTED BY CLAUDE | fresh profile with no key (as 13.33); use only the keyboard: Tab from the top of the panel through every control, press Enter on "Enter API key"; then save a key and Tab to Start and press Enter | focus reaches "Enter API key" and Enter opens Options; the key notice is read in reading order before the controls; with a key saved, Tab reaches Start and Enter starts. RECORD whether Start itself takes focus while the key is missing: it should, because it is `aria-disabled`, not natively disabled (8.2.6), and its description (the key notice) should be read; pressing Enter or Space on it while the key is missing must do nothing (no message, no notice, no change of the pill) | if Start is skipped by Tab, the attribute is natively `disabled` again; if pressing it starts or announces anything, the guard in the panel's `onPrimary` is missing (UX review 5); if a control cannot be reached with Tab, note it |
 | 13.50 | Chrome's site-access line next to the privacy sentence | NOT TESTED BY CLAUDE | `chrome://extensions` -> Details of "Live Interpreter": read "Site access" (the content script matches `http://*/*` and `https://*/*`); then read the Privacy section of Options (`ext.privacy.page`, which says the extension does not read or change the page apart from drawing captions) | Chrome's own "Site access: on all sites" next to `ext.privacy.page`: read it once on the extension's details page and decide whether the two read consistently (the overlay reads only `documentElement`, `fullscreenElement` and `visibilityState`, never page content) | if they read as a contradiction to you, reword `ext.privacy.page` (owner's decision) |
 | 13.51 | Failed dictionary load (KNOWN, NOT FIXED) | NOT TESTED BY CLAUDE | not expected in a packaged build (the build copies the dictionary files, section 10); to see it, block the dictionary requests in the panel's DevTools (Network -> block request URL) and reload the panel | seen only with a fake browser: every label, button and option shows the same sentence ("The task could not be completed. Check settings and retry."), `<html lang>` names the chosen language, and there is no visible retry (three silent automatic retries) | NOT FIXED in this round (UX review 14). Fix when it matters: keep the English text as static markup or show one banner and leave labels empty until the dictionary arrives, and add a Retry button |
 
@@ -3345,7 +3431,7 @@ Legend: K = risk, A = assumption (something inferred or unverified). "Manual" po
 | K8 | Whether a `getMediaStreamId` capture survives a cross-origin navigation is unverified. | Both outcomes handled (5.10). | none needed |
 | K9 | Two concurrent Live sessions on one key: Google's limit is undocumented here; the "about twice" statement is not measured. | Note text says not measured; `SESSION_LIMIT`/429 codes mapped per lane. | If two sessions are rejected, document "one lane at a time" and disable the second checkbox while one runs. |
 | K10 | The default extension-page CSP leaves `connect-src` open. A tightened CSP would be defense in depth but cannot be verified without a browser. | No `content_security_policy` key. | After a manual pass, add to the manifest `"content_security_policy": { "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://generativelanguage.googleapis.com wss://generativelanguage.googleapis.com" }` (derived from `ENDPOINT_ORIGINS`); if `'self'` does not match the extension origin in `connect-src`, the i18n fetches break: revert. |
-| K11 | Microphone prompt/permission for the extension origin: the prompt cannot show in offscreen (official sample); side panel behavior is third-party claim; a one-time grant may expire. | Permission tab (D5); UI tells the user to choose "Allow on every visit"; panel watches `PermissionStatus.onchange`; host preflight refuses `prompt`/`denied`. | If the side panel CAN prompt, the permission tab is still correct; if grants expire, re-run the tab from the mic button. |
+| K11 | Microphone prompt/permission for the extension origin: the prompt cannot show in offscreen (official sample); side panel behavior is third-party claim; a one-time grant may expire. | Permission tab (D5); the page tells the user what to AVOID ("Allow this time"), not a label to pick (14.4, change 2); panel watches `PermissionStatus.onchange`; host preflight refuses `prompt`/`denied`. | If the side panel CAN prompt, the permission tab is still correct; if grants expire, re-run the tab from the mic button. |
 | K12 | A built-in key restricted to web HTTP referrers may be rejected from a `chrome-extension://` origin; a packaged key is readable by anyone with the folder/zip. | Personal key is the documented path; built-in is opt-in, gitignored, first key only. | Use a personal key. |
 | K13 | Overlay: page CSP vs injected styles (a third-party report conflicts with the scouts' measurement, taken with an OPEN root; the CLOSED root is unmeasured), fullscreen strategies 1 and 2 are untested, the close button is last in the tab order, orphaned scripts after an extension reload. | Constructable sheet -> `<style>` fallback; strategy 1 re-parents only under plain containers and always restores, strategy 2 uses the top-layer `popover`; orphan guard; `scripting` fallback for armed tabs. | If styles fail on strict pages, add a `web_accessible_resources` stylesheet + `<link>` (10.4 would change); if neither fullscreen strategy shows the bar, use the panel preview. |
 | K14 | The unpacked extension id derives from the folder path; moving the folder changes the id and drops `storage.local` (the key). | Manual 13.2 warns; no `key` field (that needs a keypair; no `.pem` ever). | Re-enter the key. |
@@ -3424,7 +3510,9 @@ Clarifications that are NOT changes: D6 says the overlay is "appended to documen
 
 ---------------------------------------------------------------------------------------------------
 
-## 15. Task breakdown: four implementation groups with disjoint file ownership
+## 15. Task breakdown: four implementation groups with disjoint file ownership (historical: delivered)
+
+Historical: delivered. All four groups landed on 2026-09-29 (commits `2f6901a`, `43febec`, `7773fbc`; see the Status block at the top). This section is kept as it was written, because it records who owned which file, the interfaces between the groups and the command that proved each delivery; the numbers quoted in it (1011 tests, `files=<n>`) are design-time numbers, the delivered ones are in the Status block and in 11.1. The docs polish of 15.3 item 7 is done (see there).
 
 ### 15.0 Rules for every group
 
@@ -3451,10 +3539,10 @@ Clarifications that are NOT changes: D6 says the overlay is "appended to documen
 | I4 | UI-state and caption frames | B (`lib/ui-state.js`, `lib/caption-frames.js`) -> C (`panel/view-model.js`, `panel/host-link.js`), A (`extension-tree`) | 4.6, 4.7 | `LANE_PHASES`, `QUOTA_CODES`, `KEY_FAILURE_CODES`, `EXTENSION_ERROR_CODES`, `OVERRIDDEN_ENGINE_CODES`, `TAB_CAPTURE_CODES`, `errorKeyFor(code, has, lane)`, `laneStateFromSnapshot`, `buildUiState`, `buildCaptionFrame`, `createFrameCoalescer` |
 | I5 | Test fixtures | D (`tests/fixtures/fake-chrome.mjs`, `fake-audio.mjs`, `extension-dom.mjs`) -> B, C tests | 11.2, 11.3 | `createFakeBrowser` (options `noResponder`, `swSenderHasUrl`, `contentStorage`, `shortcut`), `GRANT_ERROR`, `ACTIVE_STREAM_ERROR`, `STREAM_ID_TTL_MS`, `createFakeAudioEnv`, `parseHtml`, `FakeElement`, `runClassicScript` |
 | I6 | Page ids | D (`*.html`) <-> C (controllers) | 1.5, 7.3, 8.2.1, 8.3, 8.4 | element ids and `data-i18n*` attributes; live-region rule of 8.2.1; parity asserted by `extension-html` and each controller test |
-| I7 | Dictionaries | D (`extension/i18n/*.json`) -> C (loader), A (tests) | 9.2 | 113 `ext.*` keys (the tables of 9.2 are machine-generated: copy them exactly) |
+| I7 | Dictionaries | D (`extension/i18n/*.json`) -> C (loader), A (tests) | 9.2 | 117 `ext.*` keys (the tables of 9.2 are machine-generated from the dictionaries: regenerate them, never edit them by hand) |
 | I8 | Overlay wire | D (`overlay/overlay.js`) <-> C (SW sends `content/overlay-attach`) <-> B (`overlay-hub.js`, frames) | 4.2, 4.5, 4.6.3, 8.5 | port `interp-overlay/1`, frames `hello`, `style`, `captions`, `clear`, `status`, `bye`, message `content/overlay-attach`, the `WIRE` literal |
 | I9 | Build inputs | A (`build-extension.mjs`) consumes every group's files | 3.1, 10 | file paths of 3.1; slot string of `extension/lib/builtin-key.js` |
-| I10 | Manifest and `_locales` | A -> C (SW uses `getMessage('menuOpen')`), D (overlay `getMessage` names, 12 of them) | 9.3, 10.4 | message names of 9.3, `PATHS` values |
+| I10 | Manifest and `_locales` | A -> C (SW uses `getMessage('menuOpen')`), D (overlay `getMessage` names, 7 of the 12) | 9.3, 10.4 | message names of 9.3, `PATHS` values |
 | I11 | Checker patch | A (`scripts/check-i18n.mjs`) -> D and everyone (source and HTML literals are validated) | 12.1 | `checkSource`/`validateDictionaries` options |
 | I12 | Engine modules | existing `app/` -> B | 5.5 | `createAppConfig({isolated:true,...})`, `createSimEngine`, `createPlatform`, `liveVoicePreference`, `LIVE_MODELS`, `LIVE_VOICE_GENDERS` |
 | I13 | Engine clock | B (`engine/worker-timers.js`, `TIMER_MODE`) -> B (`host.js`, lane engine, platform shim) | 5.13 | `createWorkerTimers`, `TIMER_MODE` |
@@ -3492,7 +3580,7 @@ Acceptance checks:
 4. M3 ONLY: `node --test tests/extension-static.test.mjs tests/extension-tree.test.mjs` pass (real manifest lint, real-repo build integration, real-tree i18n and static scans, WIRE parity).
 5. M3 ONLY: `node scripts/build-extension.mjs` prints `EXTENSION_BUILT out=… files=… version=0.1.0`; a SECOND run of the same command and `npm run build:extension` print it too (no `--clean` needed, 10.1); `git status --short` afterwards shows no new tracked or untracked file outside the section 3.1 / 12 lists (`dist/` is ignored).
 6. M3 ONLY: `node --test tests/*.test.mjs` passes in full (baseline before any new file: 1011 tests, 1011 pass).
-7. Docs polish (last): reconcile `docs/extension.md` with the delivered code (names, ids, key counts); `node --test tests/privacy.test.mjs` still passes (the doc is scanned for key-shaped strings).
+7. Docs polish (last): reconcile `docs/extension.md` with the delivered code (names, ids, key counts); `node --test tests/privacy.test.mjs` still passes (the doc is scanned for key-shaped strings). DONE on 2026-09-29: the file list of 3.1, the exports named in 3.4-9.5, the message catalog of 4.2, the element ids of 1.5 and the skeleton of 8.2.1, the tables of 9.2 (0 differing cells), the manifest and `_locales` of 10.4 and 9.3 (JSON equal), the build API, codes and steps of 10, the test list of 11.1 and the patch of 12.1 were compared with the code by script; the differences are listed in the Status block. `node --test tests/privacy.test.mjs tests/extension-tree.test.mjs tests/extension-static.test.mjs` passes after the edit (81 tests).
 
 ### 15.4 GROUP B: offscreen engine host, lanes, platform shim, tab audio graph, protocol/settings/state modules
 
@@ -3652,6 +3740,8 @@ Three independent reviews (MV3 security `S`: 12 issues; testability/gates `T`: 1
 | U30 | minor | No contrast test, missing checklist scenarios | WCAG helper test; 13.26-13.39 | 8.5.2, 11.1, 13 |
 
 Rows T12 and U23 are the same finding (the UI-language split), as are T13 and U20 (attribute styling); the second of each pair points at the first. Nothing was left open: the only items not implemented as suggested are U25 (rejected), T12/U23 (documented instead of pushing strings), the optional one-click setting of U3 (not built), the `TIMEOUT` remap of T4 (not applied) and the worker timers of S5 (built but off).
+
+Second round (after implementation, on the BUILT extension, three lenses: UX, security, contract). The ledger above is the first round, on the design. The second round found no blocker; its findings were fixed in code and tests and are the deviations listed in the Status block, the checklist rows 13.40-13.51 (13.42 and 13.51 are recorded as known and not fixed) and the tests of `7773fbc` (a mutation study of 191 hand-written mutants (187 applied) over the 12 MUST rules and the static guards: 160 were killed by the suite as first delivered, 27 survived, 13 of those exposed real test gaps, all closed by `7773fbc`, and the rest were equivalent or redundant mutants).
 
 ---------------------------------------------------------------------------------------------------
 
