@@ -341,7 +341,11 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
       applySettings(deepFreeze({ speechMuted, captions: { ...settings.captions, [lane]: message.captions },
         tabOriginalVolume: lane === 'tab' ? message.tab.originalVolume : settings.tabOriginalVolume,
         style: { ...message.style } }));
-      return lanes[lane].start({ ...message, muted: speechMuted, epoch });
+      const started = await lanes[lane].start({ ...message, muted: speechMuted, epoch });
+      // §19: a share-picker start that could not tell which tab was chosen (its page has no content script) has no
+      // page to draw on. Saying so at once lets the panel explain why the captions are in the panel only.
+      if (started.tabId === null) { overlayOutcome[lane] = 'unavailable'; refresh(); }
+      return started;
     },
 
     'host/lane-stop': async (message) => {

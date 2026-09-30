@@ -17,7 +17,7 @@ export function createTabAudioGraph({ env, timers } = {}) {
   const engineStreams = new Map();   // synthetic stream -> its destination node
   const listened = [];               // [track, listener] pairs installed by attach()
   let context = null, source = null, gain = null, rawTracks = [];
-  let attachStarted = false, attached = false, stopped = false, endedFired = false, volume = 0;
+  let attachStarted = false, attached = false, stopped = false, endedFired = false, volume = 0, passthrough = true;
   let stopPromise = null, cancelAttach = null;
 
   function fireEnded() {
@@ -80,8 +80,10 @@ export function createTabAudioGraph({ env, timers } = {}) {
      * the passthrough has to start at once. Rejects Error{code:'TAB_AUDIO_BLOCKED'} when the graph context does not
      * reach `running` (the raw tracks are stopped first, restoring the tab's audio) and Error{code:'START_CANCELLED'}
      * when stop() ran before or during the wait (nothing is created after a stop).
+     * `passthrough: false` (§19) is for a capture that did NOT silence the tab: the tab is still heard by itself, so
+     * playing it back here would double it. The gain then stays at 0 whatever the volume setting says.
      */
-    async attach(raw, { originalVolume = 100 } = {}) {
+    async attach(raw, { originalVolume = 100, passthrough: play = true } = {}) {
       if (attachStarted) throw codedError('INVALID_REQUEST');
       attachStarted = true;
       if (stopped) { stopTracks(raw); throw codedError('START_CANCELLED'); }
@@ -93,7 +95,8 @@ export function createTabAudioGraph({ env, timers } = {}) {
         listened.push([track, listener]);
       }
       if (rawTracks.every((track) => track.readyState === 'ended')) fireEnded();
-      volume = percentOf(originalVolume) ?? 100;
+      passthrough = play !== false;
+      volume = passthrough ? percentOf(originalVolume) ?? 100 : 0;
       try {
         context = new env.AudioContext();
         source = context.createMediaStreamSource(raw);
@@ -137,7 +140,7 @@ export function createTabAudioGraph({ env, timers } = {}) {
 
     setOriginalVolume(percent) {
       const next = percentOf(percent);
-      if (next === null) return;
+      if (next === null || !passthrough) return;
       volume = next;
       applyVolume();
     },
@@ -151,6 +154,6 @@ export function createTabAudioGraph({ env, timers } = {}) {
       return stopPromise;
     },
 
-    snapshot() { return Object.freeze({ attached, contextState: context?.state ?? 'none', volume }); },
+    snapshot() { return Object.freeze({ attached, contextState: context?.state ?? 'none', volume, passthrough }); },
   });
 }

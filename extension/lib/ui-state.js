@@ -5,7 +5,7 @@
 // metric, raw caption, discovered model, tab URL or key can appear in a state. No global is touched.
 import {
   ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN, LANE_PHASES, MODEL_MAX_CHARS, OUTPUT_STATES, OVERLAY_STATES,
-  RECONNECT_REASONS, ROUTES, TARGET_LANGUAGES, deepFreeze, isMachineCode,
+  RECONNECT_REASONS, ROUTES, TARGET_LANGUAGES, deepFreeze, isErrorReason, isMachineCode,
 } from './constants.js';
 import { LANES, PROTOCOL_VERSION, validateLaneState } from './protocol.js';
 
@@ -15,7 +15,7 @@ export const ACTIVE_PHASES = Object.freeze(['starting', 'running', 'reconnecting
 export const QUOTA_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']);
 export const KEY_FAILURE_CODES = Object.freeze(['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED']);
 export const EXTENSION_ERROR_CODES = Object.freeze(['TAB_CAPTURE_FAILED', 'TAB_UNSUPPORTED', 'TAB_GONE',
-  'TAB_CAPTURE_BUSY', 'TAB_ENDED', 'TAB_AUDIO_BLOCKED', 'TAB_INPUT_LOST', 'HOST_UNAVAILABLE', 'OVERLAY_UNAVAILABLE',
+  'TAB_CAPTURE_BUSY', 'TAB_ENDED', 'TAB_AUDIO_BLOCKED', 'TAB_SHARE_NO_AUDIO', 'TAB_INPUT_LOST', 'HOST_UNAVAILABLE', 'OVERLAY_UNAVAILABLE',
   'LANE_STOPPING', 'MICROPHONE_EXPIRED', 'STORAGE_FAILED']);
 export const OVERRIDDEN_ENGINE_CODES = Object.freeze(['CREDENTIAL_REQUIRED', 'INVALID_KEY', 'PERMISSION_DENIED',
   'CREDENTIAL_FORBIDDEN', 'IP_DENIED', 'MODEL_UNSUPPORTED', 'RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429',
@@ -87,6 +87,9 @@ export function laneStateFromSnapshot({ lane, snapshot = null, facts = {}, level
     fallback: session && snap.fallback === true,
     targetLanguage: phase !== 'off' && TARGET_LANGUAGES.includes(f.targetLanguage) ? f.targetLanguage : null,
     errorCode,
+    // 2026-09-30: which check refused the result, for the one code that has reasons and only when the engine itself
+    // failed with it (a host-level error such as TAB_ENDED outranks the engine and has no reason).
+    errorReason: errorCode === 'INVALID_RESULT' && status === 'failed' && isErrorReason(snap?.errorReason) ? snap.errorReason : null,
     quota: QUOTA_CODES.includes(errorCode),
     keyFailure: KEY_FAILURE_CODES.includes(errorCode),
     level: phase === 'running' || phase === 'reconnecting' ? clampInt(level, 0, 100) : 0,

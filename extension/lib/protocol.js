@@ -5,9 +5,10 @@
 // no global at import time. Failures are machine codes (4.1); nothing here logs, and a rejected
 // message is never echoed, so a `key` in a bad `host/lane-start` cannot leak through an error.
 import {
-  CAPTION_ROLES, CAPTION_STATUSES, ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES,
+  CAPTION_ROLES, CAPTION_STATUSES, CAPTURE_LABEL_PATTERN, CAPTURE_NONCE_PATTERN, ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN,
+  KEY_PATTERN, LANE_PHASES,
   MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, RECONNECT_REASONS, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
-  VOICE_GENDERS, deepFreeze, isLanguagePair, isMachineCode, isPlainObject, isValidStyle,
+  VOICE_GENDERS, deepFreeze, isErrorReason, isLanguagePair, isMachineCode, isPlainObject, isValidStyle,
 } from './constants.js';
 
 export const PROTOCOL_VERSION = 1;
@@ -39,6 +40,8 @@ export const LIMITS = Object.freeze({
   statusLingerMs: 9000,     // after a lane ends in error, overlay ports stay open this long so the `status` frame can be read
   stopWaitMs: 4000,         // SW: how long a Start waits for a lane that is still 'stopping' (bounded poll, 6.3 step 3)
   startSettleMs: 3000,      // host: how long stop() waits for an in-flight start to notice its cancel flag
+  labelWaitMs: 500,         // SW: how long a share-picker start waits for the pages to take their capture labels (§19)
+  pickKeepAliveMs: 20000,   // SW: while the share picker is open, one cheap API call this often keeps the worker alive (§19)
   streamIdMaxChars: 512, keyMaxChars: 512, titleMaxChars: 60,
   maxArmedTabs: 32,
 });
@@ -60,8 +63,10 @@ const pickStyle = (style) => ({ size: style.size, position: style.position, disp
 // ---------------------------------------------------------------------------------------------
 // 4.2 message catalog (control plane). `errors` is the documented error-code column (the panel and
 // the SW test against it); the router itself only ever produces PROTOCOL_CODES.
-const LANE_START_ERRORS = ['NEEDS_ARM', 'CREDENTIAL_REQUIRED', 'TAB_UNSUPPORTED', 'TAB_GONE', 'TAB_CAPTURE_BUSY',
-  'TAB_CAPTURE_FAILED', 'TAB_AUDIO_BLOCKED', 'HOST_UNAVAILABLE', 'ALREADY_RUNNING', 'LANE_STOPPING', 'START_CANCELLED',
+// §19 (2026-09-30): NEEDS_ARM is gone. A tab the toolbar icon did not arm is no longer refused: the start asks
+// through the browser's share picker instead (TAB_SHARE_NO_AUDIO = what was shared carries no audio track).
+const LANE_START_ERRORS = ['CREDENTIAL_REQUIRED', 'TAB_UNSUPPORTED', 'TAB_GONE', 'TAB_CAPTURE_BUSY',
+  'TAB_CAPTURE_FAILED', 'TAB_SHARE_NO_AUDIO', 'TAB_AUDIO_BLOCKED', 'HOST_UNAVAILABLE', 'ALREADY_RUNNING', 'LANE_STOPPING', 'START_CANCELLED',
   'MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'SESSION_LIMIT', 'MODEL_UNSUPPORTED', 'INVALID_REQUEST',
   'INVALID_MESSAGE', 'FORBIDDEN', 'INTERNAL'];
 const row = (target, roles, errors) => Object.freeze({ target, roles: Object.freeze(roles), errors: Object.freeze(errors) });
@@ -72,13 +77,14 @@ export const MESSAGE_CATALOG = Object.freeze({
   'sw/host-probe': row('sw', ['panel'], ['FORBIDDEN']),
   'sw/host-idle': row('sw', ['offscreen'], ['FORBIDDEN', 'INVALID_MESSAGE']),
   'host/ping': row('offscreen', ['sw'], ['FORBIDDEN']),
-  'host/lane-start': row('offscreen', ['sw'], LANE_START_ERRORS.filter((code) => code !== 'NEEDS_ARM')),
+  'host/lane-start': row('offscreen', ['sw'], LANE_START_ERRORS),
   'host/lane-stop': row('offscreen', ['sw'], ['FORBIDDEN', 'INVALID_MESSAGE']),
   'host/settings': row('offscreen', ['sw'], ['INVALID_MESSAGE', 'FORBIDDEN']),
   'host/overlay-wanted': row('offscreen', ['sw'], ['FORBIDDEN']),
   'host/overlay-result': row('offscreen', ['sw'], ['FORBIDDEN']),
   'host/tab-removed': row('offscreen', ['sw'], ['FORBIDDEN']),
   'content/overlay-attach': row('content', ['sw'], ['FORBIDDEN']),
+  'content/capture-label': row('content', ['sw'], ['FORBIDDEN']),
 });
 export const MESSAGE_TYPES = Object.freeze(Object.keys(MESSAGE_CATALOG));
 
@@ -101,9 +107,16 @@ function laneStartOf(m) {
     voiceGender: m.voiceGender, muted: m.muted, captions: m.captions, style: pickStyle(m.style) };
   if (m.lane === 'tab') {
     const { tab } = m;
-    if (!isPlainObject(tab) || !int(tab.tabId) || !text(tab.streamId, 1, LIMITS.streamIdMaxChars)
-      || !int(tab.originalVolume, ORIGINAL_VOLUME.min, ORIGINAL_VOLUME.max)) return null;
-    out.tab = { tabId: tab.tabId, streamId: tab.streamId, originalVolume: tab.originalVolume };
+    if (!isPlainObject(tab) || !int(tab.originalVolume, ORIGINAL_VOLUME.min, ORIGINAL_VOLUME.max)) return null;
+    if (tab.pick !== undefined) {
+      // §19, the share-picker start: a nonce instead of a stream id, and no tab id (the host learns which tab the
+      // user chose from the captured track). The two shapes never mix.
+      if (!matches(CAPTURE_NONCE_PATTERN, tab.pick) || tab.tabId !== undefined || tab.streamId !== undefined) return null;
+      out.tab = { pick: tab.pick, originalVolume: tab.originalVolume };
+    } else {
+      if (!int(tab.tabId) || !text(tab.streamId, 1, LIMITS.streamIdMaxChars)) return null;
+      out.tab = { tabId: tab.tabId, streamId: tab.streamId, originalVolume: tab.originalVolume };
+    }
   } else if (m.tab !== undefined) return null;   // `tab` is present iff lane === 'tab'
   return out;
 }
@@ -138,6 +151,7 @@ const PAYLOADS = {
     ? { tabId: m.tabId, ok: m.ok, lanes: [...m.lanes] } : null),
   'host/tab-removed': (m) => (int(m.tabId) ? { tabId: m.tabId } : null),
   'content/overlay-attach': () => ({}),
+  'content/capture-label': (m) => (matches(CAPTURE_LABEL_PATTERN, m.label) ? { label: m.label } : null),
 };
 
 const INVALID_MESSAGE = Object.freeze({ ok: false, code: 'INVALID_MESSAGE' });
@@ -271,14 +285,18 @@ export function validateLaneState(value, lane) {
     && (value.reconnectReason === null || value.phase === 'reconnecting')
     && nullable(value.output, OUTPUT_STATES) && bounded(value.model)
     && nullable(value.route, ROUTES) && typeof value.fallback === 'boolean' && nullable(value.targetLanguage, TARGET_LANGUAGES)
-    && (value.errorCode === null || isMachineCode(value.errorCode)) && typeof value.quota === 'boolean'
+    && (value.errorCode === null || isMachineCode(value.errorCode))
+    // the reason exists only next to the one code it explains
+    && (value.errorReason === null || (value.errorCode === 'INVALID_RESULT' && isErrorReason(value.errorReason)))
+    && typeof value.quota === 'boolean'
     && typeof value.keyFailure === 'boolean' && int(value.level, 0, 100) && (value.tabId === null || int(value.tabId))
     && typeof value.captions === 'boolean' && OVERLAY_STATES.includes(value.overlay) && nullable(value.gap, GAP_KINDS)
     && int(value.epoch);
   if (!ok) return null;
   return deepFreeze({ lane, phase: value.phase, engineStatus: value.engineStatus, retries: value.retries,
     reconnectReason: value.reconnectReason, output: value.output, model: value.model, route: value.route, fallback: value.fallback,
-    targetLanguage: value.targetLanguage, errorCode: value.errorCode, quota: value.quota, keyFailure: value.keyFailure,
+    targetLanguage: value.targetLanguage, errorCode: value.errorCode, errorReason: value.errorReason, quota: value.quota,
+    keyFailure: value.keyFailure,
     level: value.level, tabId: value.tabId, captions: value.captions, overlay: value.overlay, gap: value.gap,
     epoch: value.epoch });
 }

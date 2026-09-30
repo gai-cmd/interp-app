@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { SECRET_PATTERNS } from '../scripts/check-release.mjs';
 import {
-  CAPTION_DISPLAYS, CAPTION_POSITIONS, CAPTION_SIZE, DEFAULT_STYLE, GAP_KINDS, HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES,
-  MACHINE_CODE_PATTERN, STYLE_LIMITS, TARGET_LANGUAGES, VOICE_GENDERS, clampCaptionSize, deepFreeze, isMachineCode,
-  isPlainObject, isValidStyle, normalizeStyle,
+  CAPTION_DISPLAYS, CAPTION_POSITIONS, CAPTION_SIZE, CAPTURE_LABEL_PATTERN, CAPTURE_NONCE_PATTERN, DEFAULT_STYLE, GAP_KINDS,
+  HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES, MACHINE_CODE_PATTERN, STYLE_LIMITS, TARGET_LANGUAGES, VOICE_GENDERS, clampCaptionSize,
+  deepFreeze, isMachineCode, isPlainObject, isValidStyle, normalizeStyle, tabIdOfCaptureLabel,
 } from '../extension/lib/constants.js';
 import {
   FRAME_DIRECTIONS, FRAME_TYPES, LANES, LIMITS, MESSAGE_CATALOG, MESSAGE_TYPES, PATHS, PORT_NAMES, PROTOCOL_CODES,
@@ -66,6 +66,7 @@ const VALID = Object.freeze({
   'host/overlay-result': { tabId: 7, ok: false, lanes: ['tab', 'mic'] },
   'host/tab-removed': { tabId: 7 },
   'content/overlay-attach': {},
+  'content/capture-label': { label: `${'0123456789abcdef'.repeat(2)}.123` },
 });
 const message = (type, payload = VALID[type]) => ({ v: 1, target: MESSAGE_CATALOG[type].target, type, ...payload });
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -89,7 +90,8 @@ test('shared constants are frozen and pinned to the values of section 3.5', () =
     permission: 'extension/permission/mic-permission.html', overlay: 'extension/overlay/overlay.js' });
   assert.deepEqual(LIMITS, { maxFrameBytes: 8192, maxRowChars: 400, maxRows: 6, maxOverlayPorts: 4, maxPanelPorts: 4,
     frameIntervalMs: 100, panelGraceMs: 3000, panelInitialGraceMs: 15000, statusLingerMs: 9000, stopWaitMs: 4000,
-    startSettleMs: 3000, streamIdMaxChars: 512, keyMaxChars: 512, titleMaxChars: 60, maxArmedTabs: 32 });
+    startSettleMs: 3000, labelWaitMs: 500, pickKeepAliveMs: 20000,   // §19: the share-picker start
+    streamIdMaxChars: 512, keyMaxChars: 512, titleMaxChars: 60, maxArmedTabs: 32 });
   assert.deepEqual(PROTOCOL_CODES, ['INVALID_MESSAGE', 'FORBIDDEN', 'UNKNOWN_TYPE', 'INTERNAL']);
   for (const value of [PORT_NAMES, LANES, TARGETS, SENDER_ROLES, STORAGE_KEYS, PATHS, LIMITS, PROTOCOL_CODES, MESSAGE_CATALOG,
     MESSAGE_TYPES, FRAME_TYPES, FRAME_DIRECTIONS, VOICE_GENDERS, TARGET_LANGUAGES, CAPTION_SIZE, CAPTION_POSITIONS,
@@ -100,7 +102,7 @@ test('shared constants are frozen and pinned to the values of section 3.5', () =
   assert.ok(KEY_PATTERN.test('a'.repeat(LIMITS.keyMaxChars)) && !KEY_PATTERN.test('a'.repeat(LIMITS.keyMaxChars + 1)));
 });
 
-test('the catalog has the 13 rows of section 4.2 with a target that matches the type prefix', () => {
+test('the catalog has the 14 rows of section 4.2 with a target that matches the type prefix', () => {
   assert.deepEqual([...MESSAGE_TYPES].sort(), Object.keys(VALID).sort());
   const targetOfPrefix = { sw: 'sw', host: 'offscreen', content: 'content' };
   for (const type of MESSAGE_TYPES) {
@@ -113,9 +115,14 @@ test('the catalog has the 13 rows of section 4.2 with a target that matches the 
   assert.deepEqual(MESSAGE_CATALOG['sw/host-idle'].roles, ['offscreen']);
   assert.deepEqual(MESSAGE_CATALOG['host/lane-start'].roles, ['sw']);
   assert.deepEqual(MESSAGE_CATALOG['content/overlay-attach'].roles, ['sw']);
-  assert.ok(MESSAGE_CATALOG['sw/lane-start'].errors.includes('NEEDS_ARM'));
-  assert.ok(!MESSAGE_CATALOG['host/lane-start'].errors.includes('NEEDS_ARM'));
-  assert.equal(MESSAGE_CATALOG['host/lane-start'].errors.length, MESSAGE_CATALOG['sw/lane-start'].errors.length - 1);
+  assert.deepEqual(MESSAGE_CATALOG['content/capture-label'].roles, ['sw']);
+  // §19 (2026-09-30) reverses the old pin: an un-armed tab is no longer refused with NEEDS_ARM (the start asks through
+  // the share picker instead), so neither row documents that code and both document the picker's own refusal.
+  for (const type of ['sw/lane-start', 'host/lane-start']) {
+    assert.ok(!MESSAGE_CATALOG[type].errors.includes('NEEDS_ARM'), type);
+    assert.ok(MESSAGE_CATALOG[type].errors.includes('TAB_SHARE_NO_AUDIO'), type);
+  }
+  assert.deepEqual(MESSAGE_CATALOG['host/lane-start'].errors, MESSAGE_CATALOG['sw/lane-start'].errors);
   for (const type of MESSAGE_TYPES) assert.ok(!MESSAGE_CATALOG[type].roles.includes('content'), 'a content script may send no catalog message');
 });
 
@@ -228,6 +235,48 @@ test('host/lane-start: key, stream id, tab and request shape rules of section 4.
   assert.equal(validateMessage(message('host/lane-start', withPatch(LANE_START, tab({ originalVolume: 100, tabId: 0 })))).ok, true);
   assert.equal(validateMessage(message('host/lane-start', withPatch(MIC_START, { tab: LANE_START.tab }))).ok, false, 'tab is present iff lane is tab');
   assert.equal(validateMessage(message('host/lane-start', MIC_START)).ok, true);
+});
+
+// §19 (2026-09-30). Fails on v0.3.1: the validator knew one tab shape only, and there was no capture-label row.
+test('host/lane-start (tab) has a second shape for the share-picker start: a nonce and a volume, never mixed with a stream id', () => {
+  const NONCE = '0123456789abcdef'.repeat(2);
+  const pick = (tab) => validateMessage(message('host/lane-start', withPatch(LANE_START, { tab })));
+  const ok = pick({ pick: NONCE, originalVolume: 40 });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.message.tab, { pick: NONCE, originalVolume: 40 }, 'exactly these two fields: no tab id and no stream id');
+  assert.equal(pick({ pick: NONCE, originalVolume: 40, extra: 1 }).message.tab.extra, undefined, 'unknown fields are dropped');
+  for (const [label, tab] of Object.entries({
+    'mixed with a stream id': { pick: NONCE, streamId: 'fake-stream-1', originalVolume: 40 },
+    'mixed with a tab id': { pick: NONCE, tabId: 5, originalVolume: 40 },
+    'short nonce': { pick: NONCE.slice(1), originalVolume: 40 },
+    'long nonce': { pick: `${NONCE}0`, originalVolume: 40 },
+    'upper case': { pick: NONCE.toUpperCase(), originalVolume: 40 },
+    'not hex': { pick: `${NONCE.slice(1)}g`, originalVolume: 40 },
+    'a label, not a nonce': { pick: `${NONCE}.5`, originalVolume: 40 },
+    'nonce type': { pick: 5, originalVolume: 40 },
+    'null nonce': { pick: null, originalVolume: 40 },
+    'no volume': { pick: NONCE },
+    'volume out of range': { pick: NONCE, originalVolume: 101 },
+    'neither shape': { originalVolume: 40 },
+  })) assert.equal(pick(tab).ok, false, label);
+  assert.equal(validateMessage(message('host/lane-start', withPatch(MIC_START, { tab: { pick: NONCE, originalVolume: 40 } }))).ok, false, 'never on the microphone lane');
+});
+
+test('content/capture-label carries exactly one label `<32 hex>.<tab id>`, and the label names its tab only under its own nonce', () => {
+  const NONCE = 'a1b2c3d4e5f60718'.repeat(2);
+  const label = (value) => validateMessage(message('content/capture-label', { label: value }));
+  assert.deepEqual(label(`${NONCE}.7`).message, { v: 1, target: 'content', type: 'content/capture-label', label: `${NONCE}.7` });
+  for (const bad of [undefined, null, 7, '', NONCE, `${NONCE}.`, `${NONCE}.x`, `${NONCE}.-1`, `${NONCE}.1.2`, `${NONCE.toUpperCase()}.7`,
+    `${NONCE}.${'9'.repeat(16)}`, ` ${NONCE}.7`, `${NONCE}.7\n`, `${NONCE.slice(2)}.7`]) assert.equal(label(bad).ok, false, JSON.stringify(bad));
+  assert.ok(CAPTURE_NONCE_PATTERN.test(NONCE) && CAPTURE_LABEL_PATTERN.test(`${NONCE}.0`));
+  // the host's reading of a captured track's label
+  assert.equal(tabIdOfCaptureLabel(`${NONCE}.7`, NONCE), 7);
+  assert.equal(tabIdOfCaptureLabel(`${NONCE}.0`, NONCE), 0);
+  assert.equal(tabIdOfCaptureLabel(`${NONCE}.1802333577`, NONCE), 1802333577);
+  const OTHER = 'f'.repeat(32);
+  for (const [value, nonce] of [[`${OTHER}.7`, NONCE], [`${NONCE}.7`, OTHER], [undefined, NONCE], [null, NONCE], ['', NONCE], [`${NONCE}.7`, undefined],
+    [`${NONCE}.7`, ''], [`${NONCE}.7`, NONCE.slice(1)], [`${NONCE}.x`, NONCE], [7, NONCE], [`${NONCE}.${'9'.repeat(16)}`, NONCE],
+    ['interp:abc', NONCE]]) assert.equal(tabIdOfCaptureLabel(value, nonce), null, JSON.stringify([value, nonce]));
 });
 
 // Two-way mode: `request.languages` is optional; when present it is exactly two DISTINCT ko|en|ja values.

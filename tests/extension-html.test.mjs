@@ -479,10 +479,10 @@ test('permission: ids, keys and the persistent status region', () => {
 
 const placeholdersOf = (value) => [...new Set([...value.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)].map((match) => match[1]))].sort().join(',');
 
-test('dictionaries: 142 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
+test('dictionaries: 143 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
   const keys = Object.keys(dictionaries.en.ext);
-  assert.equal(keys.length, 142, '117 + the five ext.twoWay.* keys + the seven §16 keys + the thirteen §17 keys (lane tabs, microphone wait, setup page)');
-  assert.equal(new Set(keys).size, 142);
+  assert.equal(keys.length, 143, '117 + the five ext.twoWay.* keys + the seven §16 keys + the thirteen §17 keys (lane tabs, microphone wait, setup page) + the one §19 key (ext.error.TAB_SHARE_NO_AUDIO)');
+  assert.equal(new Set(keys).size, 143);
   for (const language of LANGUAGES) {
     const dictionary = dictionaries[language].ext;
     assert.deepEqual(Object.keys(dictionary).sort(), [...keys].sort(), `${language} has the same keys as en`);

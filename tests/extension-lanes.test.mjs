@@ -4,7 +4,7 @@ import { createSessionManager } from '../app/engine/session-manager.js';
 import { DEFAULT_LIVE_MODEL, LIVE_MODELS, TRANSLATE_LIVE_MODEL, liveVoicePreference } from '../app/providers/gemini/live-config.js';
 import { createLaneEngine } from '../extension/engine/lane-engine.js';
 import { createMicLane } from '../extension/engine/mic-lane.js';
-import { TAB_CAPTURE_INCLUDE_VIDEO, createTabLane } from '../extension/engine/tab-lane.js';
+import { DISPLAY_MEDIA_CONSTRAINTS, TAB_CAPTURE_INCLUDE_VIDEO, createTabLane } from '../extension/engine/tab-lane.js';
 import { LIMITS } from '../extension/lib/protocol.js';
 import { createDefaultSettings, laneRequestOf } from '../extension/lib/settings.js';
 import { laneStateFromSnapshot } from '../extension/lib/ui-state.js';
@@ -548,6 +548,189 @@ test('CANCEL: a tab that ends while the lane runs stops it with TAB_ENDED, throu
   assert.equal(rig.browser.captures.size, 0);
 });
 
+// ---------------------------------------------------------------------------------------------
+// §19 (2026-09-30): the share-picker start. Every test here fails on v0.3.1, which knew the stream-id start only.
+const NONCE = '0123456789abcdef'.repeat(2);
+const pickParams = (rig, options = {}) => tabParams(rig, { pick: NONCE, ...options });
+
+test('PICKER: the tab lane asks the share picker (never getUserMedia), learns the chosen tab from its label, drops the video track and runs', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  let userMediaCalls = 0;
+  const getUserMedia = rig.env.navigator.mediaDevices.getUserMedia;
+  rig.env.navigator.mediaDevices.getUserMedia = (constraints) => { userMediaCalls += 1; return getUserMedia(constraints); };
+  const params = await pickParams(rig, { originalVolume: 40 });
+  assert.deepEqual(params.tab, { pick: NONCE, originalVolume: 40 });
+  const starting = lane.start(params);
+  await tick();
+  // The dialog is open: the lane is starting, it knows no tab yet, and nothing has been built.
+  assert.equal(rig.audio.picker.pending(), 1);
+  assert.deepEqual(rig.audio.picker.calls, [DISPLAY_MEDIA_CONSTRAINTS]);
+  assert.deepEqual(DISPLAY_MEDIA_CONSTRAINTS, {
+    video: { displaySurface: 'browser' },
+    audio: { suppressLocalAudioPlayback: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    surfaceSwitching: 'exclude', systemAudio: 'exclude', monitorTypeSurfaces: 'exclude' });
+  assert.ok(Object.isFrozen(DISPLAY_MEDIA_CONSTRAINTS) && Object.isFrozen(DISPLAY_MEDIA_CONSTRAINTS.audio) && Object.isFrozen(DISPLAY_MEDIA_CONSTRAINTS.video));
+  assert.equal(lane.phase(), 'starting');
+  assert.equal(lane.facts().tabId, null);
+  assert.equal(stateOf(lane, 'tab').engineStatus, null, 'no engine while the user is choosing: the panel reads this as "choosing"');
+  assert.equal(rig.audio.contexts.length, 0);
+
+  const stream = rig.audio.picker.choose({ label: `${NONCE}.8` });
+  const [video] = stream.getVideoTracks();
+  assert.deepEqual(await starting, { epoch: 1, tabId: 8 }, 'the start reports the tab the user chose');
+  assert.equal(lane.facts().tabId, 8);
+  assert.equal(stateOf(lane, 'tab').tabId, 8);
+  assert.equal(userMediaCalls, 0, 'the tab capture itself never went through getUserMedia');
+  assert.equal(video.readyState, 'ended', 'the video track is stopped at once');
+  assert.deepEqual(stream.getVideoTracks(), [], 'and leaves the stream');
+  assert.equal(stream.getAudioTracks()[0].readyState, 'live');
+  // The same passthrough as the stream-id path: the tab was silenced, so it is played back at the chosen volume.
+  const gain = rig.audio.contexts[0].nodes.find((node) => node.kind === 'gain');
+  assert.equal(gain.gain.value, 0.4);
+  lane.setOriginalVolume(80);
+  assert.equal(gain.gain.value, 0.8);
+  assert.equal(rig.audio.micStreams.length, 0);
+  // and the engine runs on it
+  const up = await rig.connect({ worklet: 0, socket: 0 });
+  assert.equal(lane.phase(), 'running');
+  content(up.socket, { outputTranscription: { text: '안녕하세요' } });
+  await until(() => texts(lane).includes('안녕하세요'), 'a caption from the picked tab');
+});
+
+test('PICKER: a page without a label, a label of another start and a malformed one all leave the tab unknown; the lane still runs', async (t) => {
+  for (const label of [null, `${'f'.repeat(32)}.8`, 'interp:abc', `${NONCE}.x`]) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    const starting = lane.start(await pickParams(rig));
+    await tick();
+    rig.audio.picker.choose({ label });
+    assert.deepEqual(await starting, { epoch: 1, tabId: null }, String(label));
+    assert.equal(lane.facts().tabId, null);
+    assert.equal(lane.phase(), 'starting', 'the engine is being set up');
+  }
+});
+
+test('PICKER: closing the dialog settles the lane in off without an error; any other failure is TAB_CAPTURE_FAILED', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const dismissed = outcomeOf(lane.start(await pickParams(rig)));
+  await tick();
+  rig.audio.picker.dismiss();
+  assert.equal(await dismissed, 'START_CANCELLED', 'the code that means "nothing failed, the lane did not start"');
+  assert.equal(lane.phase(), 'off');
+  assert.equal(lane.facts().hostError, null);
+  assert.equal(stateOf(lane, 'tab').errorCode, null);
+  assert.equal(rig.audio.contexts.length, 0);
+
+  const failed = outcomeOf(lane.start(await pickParams(rig, { epoch: 2 })));
+  await tick();
+  rig.audio.picker.dismiss('AbortError');
+  assert.equal(await failed, 'TAB_CAPTURE_FAILED');
+  assert.equal(lane.phase(), 'error');
+  assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_CAPTURE_FAILED');
+  // and the lane is not stuck
+  const again = lane.start(await pickParams(rig, { epoch: 3 }));
+  await tick();
+  rig.audio.picker.choose({ label: `${NONCE}.5` });
+  assert.deepEqual(await again, { epoch: 3, tabId: 5 });
+});
+
+test('PICKER: something shared without audio (a window, or "share tab audio" off) is TAB_SHARE_NO_AUDIO and every track is released', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const starting = outcomeOf(lane.start(await pickParams(rig)));
+  await tick();
+  const stream = rig.audio.picker.choose({ label: `${NONCE}.8`, audio: false });
+  assert.equal(await starting, 'TAB_SHARE_NO_AUDIO');
+  assert.equal(lane.phase(), 'error');
+  assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_SHARE_NO_AUDIO');
+  assert.equal(stream.source.released, true, 'the share indicator goes away');
+  assert.equal(rig.audio.contexts.length, 0, 'no graph, no engine');
+  assert.equal(rig.sockets.sockets.length, 0);
+});
+
+test('PICKER: a tab the browser did NOT silence is not played back a second time, whatever the volume setting says', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const starting = lane.start(await pickParams(rig, { originalVolume: 65 }));
+  await tick();
+  rig.audio.picker.choose({ label: `${NONCE}.8`, suppressed: false });
+  await starting;
+  const gain = rig.audio.contexts[0].nodes.find((node) => node.kind === 'gain');
+  assert.equal(gain.gain.value, 0, 'the user already hears the tab itself');
+  lane.setOriginalVolume(90);
+  assert.equal(gain.gain.value, 0);
+  assert.equal(rig.audio.contexts[0].destinations.length, 1, 'the engine still gets the audio');
+});
+
+test('PICKER CANCEL: Stop while the dialog is open does not wait for it; the stream it delivers later is released at once', async () => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  const starting = outcomeOf(lane.start(await pickParams(rig)));
+  await tick();
+  assert.equal(rig.audio.picker.pending(), 1);
+  // No clock advance: unlike a hung getUserMedia, the start lets go as soon as the run is cancelled.
+  await lane.stop();
+  assert.equal(await starting, 'START_CANCELLED');
+  assert.equal(lane.phase(), 'off');
+  assert.equal(lane.facts().hostError, null);
+  assert.equal(rig.audio.picker.pending(), 1, 'the dialog itself cannot be closed from the document');
+  const late = rig.audio.picker.choose({ label: `${NONCE}.8` });
+  await tick();
+  assert.ok(late.getTracks().every((track) => track.readyState === 'ended'), 'nothing keeps capturing after the stop');
+  assert.equal(late.source.released, true);
+  assert.equal(rig.audio.contexts.length, 0);
+  assert.equal(lane.phase(), 'off');
+});
+
+test('PICKER CANCEL: a new Start takes over the dialog a cancelled one left open instead of stacking a second one', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const first = outcomeOf(lane.start(await pickParams(rig)));
+  await tick();
+  await lane.stop();
+  assert.equal(await first, 'START_CANCELLED');
+  const OTHER = 'ab'.repeat(16);
+  const second = lane.start(await pickParams(rig, { epoch: 2, pick: OTHER }));
+  await tick();
+  assert.equal(rig.audio.picker.calls.length, 1, 'one dialog, not two');
+  assert.equal(rig.audio.picker.pending(), 1);
+  // The pages were labelled again for the second start, so the label carries the second nonce.
+  const stream = rig.audio.picker.choose({ label: `${OTHER}.9` });
+  assert.deepEqual(await second, { epoch: 2, tabId: 9 });
+  assert.equal(stream.getAudioTracks()[0].readyState, 'live', 'the cancelled start did not take the stream away');
+  assert.equal(lane.phase(), 'starting');
+  // Once it was answered, the next start opens a dialog of its own.
+  await lane.stop();
+  const third = outcomeOf(lane.start(await pickParams(rig, { epoch: 3 })));
+  await tick();
+  assert.equal(rig.audio.picker.calls.length, 2);
+  rig.audio.picker.dismiss();
+  assert.equal(await third, 'START_CANCELLED');
+});
+
+test('PICKER: the shared tab closing, or "Stop sharing", ends the lane with TAB_ENDED like any captured tab', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const starting = lane.start(await pickParams(rig));
+  await tick();
+  const stream = rig.audio.picker.choose({ label: `${NONCE}.8` });
+  await starting;
+  await rig.connect({ worklet: 0, socket: 0 });
+  assert.equal(lane.phase(), 'running');
+  stream.getAudioTracks()[0].end();
+  await until(() => lane.phase() === 'error', 'the lane to end');
+  assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_ENDED');
+});
+
 test('CANCEL: stop during the mic permission query - nothing exists yet, the start rejects START_CANCELLED, phase off', async () => {
   const rig = createRig();
   const { lane } = newMic(rig);
@@ -793,6 +976,47 @@ test('TWO LANES: the model defaults differ per lane and each reaches its engine'
     micOptions: { params: { model: laneRequestOf(defaults, 'mic').model } } });
   assert.equal(tab.snapshot().model, TRANSLATE_LIVE_MODEL);
   assert.equal(mic.snapshot().model, DEFAULT_LIVE_MODEL);
+});
+
+// 2026-09-30: the engine replaces a connection that ended with INVALID_RESULT (within its budget) and names the check
+// that refused the result. Fails on v0.3.1: one refused message ended the lane at once, and no reason existed.
+test('INVALID_RESULT: a refused server message is replaced like a dropped connection; when the budget is spent the lane says which check refused it', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  await lane.start(await tabParams(rig));
+  let { socket, worklet } = await rig.connect(before);
+  const refuse = (target) => target.json({ serverContent: { turnComplete: 'yes' } });   // a flag that is not a boolean
+  let replaced = 0;
+  for (;;) {
+    const known = rig.sockets.sockets.length;
+    refuse(socket);
+    await until(() => lane.phase() !== 'running', 'the refused message to end the connection');
+    // Either a replacement session opens after the backoff, or the budget is spent and the lane fails.
+    for (let elapsed = 0; rig.sockets.sockets.length === known && lane.phase() !== 'error' && elapsed < 10000; elapsed += 250) {
+      assert.equal(stateOf(lane, 'tab').reconnectReason, null, 'an ordinary, visible reconnect: not a key swap or a handover');
+      assert.equal(stateOf(lane, 'tab').errorReason, null, 'no reason is claimed while the lane is still trying');
+      worklet.emitFrames(0.25);
+      await rig.clock.advance(250);
+    }
+    if (rig.sockets.sockets.length === known) break;
+    socket = rig.sockets.sockets.at(-1);
+    socket.open();
+    assert.equal(setupOf(socket).model, setupOf(rig.sockets.sockets[0]).model, 'the same model: a refused message is no reason for a model fallback');
+    socket.json({ setupComplete: {} });
+    await until(() => lane.phase() === 'running', 'the replacement to run');
+    replaced += 1;
+    assert.ok(replaced <= 3, 'the budget bounds the replacements');
+  }
+  assert.equal(replaced, 3, 'three replacements, then the operation fails');
+  await until(() => lane.phase() === 'error', 'the lane to fail');
+  const state = stateOf(lane, 'tab');
+  assert.deepEqual([state.phase, state.errorCode, state.errorReason], ['error', 'INVALID_RESULT', 'flag-shape']);
+  // The reason survives the run (the lane keeps a slim copy of the finished engine's snapshot) and goes with the next start.
+  assert.equal(lane.snapshot().errorReason, 'flag-shape');
+  await lane.start(await tabParams(rig, { epoch: 2 }));
+  assert.equal(stateOf(lane, 'tab').errorReason, null);
 });
 
 test('the voice gender is set on the module-level preference (one voice for both lanes, applied to later sessions)', async (t) => {

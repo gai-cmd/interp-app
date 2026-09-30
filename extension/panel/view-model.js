@@ -12,11 +12,13 @@ import { TARGET_LANGUAGES, deepFreeze } from '../lib/constants.js';
 const LANES = ['tab', 'mic'];
 const ACTIVE = ['starting', 'running', 'reconnecting'];
 const BUSY = [...ACTIVE, 'stopping'];
-const SILENT_CODES = ['NEEDS_ARM', 'ALREADY_RUNNING', 'START_CANCELLED'];
+const SILENT_CODES = ['ALREADY_RUNNING', 'START_CANCELLED'];
 const NOT_AN_ALARM = ['TAB_ENDED', 'TAB_GONE'];
-// Tab-lane notices that already say what to do about the toolbar icon (click it, or "this page cannot be captured").
-// The arm note would repeat them or, with an armed record that survived, contradict them: only the notice is shown.
-const SELF_EXPLAINING_TAB_CODES = [...TAB_CAPTURE_CODES, 'TAB_INPUT_LOST', 'TAB_ENDED', 'TAB_GONE', 'TAB_UNSUPPORTED'];
+// Tab-lane notices that already say what to do next (press Start again, share the tab's audio, or "this page cannot
+// be captured"). The arm note would repeat them or, with an armed record that survived, contradict them: only the
+// notice is shown.
+const SELF_EXPLAINING_TAB_CODES = [...TAB_CAPTURE_CODES, 'TAB_INPUT_LOST', 'TAB_ENDED', 'TAB_GONE', 'TAB_UNSUPPORTED',
+  'TAB_SHARE_NO_AUDIO'];
 const KEY_FAILURES = ['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED',
   'CREDENTIAL_FORBIDDEN', 'IP_DENIED'];
 const CONCURRENT_SESSION_CODES = ['SESSION_LIMIT', 'BUDGET_EXHAUSTED'];
@@ -72,8 +74,19 @@ function laneDraft(lane, input) {
   const localCode = superseded ? null : (localErrors?.[lane] ?? null);
   let phase = hostPhase;
   let errorCode = hostPhase === 'error' ? hostLane.errorCode : null;
-  if (pending?.[lane] && !BUSY.includes(hostPhase)) {
-    phase = lane === 'tab' && !armed ? 'awaiting' : 'starting';
+  // §19: `awaiting` = the start of a tab the toolbar icon did not arm, which is waiting for the user's choice in
+  // Chrome's share picker. The host is already `starting` then (it holds the dialog open), but it has no engine yet;
+  // once the engine exists the choice was made and the lane reads as any other start.
+  // The HOST says so once it reports: starting, no engine, and no tab yet (a stream-id start names its tab from the
+  // first state; a picker start cannot). Every panel then reads the same thing, whatever tab is active now. Before the
+  // host reports, it is this panel's own start on a tab that is not armed.
+  const hostChoosing = hostPhase === 'starting' && (hostLane?.engineStatus ?? null) === null && (hostLane?.tabId ?? null) === null;
+  const choosing = lane === 'tab' && (hostChoosing || (pending?.tab === true && !armed && !BUSY.includes(hostPhase)));
+  if (choosing) {
+    phase = 'awaiting';
+    errorCode = null;
+  } else if (pending?.[lane] && !BUSY.includes(hostPhase)) {
+    phase = 'starting';
     errorCode = null;
   } else if (localCode && !BUSY.includes(hostPhase) && !SILENT_CODES.includes(localCode)) {
     phase = 'error';   // a failed sw/lane-start: the lane shows its notice, the host knows nothing about it
@@ -146,7 +159,11 @@ function noticeOf(draft, input, has) {
     let attention = null;
     if (KEY_FAILURES.includes(code)) attention = 'options';
     else if (lane === 'mic' && code === 'MICROPHONE_DENIED') attention = 'permission';
-    return { key, params: {}, attention, code };
+    // 2026-09-30: "the result could not be checked" says nothing about which check refused it, so the engine's fixed
+    // reason follows the sentence as the identifier it is (e.g. `INVALID_RESULT · audio-encoding`): nothing to
+    // translate, and enough to diagnose the failure from a screenshot. Only for the host's own error, never a local one.
+    const reason = code === 'INVALID_RESULT' && draft.localCode === null ? draft.hostLane?.errorReason ?? null : null;
+    return { key, params: {}, attention, code, ...(reason === null ? {} : { detail: `${code} · ${reason}` }) };
   }
   if (draft.phase === 'running' && draft.settings.captions && draft.hostLane?.overlay === 'unavailable') {
     return { key: 'ext.error.OVERLAY_UNAVAILABLE', params: {}, attention: null, code: null };
@@ -155,16 +172,18 @@ function noticeOf(draft, input, has) {
 }
 
 function armNoteOf(draft, input) {
-  const { armed, targetTab, shortcut, pending } = input;
+  const { armed, targetTab, shortcut } = input;
   if (isActive(draft.phase)) return null;
   if (!draft.settings.enabled) return null;   // a lane the user turned off has nothing to arm
   if (targetTab && targetTab.capturable === false) return { key: 'ext.error.TAB_UNSUPPORTED', attention: false, hintKeys: [], shortcut: null };
   // The capture stopped arriving (5.11) or the tab went away: the grant is probably spent, and the notice below
   // already asks for a fresh click. Showing "click the icon" twice, or "ready" next to it, only adds noise.
   if (draft.phase === 'error' && SELF_EXPLAINING_TAB_CODES.includes(draft.errorCode)) return null;
+  // §19. Waiting: Chrome's share picker is open, and the note says what to do in it (whatever tab is active now).
+  // Otherwise: Start will ask, and the toolbar icon (its pin hint and shortcut follow) is the way to skip the question.
+  if (draft.phase === 'awaiting') return { key: 'ext.arm.waiting', attention: true, hintKeys: [], shortcut: null };
   if (armed) return { key: 'ext.arm.ready', attention: false, hintKeys: [], shortcut: null };
-  const waiting = pending?.tab === true;
-  return { key: waiting ? 'ext.arm.waiting' : 'ext.arm.needed', attention: waiting,
+  return { key: 'ext.arm.needed', attention: false,
     hintKeys: ['ext.arm.pinHint'], shortcut: typeof shortcut === 'string' && shortcut !== '' ? shortcut : null };
 }
 
@@ -218,7 +237,8 @@ export function buildViewModel(input) {
       routeNote: running && hostLane?.fallback ? 'ext.route.fallbackNote' : null,
       output: running && hostLane?.output ? (OUTPUT_KEY[hostLane.output] ?? null) : null,
       gap: live && hostLane?.gap ? (GAP_KEY[hostLane.gap] ?? null) : null,
-      notice: notice ? { key: notice.key, params: notice.params, attention: notice.attention } : null,
+      notice: notice ? { key: notice.key, params: notice.params, attention: notice.attention,
+        ...(notice.detail === undefined ? {} : { detail: notice.detail }) } : null,
       // Two-way: the second language, and the choices the panel offers for it (every language but the first).
       twoWay: laneSettings.twoWay === true,
       partnerLanguage: laneSettings.partnerLanguage ?? null,

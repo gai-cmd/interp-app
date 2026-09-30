@@ -8,6 +8,9 @@
 //   * the first call of onActionClicked is sidePanel.open, in the same synchronous turn as the click (the user
 //     gesture that also grants tabCapture is only alive for that turn);
 //   * the stream-id mint is the LAST awaited step before host/lane-start is sent (an id is single-use and expires);
+//   * a tab the toolbar icon did not arm is never refused: its start goes to the host without a stream id and the
+//     host asks through Chrome's share picker (§19), after the panel's own tab (and no other page) was given its
+//     capture label;
 //   * the API key leaves this file in exactly one message, host/lane-start, and is never stored or logged;
 //   * a Stop overtakes a start that is still inside ensureOffscreen, the mint or the host (stop wins).
 import { BUILTIN_KEYS } from '../lib/builtin-key.js';
@@ -24,6 +27,11 @@ const HOST_JUSTIFICATION = 'Runs the live interpretation engine and the tab audi
 const MENU_ID = 'interp-open';
 const MENU_CONTEXTS = Object.freeze(['page', 'video', 'audio', 'frame']);
 const CAPTURABLE_SCHEMES = Object.freeze(['http:', 'https:', 'file:']);
+const LABEL_SCHEMES = Object.freeze(['http:', 'https:']);   // where the overlay content script runs (manifest matches)
+const NONCE_BYTES = 16;
+// A picker start that fails with HOST_UNAVAILABLE is re-sent only when the failure came this soon (the document was
+// not listening yet). Later than that the dialog was already open: a re-send would open a second one by itself.
+const PICK_RETRY_WINDOW_MS = 1000;
 const ATTACH_DELAYS_MS = Object.freeze([0, 150, 400, 1000]);
 const PING_ATTEMPTS = 20;
 const PING_INTERVAL_MS = 100;
@@ -36,7 +44,8 @@ const codeError = (code) => Object.assign(new Error(code), { code });
 const isObject = (value) => value !== null && typeof value === 'object';
 const schemeOf = (url) => attempt(() => new URL(url).protocol) ?? '';
 
-export function createServiceWorker({ adapter, now = () => Date.now(), setTimeout = globalThis.setTimeout } = {}) {
+export function createServiceWorker({ adapter, now = () => Date.now(), setTimeout = globalThis.setTimeout,
+  getRandomValues = (bytes) => globalThis.crypto.getRandomValues(bytes) } = {}) {
   const { runtime, storage, tabs, tabCapture, sidePanel, action, contextMenus, offscreen, scripting, i18n } = adapter;
   const local = storage.local;
   const session = storage.session;
@@ -107,8 +116,9 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     for (let round = 0; round < 2; round += 1) {   // round 0 may find a ZOMBIE: a document whose host.js failed at import
       if (!existing) {
         try {
-          // Exactly USER_MEDIA: AUDIO_PLAYBACK would let Chrome close the document after 30 s without audio.
-          await offscreen.createDocument({ url: PATHS.host, reasons: ['USER_MEDIA'], justification: HOST_JUSTIFICATION });
+          // USER_MEDIA (the microphone, a minted tab stream) and DISPLAY_MEDIA (the share picker, §19). Never
+          // AUDIO_PLAYBACK: it would let Chrome close the document after 30 s without audio.
+          await offscreen.createDocument({ url: PATHS.host, reasons: ['USER_MEDIA', 'DISPLAY_MEDIA'], justification: HOST_JUSTIFICATION });
         } catch (error) {
           if (!/single offscreen document/i.test(String(attempt(() => error.message)))) throw codeError('HOST_UNAVAILABLE');
         }
@@ -171,6 +181,42 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
   }
 
   // ---------------------------------------------------------------------------------------------
+  // §19 the share-picker start. The picker lets the user choose ANY tab, and nothing in the stream says which one.
+  // The tab the panel is on (almost always the one that is then chosen) gets a label first: a capture handle
+  // `<nonce>.<tabId>` that only this extension can read from the captured track. ONLY that tab: a page has one
+  // capture-handle setting and cannot get its own back once it is replaced, so labelling every open page would break
+  // pages that use the setting themselves (a slide deck presented through a call) on tabs that have nothing to do
+  // with this start. A different tab chosen in the dialog is therefore interpreted without page captions.
+  // The nonce is fresh per start and lives in this start's variables only.
+  function makeNonce() {
+    const bytes = getRandomValues(new Uint8Array(NONCE_BYTES));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function labelTab(tab, nonce, cancelled) {
+    if (!Number.isInteger(tab?.id) || !LABEL_SCHEMES.includes(schemeOf(tab.url))) return;
+    const sent = settle(() => tabs.sendMessage(tab.id,
+      makeMessage('content/capture-label', { label: `${nonce}.${tab.id}` }), { frameId: 0 }));
+    // A page without the content script rejects at once; a frozen one may never answer, so the wait is bounded, and a
+    // Stop ends it. A tab that misses its label is still interpreted: only its page captions are unavailable.
+    await Promise.race([sent, sleep(LIMITS.labelWaitMs), cancelled]);
+  }
+
+  // While the picker is open nothing happens in this worker, and an idle MV3 worker is stopped after 30 s: the
+  // panel's sw/lane-start would then end in an error although the user is still choosing. One cheap API call every
+  // LIMITS.pickKeepAliveMs keeps it alive. Returns the function that ends the loop.
+  function keepAwake() {
+    let on = true;
+    const tick = () => {
+      if (!on) return;
+      void settle(() => session.get(STORAGE_KEYS.host));
+      setTimeout(tick, LIMITS.pickKeepAliveMs);
+    };
+    setTimeout(tick, LIMITS.pickKeepAliveMs);
+    return () => { on = false; };
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // 6.7 overlay attach.
   async function activeTabId() {
     const found = await settle(() => tabs.query({ active: true, lastFocusedWindow: true }));
@@ -220,7 +266,8 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     // would vanish without a word. LANE_STOPPING is what the panel shows as "still stopping, press Start again".
     const inFlight = starting.get(lane);
     if (inFlight) throw codeError(inFlight.cancelled ? 'LANE_STOPPING' : 'ALREADY_RUNNING');
-    const run = { cancelled: false };
+    const run = { cancelled: false, signal: null, whenCancelled: null };
+    run.whenCancelled = new Promise((resolve) => { run.signal = resolve; });
     starting.set(lane, run);
     const alive = () => { if (run.cancelled) throw codeError('START_CANCELLED'); };
     try {
@@ -232,16 +279,17 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       const key = resolveKey({ personal, builtin: BUILTIN_KEYS });
       if (key === null) throw codeError('CREDENTIAL_REQUIRED');
 
-      // 2. Tab lane: the tab must exist, be capturable by scheme, and be armed.
+      // 2. Tab lane: the tab must exist and be capturable by scheme. Armed (the toolbar icon was clicked on it) means
+      //    the instant path below; anything else is asked through Chrome's share picker (§19).
+      let armed = false;
+      let tab = null;
       if (lane === 'tab') {
-        let tab;
         try { tab = await tabs.get(tabId); } catch { throw codeError('TAB_GONE'); }
         alive();
         if (!isObject(tab)) throw codeError('TAB_GONE');
         if (typeof tab.url === 'string' && !CAPTURABLE_SCHEMES.includes(schemeOf(tab.url))) throw codeError('TAB_UNSUPPORTED');
-        const armed = await arming.isArmed(tabId);
+        armed = await arming.isArmed(tabId);
         alive();
-        if (!armed) throw codeError('NEEDS_ARM');
       }
 
       // 3. Wait out a lane that is still stopping. This MUST happen before the mint: an id the host then refuses
@@ -272,18 +320,42 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
         captions: settings.lanes[lane].captions,
         style: hostSettingsOf(settings).style,
       };
-      if (lane === 'tab') payload.tab = { tabId, originalVolume: settings.lanes.tab.originalVolume };
 
-      // 6. The mint is the LAST awaited step before the send: the id is single-use and short-lived.
-      if (lane === 'tab') payload.tab.streamId = await mintStreamId(tabId, lane);
-      alive();   // a stop that landed during the mint: nothing is sent, the host already got its host/lane-stop
-      const message = makeMessage('host/lane-start', payload);
-      let res = await sendToHost(message);
-      if (!res.ok && res.code === 'HOST_UNAVAILABLE') {   // exactly ONE retry: the document was not listening yet
-        await ensureOffscreen();
-        alive();
-        res = await sendToHost(message);
+      // 6. The mint is the LAST awaited step before the send: the id is single-use and short-lived. A grant that
+      //    turns out to be gone (the armed record was stale; mapMintError cleared it) is not an error any more: the
+      //    start goes on through the picker, like a tab that was never armed.
+      let picking = false;
+      if (lane === 'tab') {
+        let streamId = null;
+        if (armed) {
+          try { streamId = await mintStreamId(tabId, lane); } catch (error) { if (error?.code !== 'NEEDS_ARM') throw error; }
+          alive();   // a stop that landed during the mint: nothing is sent, the host already got its host/lane-stop
+        }
+        if (streamId !== null) {
+          payload.tab = { tabId, streamId, originalVolume: settings.lanes.tab.originalVolume };
+        } else {
+          picking = true;
+          const nonce = makeNonce();
+          await labelTab(tab, nonce, run.whenCancelled);
+          alive();
+          payload.tab = { pick: nonce, originalVolume: settings.lanes.tab.originalVolume };
+        }
       }
+      const message = makeMessage('host/lane-start', payload);
+      // A picker start answers only after the user chose (or closed the dialog): keep this worker alive meanwhile.
+      const release = picking ? keepAwake() : () => {};
+      const sentAt = now();
+      let res;
+      try {
+        res = await sendToHost(message);
+        // Exactly ONE retry: the document was not listening yet. For a picker start only while that can still be the
+        // reason; a document that went away with the dialog open is reported, not asked a second time.
+        if (!res.ok && res.code === 'HOST_UNAVAILABLE' && (!picking || now() - sentAt < PICK_RETRY_WINDOW_MS)) {
+          await ensureOffscreen();
+          alive();
+          res = await sendToHost(message);
+        }
+      } finally { release(); }
 
       // 7. Stop wins: a stop that reached the host before this start, or just after it, must leave the lane off.
       if (run.cancelled) {
@@ -292,7 +364,9 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       }
       if (!res.ok) throw codeError(res.code);
       await settle(() => session.remove(STORAGE_KEYS.lastStop));   // a new run began
-      afterLaneStarted(lane, tabId).catch(() => {});
+      // A picker start reports the tab the user really chose (null: it could not be told, so no page gets captions).
+      const captured = picking ? (Number.isInteger(res.tabId) ? res.tabId : null) : tabId;
+      afterLaneStarted(lane, captured).catch(() => {});
     } finally {
       if (starting.get(lane) === run) starting.delete(lane);
     }
@@ -303,7 +377,7 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     const named = LANES.includes(lane) ? [lane] : LANES;
     for (const name of named) {
       const run = starting.get(name);
-      if (run) run.cancelled = true;
+      if (run) { run.cancelled = true; run.signal(); }
     }
     await settle(() => sendToHost(makeMessage('host/lane-stop', LANES.includes(lane) ? { lane } : {})));
   }

@@ -124,8 +124,10 @@ test('rule 2: primary button mode, key and disabled state', () => {
   const stop = vmOf({ host: hostUi({ tab: running('tab') }), keyPresent: false });
   assert.deepEqual(stop.primary, { mode: 'stop', key: 'common.stop', disabled: false }, 'Stop is never disabled');
   assert.equal(stop.noLane, false);
+  // (tabId: a stream-id start names its tab from the first state; a `starting` lane WITHOUT a tab and an engine is
+  // the share dialog of §19, which reads Cancel, see rule 9)
   for (const phase of ['starting', 'reconnecting', 'stopping']) {
-    assert.equal(vmOf({ host: hostUi({ tab: { phase } }) }).primary.key, 'common.stop', phase);
+    assert.equal(vmOf({ host: hostUi({ tab: { phase, tabId: 7 } }) }).primary.key, 'common.stop', phase);
   }
   // only the wait for the toolbar-icon click: Cancel
   const awaiting = vmOf({ pending: { tab: true, mic: false } });
@@ -158,7 +160,9 @@ test('rule 4: overall pill precedence', () => {
     ['awaiting while the microphone starts: starting wins', { settings: both, pending: { tab: true, mic: true } }, 'starting', 'sim.status.preparing', {}],
     ['starting, connecting', { host: hostUi({ tab: { phase: 'starting', engineStatus: 'connecting' } }) }, 'starting', 'sim.status.connecting', {}],
     ['starting, preparing', { host: hostUi({ tab: { phase: 'starting', engineStatus: 'preparing' } }) }, 'starting', 'sim.status.preparing', {}],
-    ['starting, host-level step (no engine yet)', { host: hostUi({ tab: { phase: 'starting', engineStatus: null } }) }, 'starting', 'sim.status.preparing', {}],
+    ['starting, host-level step (no engine yet)', { host: hostUi({ tab: { phase: 'starting', engineStatus: null, tabId: 7 } }) }, 'starting', 'sim.status.preparing', {}],
+    ['§19 the share dialog is open (starting, no engine, no tab yet)', { host: hostUi({ tab: { phase: 'starting', engineStatus: null } }) }, 'warning', 'ext.status.awaitingArm', {}],
+    ['§19 the microphone lane has no dialog: starting without an engine is just starting', { settings: both, host: hostUi({ mic: { phase: 'starting', engineStatus: null } }) }, 'starting', 'sim.status.preparing', {}],
     ['one lane preparing keeps the earlier stage', { settings: both, host: hostUi({ tab: { phase: 'starting', engineStatus: 'connecting' }, mic: { phase: 'starting', engineStatus: 'preparing' } }) }, 'starting', 'sim.status.preparing', {}],
     ['running', { host: hostUi({ tab: running('tab') }) }, 'running', 'sim.status.running', {}],
     ['starting outranks running', { settings: both, host: hostUi({ tab: running('tab'), mic: { phase: 'starting', engineStatus: 'connecting' } }) }, 'starting', 'sim.status.connecting', {}],
@@ -175,7 +179,8 @@ test('rule 5: the lane status key for every phase', () => {
   assert.deepEqual(vmOf({ pending: { tab: true, mic: false } }).lanes.tab.status, { key: 'ext.status.awaitingArm', params: {} });
   assert.equal(status({ tab: { phase: 'starting', engineStatus: 'connecting' } }).key, 'sim.status.connecting');
   assert.equal(status({ tab: { phase: 'starting', engineStatus: 'preparing' } }).key, 'sim.status.preparing');
-  assert.equal(status({ tab: { phase: 'starting', engineStatus: null } }).key, 'sim.status.preparing');
+  assert.equal(status({ tab: { phase: 'starting', engineStatus: null, tabId: 7 } }).key, 'sim.status.preparing');
+  assert.equal(status({ tab: { phase: 'starting', engineStatus: null } }).key, 'ext.status.awaitingArm', '§19: no engine and no tab yet = the share dialog');
   assert.equal(status({ tab: running('tab') }).key, 'sim.status.running');
   assert.deepEqual(status({ tab: { phase: 'reconnecting', engineStatus: 'reconnecting', retries: 3 } }), { key: 'ext.status.reconnecting', params: { count: 3 } });
   assert.equal(status({ tab: { phase: 'reconnecting', engineStatus: 'reconnecting', retries: 0 } }).params.count, 1, 'count is 1..3');
@@ -259,8 +264,9 @@ test('rule 8: notice priority, keys and attention', () => {
   assert.equal(notice({ host: hostUi({ tab: failed('TAB_ENDED') }) }).attention, null);
   // LANE_STOPPING is a notice
   assert.equal(notice({ localErrors: { tab: 'LANE_STOPPING', mic: null } }).key, 'ext.error.LANE_STOPPING');
-  // silent codes never become notices and never make the lane an error lane
-  for (const code of ['NEEDS_ARM', 'ALREADY_RUNNING', 'START_CANCELLED']) {
+  // silent codes never become notices and never make the lane an error lane (§19: NEEDS_ARM left the list with the
+  // wait for the toolbar icon; START_CANCELLED is also what a closed share picker comes back as)
+  for (const code of ['ALREADY_RUNNING', 'START_CANCELLED']) {
     const vm = vmOf({ localErrors: { tab: code, mic: null } });
     assert.equal(vm.lanes.tab.notice, null, code);
     assert.equal(vm.lanes.tab.phase, 'off', code);
@@ -299,6 +305,23 @@ test('rule 8: notice priority, keys and attention', () => {
   assert.equal(notice({ host: hostUi({ tab: running('tab', { overlay: 'attached' }) }) }), null);
 });
 
+// 2026-09-30: the reason of an INVALID_RESULT, shown after the notice. Fails on v0.3.1 (no such field, no detail).
+test('rule 8: the INVALID_RESULT notice carries the engine\'s reason as a detail; no other notice has one', () => {
+  const notice = (input, lane = 'tab') => vmOf(input).lanes[lane].notice;
+  assert.deepEqual(notice({ host: hostUi({ tab: failed('INVALID_RESULT', { errorReason: 'audio-encoding' }) }) }),
+    { key: 'error.INVALID_RESULT', params: {}, attention: null, detail: 'INVALID_RESULT · audio-encoding' });
+  // without a reason the notice is exactly what it was
+  assert.deepEqual(notice({ host: hostUi({ tab: failed('INVALID_RESULT') }) }), { key: 'error.INVALID_RESULT', params: {}, attention: null });
+  for (const code of ['NETWORK_ERROR', 'INVALID_KEY', 'TAB_ENDED']) assert.equal(Object.hasOwn(notice({ host: hostUi({ tab: failed(code) }) }), 'detail'), false, code);
+  // a failed sw/lane-start outranks the host's error: its notice is not decorated with the host's reason
+  const local = notice({ localErrors: { tab: 'TAB_CAPTURE_BUSY', mic: null }, host: hostUi({ tab: failed('INVALID_RESULT', { errorReason: 'audio-encoding' }) }) });
+  assert.deepEqual(local, { key: 'ext.error.TAB_CAPTURE_BUSY', params: {}, attention: null });
+  // per lane
+  const both = vmOf({ settings: settingsWith(bothLanes), host: hostUi({ tab: failed('INVALID_RESULT', { errorReason: 'flag-shape' }), mic: failed('INVALID_RESULT') }) });
+  assert.equal(both.lanes.tab.notice.detail, 'INVALID_RESULT · flag-shape');
+  assert.equal(Object.hasOwn(both.lanes.mic.notice, 'detail'), false);
+});
+
 test('rule 8 without a dictionary: the default key test knows the extension and generic codes only', () => {
   const vm = buildViewModel({
     settings: createDefaultSettings('en'), keyPresent: true, host: hostUi({ tab: failed('INVALID_KEY') }), armed: false,
@@ -320,13 +343,45 @@ test('rule 9: the arm note splits needed / waiting / ready and carries hints onl
   assert.equal(arm({ shortcut: 'Alt+Shift+Y' }).shortcut, 'Alt+Shift+Y');
   assert.equal(arm({ shortcut: '' }).shortcut, null, 'an empty shortcut is unassigned');
   assert.deepEqual(arm({ armed: true, shortcut: 'Alt+Shift+Y' }), { key: 'ext.arm.ready', attention: false, hintKeys: [], shortcut: null });
+  // §19 reverses the old pin: "waiting" is the share picker now, so the toolbar-icon hints would only distract there.
   assert.deepEqual(arm({ pending: { tab: true, mic: false }, shortcut: 'Alt+Shift+Y' }),
-    { key: 'ext.arm.waiting', attention: true, hintKeys: ['ext.arm.pinHint'], shortcut: 'Alt+Shift+Y' });
+    { key: 'ext.arm.waiting', attention: true, hintKeys: [], shortcut: null });
+  // The host holds the dialog open as `starting` without an engine: the panel still says "choose the tab".
+  const choosing = { pending: { tab: true, mic: false }, host: hostUi({ tab: { phase: 'starting', engineStatus: null } }) };
+  assert.equal(arm(choosing).key, 'ext.arm.waiting');
+  assert.equal(vmOf(choosing).lanes.tab.phase, 'awaiting');
+  assert.deepEqual(vmOf(choosing).lanes.tab.status, { key: 'ext.status.awaitingArm', params: {} });
+  assert.deepEqual(vmOf(choosing).pill, { state: 'warning', key: 'ext.status.awaitingArm', params: {} });
+  assert.deepEqual(vmOf(choosing).primary, { mode: 'stop', key: 'common.cancel', disabled: false });
+  // Once the engine exists the choice was made: an ordinary start.
+  for (const engineStatus of ['preparing', 'connecting']) {
+    const chosen = vmOf({ pending: { tab: true, mic: false }, host: hostUi({ tab: { phase: 'starting', engineStatus, tabId: 9 } }) });
+    assert.equal(chosen.lanes.tab.phase, 'starting', engineStatus);
+    assert.equal(chosen.lanes.tab.armNote, null, engineStatus);
+    assert.equal(chosen.primary.key, 'common.stop', engineStatus);
+  }
+  // The HOST decides once it reports, so every panel reads the same, whatever tab is active or armed NOW (the user may
+  // switch tabs while the dialog is open, and a second or reopened panel has no start of its own in flight).
+  for (const input of [{ ...choosing, armed: true }, { host: choosing.host }, { host: choosing.host, armed: true }]) {
+    assert.equal(vmOf(input).lanes.tab.phase, 'awaiting');
+    assert.deepEqual(arm(input), { key: 'ext.arm.waiting', attention: true, hintKeys: [], shortcut: null });
+  }
+  // A stream-id start (an armed tab) names its tab from the first state: never "choosing".
+  const minted = hostUi({ tab: { phase: 'starting', engineStatus: null, tabId: 7 } });
+  assert.equal(vmOf({ pending: { tab: true, mic: false }, armed: true, host: minted }).lanes.tab.phase, 'starting');
+  assert.equal(vmOf({ host: minted }).lanes.tab.phase, 'starting');
+  // Before the host reports, it is this panel's own start on an un-armed tab; on an armed one it is an ordinary start.
+  assert.equal(vmOf({ pending: { tab: true, mic: false } }).lanes.tab.phase, 'awaiting');
+  assert.equal(vmOf({ pending: { tab: true, mic: false }, armed: true }).lanes.tab.phase, 'starting');
+  // The share came without audio: the notice says what to do, the arm note stays out of its way.
+  const noAudio = vmOf({ localErrors: { tab: 'TAB_SHARE_NO_AUDIO', mic: null } });
+  assert.equal(noAudio.lanes.tab.notice.key, 'ext.error.TAB_SHARE_NO_AUDIO');
+  assert.equal(noAudio.lanes.tab.armNote, null);
   assert.equal(arm({ targetTab: { id: 7, title: 'x', capturable: false }, armed: true }).key, 'ext.error.TAB_UNSUPPORTED');
   assert.equal(arm({ targetTab: { id: 7, title: 'x', capturable: false } }).attention, false);
   assert.equal(arm({ targetTab: null }).key, 'ext.arm.needed', 'no target tab known');
   // null while the lane is under way
-  for (const phase of ['starting', 'running', 'reconnecting']) assert.equal(arm({ armed: true, host: hostUi({ tab: { phase } }) }), null, phase);
+  for (const phase of ['starting', 'running', 'reconnecting']) assert.equal(arm({ armed: true, host: hostUi({ tab: { phase, tabId: 7 } }) }), null, phase);
   assert.equal(arm({ pending: { tab: true, mic: false }, armed: true }), null, 'starting in flight');
   // a lane the user turned off has nothing to arm
   assert.equal(arm({ settings: settingsWith((s) => { s.lanes.tab.enabled = false; }) }), null);
@@ -570,7 +625,8 @@ test('rule 17: stop note keys, close note and the frozen, language-tagged result
   assert.equal(vmOf({ stopReason: 'initial-grace' }).stopNote, null);
   assert.equal(vmOf({ stopReason: null }).stopNote, null);
   assert.equal(vmOf().closeNote, false);
-  for (const phase of ['starting', 'running', 'reconnecting', 'stopping']) assert.equal(vmOf({ host: hostUi({ tab: { phase } }) }).closeNote, true, phase);
+  for (const phase of ['starting', 'running', 'reconnecting', 'stopping']) assert.equal(vmOf({ host: hostUi({ tab: { phase, tabId: 7 } }) }).closeNote, true, phase);
+  assert.equal(vmOf({ host: hostUi({ tab: { phase: 'starting', engineStatus: null } }) }).closeNote, false, '§19: nothing is interpreted while the tab is being chosen');
   assert.equal(vmOf({ host: hostUi({ tab: failed('INVALID_KEY') }) }).closeNote, false);
   const vm = vmOf({ language: 'ja', host: hostUi({ tab: running('tab') }), settings: settingsWith(bothLanes) });
   assert.equal(vm.language, 'ja');
@@ -921,35 +977,110 @@ test('Stop pressed while the first lane starts also prevents the second lane fro
   assert.equal(h.text('btn-start'), T('common.start'));
 });
 
-test('Start on an un-armed tab waits (Cancel), starts by itself when the armed record appears and only then', async (t) => {
+// §19 (2026-09-30) reverses the two tests that stood here: Start on an un-armed tab used to send NOTHING and wait for
+// the toolbar icon. Now the start is sent at once (the worker asks through the share picker), and while it is in flight
+// the panel says what the dialog is for. Both fail on v0.3.1.
+test('§19 Start on an un-armed tab is sent at once; while the share picker is open the panel says so and offers Cancel', async (t) => {
+  const pick = deferred();
   const h = await harness(t, { settings: settingsWith() });
+  assert.equal(h.text('tab-arm-note'), [T('ext.arm.needed'), T('ext.arm.pinHint'), T('ext.arm.shortcut', { shortcut: 'Alt+Shift+Y' })].join(' '),
+    'idle: Start will ask, and the toolbar icon (pin hint, shortcut) is the way to skip the question');
+  h.setHandler((message) => (message.type === 'sw/lane-start' ? pick.promise : { ok: true }));
   await h.click('btn-start');
-  assert.deepEqual(h.types(), [], 'nothing can be minted before the toolbar click');
+  assert.deepEqual(h.requests, [{ v: 1, target: 'sw', type: 'sw/lane-start', lane: 'tab', tabId: 7 }], 'no toolbar click was needed');
   assert.equal(h.text('btn-start'), T('common.cancel'));
   assert.equal(h.attr('status-pill', 'data-state'), 'warning');
   assert.equal(h.text('status-pill'), T('ext.status.awaitingArm'));
   assert.equal(h.text('tab-status'), T('ext.lane.statusLine', { lane: T('ext.lane.tab.title'), status: T('ext.status.awaitingArm') }));
   assert.equal(h.attr('tab-arm-note', 'data-attention'), 'true');
-  assert.match(h.text('tab-arm-note'), new RegExp(T('ext.arm.waiting').slice(0, 20)));
+  assert.equal(h.text('tab-arm-note'), T('ext.arm.waiting'), 'what to do in the dialog, and nothing about the toolbar icon');
+  assert.equal(h.text('lane-tab-tab-state'), T('ext.laneTab.waiting'));
+  // An arm event (the user clicked the icon meanwhile) makes the tab ready but starts nothing more.
   await h.setSession(KEYS.armed, armedRecord());
-  assert.deepEqual(h.requests, [{ v: 1, target: 'sw', type: 'sw/lane-start', lane: 'tab', tabId: 7 }], 'the icon click started it');
-  await h.setSession(KEYS.armed, armedRecord([7], 5));
-  assert.equal(h.requests.length, 1, 'a later arm event does not start it again');
+  assert.equal(h.requests.length, 1);
+  pick.resolve({ ok: true });
+  await h.flush();
+  assert.equal(h.text('tab-notice'), '');
 });
 
-test('an arm event without a pending Start only makes the tab ready; Cancel drops the wait', async (t) => {
+test('§19 the host holding the dialog open (starting, no engine yet) still reads as "choose the tab"; the engine ends that', async (t) => {
+  const pick = deferred();
+  const h = await harness(t, { settings: settingsWith(), hostUp: true });
+  h.setHandler((message) => (message.type === 'sw/lane-start' ? pick.promise : { ok: true }));
+  await h.click('btn-start');
+  await h.postState({ tab: { phase: 'starting', engineStatus: null, epoch: 1 } });
+  assert.equal(h.text('status-pill'), T('ext.status.awaitingArm'));
+  assert.equal(h.text('tab-arm-note'), T('ext.arm.waiting'));
+  assert.equal(h.text('btn-start'), T('common.cancel'));
+  // The user chose: the engine is being set up, and the panel reads like any other start.
+  await h.postState({ tab: { phase: 'starting', engineStatus: 'connecting', targetLanguage: 'en', tabId: 9, epoch: 1 } });
+  assert.equal(h.text('status-pill'), T('sim.status.connecting'));
+  assert.equal(h.text('tab-arm-note'), '');
+  assert.equal(h.text('btn-start'), T('common.stop'));
+  pick.resolve({ ok: true });
+  await h.postState({ tab: running('tab', { tabId: 9 }) });
+  assert.equal(h.text('status-pill'), T('sim.status.running'));
+});
+
+test('§19 with both lanes on, the microphone starts while the share dialog of the tab lane is still open', async (t) => {
+  const pick = deferred();
+  const h = await harness(t, { settings: settingsWith(bothLanes) });
+  h.setHandler((message) => (message.type === 'sw/lane-start' && message.lane === 'tab' ? pick.promise : { ok: true }));
+  await h.click('btn-start');
+  assert.deepEqual(h.requests.map((request) => [request.type, request.lane]), [['sw/lane-start', 'tab'], ['sw/lane-start', 'mic']],
+    'the microphone was sent although the tab start has not answered');
+  assert.equal(h.text('btn-start'), T('common.cancel'), 'this harness has no host, so the only lane under way is the tab being chosen');
+  // Stop covers both: one sw/lane-stop, and the late START_CANCELLED of the tab start is silent.
+  await h.click('btn-start');
+  assert.deepEqual(h.types(), ['sw/lane-start', 'sw/lane-start', 'sw/lane-stop']);
+  pick.resolve({ ok: false, code: 'START_CANCELLED' });
+  await h.flush();
+  assert.equal(h.text('tab-notice'), '');
+  // An ARMED tab keeps the old order: the microphone is sent only after the tab start answered.
+  const gate = deferred();
+  const armed = await harness(t, { settings: settingsWith(bothLanes), armed: true });
+  armed.setHandler((message) => (message.type === 'sw/lane-start' && message.lane === 'tab' ? gate.promise : { ok: true }));
+  await armed.click('btn-start');
+  assert.deepEqual(armed.requests.map((request) => request.lane), ['tab']);
+  gate.resolve({ ok: true });
+  await armed.flush();
+  assert.deepEqual(armed.requests.map((request) => request.lane), ['tab', 'mic']);
+});
+
+test('§19 an arm event alone only makes the tab ready; Cancel while the picker is open goes through the worker and ends silently', async (t) => {
   const idle = await harness(t, { settings: settingsWith() });
   await idle.setSession(KEYS.armed, armedRecord());
   assert.deepEqual(idle.types(), []);
   assert.equal(idle.text('tab-arm-note'), T('ext.arm.ready'));
 
+  const pick = deferred();
   const h = await harness(t, { settings: settingsWith() });
+  h.setHandler((message) => (message.type === 'sw/lane-start' ? pick.promise : { ok: true }));
   await h.click('btn-start');
   await h.click('btn-start');
-  assert.deepEqual(h.requests, [{ v: 1, target: 'sw', type: 'sw/lane-stop' }], 'Cancel goes through the worker');
+  assert.deepEqual(h.types(), ['sw/lane-start', 'sw/lane-stop'], 'Cancel goes through the worker');
+  assert.deepEqual(h.requests[1], { v: 1, target: 'sw', type: 'sw/lane-stop' });
   assert.equal(h.text('btn-start'), T('common.start'));
+  pick.resolve({ ok: false, code: 'START_CANCELLED' });   // also what a closed dialog comes back as
+  await h.flush();
+  assert.equal(h.text('tab-notice'), '');
+  assert.equal(h.attr('status-pill', 'data-state'), 'idle');
   await h.setSession(KEYS.armed, armedRecord());
-  assert.deepEqual(h.types(), ['sw/lane-stop'], 'the cancelled wait is gone');
+  assert.deepEqual(h.types(), ['sw/lane-start', 'sw/lane-stop'], 'nothing is waiting for an arm event any more');
+});
+
+test('§19 a share without audio is explained by the notice alone, and the next Start asks again', async (t) => {
+  const h = await harness(t, { settings: settingsWith() });
+  h.setHandler(() => ({ ok: false, code: 'TAB_SHARE_NO_AUDIO' }));
+  await h.click('btn-start');
+  assert.equal(h.text('tab-notice'), T('ext.error.TAB_SHARE_NO_AUDIO'));
+  assert.equal(h.attr('tab-notice', 'role'), 'alert');
+  assert.equal(h.text('tab-arm-note'), '');
+  assert.equal(h.text('btn-start'), T('common.start'));
+  h.setHandler(() => ({ ok: true }));
+  await h.click('btn-start');
+  assert.equal(h.text('tab-notice'), '');
+  assert.equal(h.requests.length, 2);
 });
 
 test('after TAB_ENDED the alert speaks alone: an arm event neither starts anything nor adds a "ready" line that would contradict it', async (t) => {
@@ -972,7 +1103,7 @@ test('after TAB_ENDED the alert speaks alone: an arm event neither starts anythi
   assert.equal(h.text('tab-notice'), '');
 });
 
-test('a capture that stopped arriving is explained by ONE line, the alert, even when the record is still there; Start then waits with the arm note only', async (t) => {
+test('a capture that stopped arriving is explained by ONE line, the alert, even when the record is still there; Start then asks through the picker with the arm note only', async (t) => {
   const h = await harness(t, { settings: settingsWith(), hostUp: true, armed: true });
   await h.postState({ tab: failed('BROWSER_INTERRUPTED') });
   assert.equal(h.text('tab-notice'), T('ext.error.TAB_INPUT_LOST'));
@@ -982,14 +1113,19 @@ test('a capture that stopped arriving is explained by ONE line, the alert, even 
   await h.postState({ tab: failed('TAB_INPUT_LOST') });
   assert.equal(h.text('tab-notice'), T('ext.error.TAB_INPUT_LOST'));
   assert.equal(h.text('tab-arm-note'), '');
-  // The record is spent (the worker will say NEEDS_ARM): Start turns into a wait, and then the arm note (with the hints)
-  // is the only text, because the wait is not an error any more.
-  h.setHandler(() => ({ ok: false, code: 'NEEDS_ARM' }));
+  // The record is spent. §19 reverses what followed: the worker no longer answers NEEDS_ARM, it drops the record and asks
+  // through the share picker, so the start stays in flight. The arm note (what to do in the dialog) is then the only
+  // text, because choosing a tab is not an error.
+  const pick = deferred();
+  h.setHandler((message) => (message.type === 'sw/lane-start' ? pick.promise : { ok: true }));
   await h.click('btn-start');
+  await h.removeSession(KEYS.armed);   // what the worker does when the mint says the grant is gone
   assert.equal(h.text('btn-start'), T('common.cancel'));
   assert.equal(h.text('tab-notice'), '');
-  assert.equal(h.text('tab-arm-note'), [T('ext.arm.waiting'), T('ext.arm.pinHint'), T('ext.arm.shortcut', { shortcut: 'Alt+Shift+Y' })].join(' '));
+  assert.equal(h.text('tab-arm-note'), T('ext.arm.waiting'));
   assert.equal(h.attr('tab-arm-note', 'data-attention'), 'true');
+  pick.resolve({ ok: true });
+  await h.flush();
 });
 
 test('a tab that is gone: the alert says what to do, and no arm note repeats it', async (t) => {
@@ -1002,18 +1138,38 @@ test('a tab that is gone: the alert says what to do, and no arm note repeats it'
   assert.equal(h.text('tab-notice'), '');
 });
 
-test('a NEEDS_ARM answer turns the start into a wait for the toolbar click', async (t) => {
+// §19 reverses the test that stood here (a NEEDS_ARM answer turned the start into a wait for the toolbar click): the
+// worker never answers NEEDS_ARM now. A start on a tab that looked armed begins as an ordinary start and turns into
+// "choose the tab" the moment the worker drops the stale record.
+test('§19 a stale armed record: the start reads as starting, then as "choose the tab" once the worker dropped the record', async (t) => {
+  const pick = deferred();
   const h = await harness(t, { settings: settingsWith(), armed: true });
-  h.setHandler(() => ({ ok: false, code: 'NEEDS_ARM' }));
+  h.setHandler((message) => (message.type === 'sw/lane-start' ? pick.promise : { ok: true }));
   await h.click('btn-start');
   assert.equal(h.requests.length, 1);
+  assert.equal(h.text('btn-start'), T('common.stop'));
+  assert.equal(h.text('status-pill'), T('sim.status.preparing'));
+  assert.equal(h.text('tab-arm-note'), '');
+  await h.removeSession(KEYS.armed);
   assert.equal(h.text('btn-start'), T('common.cancel'));
   assert.equal(h.text('status-pill'), T('ext.status.awaitingArm'));
-  assert.equal(h.text('tab-notice'), '', 'NEEDS_ARM is never a notice');
+  assert.equal(h.text('tab-notice'), '');
+  assert.equal(h.text('tab-arm-note'), T('ext.arm.waiting'));
   assert.equal(h.attr('tab-arm-note', 'data-attention'), 'true');
-  h.setHandler(() => ({ ok: true }));
-  await h.setSession(KEYS.armed, armedRecord([7], 9));
-  assert.equal(h.requests.length, 2, 'the fresh arm starts it');
+  pick.resolve({ ok: true });
+  await h.flush();
+  assert.equal(h.requests.length, 1, 'one start, never a second one');
+});
+
+test('2026-09-30: the panel shows the reason of an INVALID_RESULT after the notice, in parentheses, in the alert itself', async (t) => {
+  const h = await harness(t, { settings: settingsWith(), hostUp: true, armed: true });
+  await h.postState({ tab: failed('INVALID_RESULT', { errorReason: 'audio-encoding' }) });
+  assert.equal(h.text('tab-notice'), `${T('error.INVALID_RESULT')} (INVALID_RESULT · audio-encoding)`);
+  assert.equal(h.attr('tab-notice', 'role'), 'alert');
+  await h.postState({ tab: failed('INVALID_RESULT') });
+  assert.equal(h.text('tab-notice'), T('error.INVALID_RESULT'), 'no reason: the sentence alone');
+  await h.postState({ tab: failed('NETWORK_ERROR') });
+  assert.equal(h.text('tab-notice'), T('error.NETWORK_ERROR'));
 });
 
 test('ALREADY_RUNNING and START_CANCELLED are ignored, LANE_STOPPING and other codes are shown', async (t) => {
@@ -2238,13 +2394,16 @@ test('§17 lane tabs: a running lane says so on its tab, and a NEW notice on the
 
 test('§17 the pill ignores a switched-off lane: its old refusal is dropped with it', async (t) => {
   const both = settingsWith((s) => { s.lanes.tab.enabled = true; s.lanes.mic.enabled = true; });
-  const h = await harness(t, { settings: both, micPermission: 'denied' });
-  await h.click('btn-start');   // tab: waits for the icon click; mic: refused (blocked)
+  // §19 changed the setup, not the rule: an un-armed tab no longer waits locally (its start is sent), so the lane that
+  // is "on and under way" is a tab lane the host reports as running; the microphone is refused (blocked) as before.
+  const h = await harness(t, { settings: both, micPermission: 'denied', hostUp: true, armed: true });
+  await h.click('btn-start');   // tab: started; mic: refused (blocked)
+  await h.postState({ tab: running('tab') });
   assert.equal(h.text('status-pill'), T('ext.status.partial'));
   h.el('mic-enabled').checked = false;
   await h.fire('mic-enabled');
   assert.equal(h.stored().lanes.mic.enabled, false);
-  assert.equal(h.text('status-pill'), T('ext.status.awaitingArm'), 'only the lane that is on speaks');
+  assert.equal(h.text('status-pill'), T('sim.status.running'), 'only the lane that is on speaks');
   assert.equal(h.text('mic-notice'), '');
 });
 

@@ -30,6 +30,9 @@ function createStubHost(browser, options = {}) {
     hostId: 'h-stub', lanes: { tab: 'off', mic: 'off' }, panels: 0, tabId: null, epoch: 0, creations: 0,
     captions: { tab: false, mic: false }, requests: [], settings: [], overlayResults: [], removed: [], stops: { tab: 0, mic: 0 },
     contexts: [], streams: new Map(), overrides: new Map(), holds: new Map(),
+    // §19, the share-picker start: the nonces received, and what the "user" chooses ({ tabId } or { code }). The
+    // dialog stays open while the test holds 'pick'.
+    picks: [], choice: options.choice ?? { tabId: null },
     answer: options.answer ?? true,            // false: a zombie document that never answers
     answerFor: options.answerFor ?? null,      // (creationNumber) => boolean, per document
     honorCancel: options.honorCancel ?? true,  // the real host notices a stop that overtakes a start
@@ -66,7 +69,15 @@ function createStubHost(browser, options = {}) {
       if (stub.lanes[lane] !== 'off') throw codeError('ALREADY_RUNNING');
       stub.lanes[lane] = 'starting';
       const stopsBefore = stub.stops[lane];
-      if (lane === 'tab') {
+      let picked = false;
+      if (lane === 'tab' && message.tab.pick !== undefined) {
+        stub.picks.push(message.tab.pick);
+        await takeHold('pick');
+        if (stub.honorCancel && stub.stops[lane] !== stopsBefore) { stub.lanes[lane] = 'off'; throw codeError('START_CANCELLED'); }
+        if (stub.choice.code) { stub.lanes.tab = 'off'; throw codeError(stub.choice.code); }
+        stub.tabId = stub.choice.tabId ?? null;
+        picked = true;
+      } else if (lane === 'tab') {
         try { stub.streams.set('tab', browser.consumeStreamId(message.tab.streamId)); } catch {
           stub.lanes.tab = 'off';
           throw codeError('TAB_CAPTURE_FAILED');
@@ -78,7 +89,7 @@ function createStubHost(browser, options = {}) {
       stub.captions[lane] = message.captions;
       stub.lanes[lane] = 'running';
       stub.epoch += 1;
-      return { epoch: stub.epoch };
+      return { epoch: stub.epoch, ...(picked ? { tabId: stub.tabId } : {}) };
     },
     'host/lane-stop': async (message) => {
       for (const lane of message.lane ? [message.lane] : ['tab', 'mic']) {
@@ -334,12 +345,15 @@ test('sw/lane-start (tab): the order of 6.3, the mint is the LAST awaited step, 
   assert.equal(message.tab.tabId, 7);
   assert.equal(message.tab.originalVolume, 65);
   assert.deepEqual(message.request, { targetLanguage: 'en', model: 'gemini-3.5-live-translate-preview' });
+  assert.deepEqual(Object.keys(message.tab).sort(), ['originalVolume', 'streamId', 'tabId'], 'an armed tab never carries a picker nonce');
   assert.equal(message.voiceGender, 'female');
   assert.equal(message.muted, true);
   assert.equal(message.captions, true);
   assert.deepEqual(Object.keys(message.style).sort(), ['autoHideSeconds', 'display', 'maxLines', 'position', 'showSource', 'size']);
   assert.ok(env.browser.captures.has(7), 'the host consumed the id');
-  assert.deepEqual(env.browser.offscreenDocument.reasons, ['USER_MEDIA']);
+  assert.deepEqual(env.browser.offscreenDocument.reasons, ['USER_MEDIA', 'DISPLAY_MEDIA']);
+  assert.equal(env.calls('tabs.query'), 1, 'only the overlay lookup of the active tab: an armed start labels no page');
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 0);
   assert.equal(env.session()[STORAGE_KEYS.host].up, true);
   assert.equal(env.session()[STORAGE_KEYS.host].hostId, 'h-stub');
 
@@ -372,15 +386,14 @@ test('sw/lane-start (mic): no arming, no tabId, no mint, and the mic defaults re
   assert.equal(start.message.captions, false, 'mic captions are opt-in (F14)');
 });
 
-test('start refusals happen before any host exists: no key, no arm, a page that cannot be captured, a tab that is gone', async () => {
+// §19 (2026-09-30) reverses one case of this test: an un-armed tab is no longer refused with NEEDS_ARM (its start goes
+// through the share picker, pinned by the tests of §19 below), so it left this list.
+test('start refusals happen before any host exists: no key, a page that cannot be captured, a tab that is gone', async () => {
   const env = makeEnv();
   await env.armTab(7);
   assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'CREDENTIAL_REQUIRED' });
   await env.seedKey();
   await env.browser.settle();
-
-  env.browser.addTab({ id: 8, url: 'https://example.com/', active: false });   // never armed
-  assert.deepEqual(await env.start('tab', 8), { ok: false, code: 'NEEDS_ARM' });
 
   env.browser.addTab({ id: 9, url: 'chrome://extensions', active: false, content: false });
   await env.browser.clickAction(9);
@@ -408,7 +421,8 @@ test('a file: page is allowed, and a corrupt key record counts as no key', async
   assert.deepEqual(await env.start('tab', 7), { ok: true });
 });
 
-test('the exact grant error from the mint becomes NEEDS_ARM and the armed record is cleared', async () => {
+// §19 reverses the outcome: the stale record is still cleared, but the start is not refused any more.
+test('the exact grant error from the mint clears the armed record and the start goes on through the share picker', async () => {
   const env = makeEnv();
   await env.seedKey();
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
@@ -419,10 +433,197 @@ test('the exact grant error from the mint becomes NEEDS_ARM and the armed record
   env.hooks['tabCapture.getMediaStreamId'] = async (real) => {
     try { return await real(); } catch (error) { seen.push(error.message); throw error; }
   };
-  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'NEEDS_ARM' });
+  env.stub.choice = { tabId: 7 };
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
   assert.deepEqual(seen, [GRANT_ERROR]);
   assert.equal(env.session()[STORAGE_KEYS.armed].tabs['7'], undefined);
-  assert.equal(env.stub.count('host/lane-start'), 0, 'nothing was sent to the host');
+  assert.equal(env.stub.count('host/lane-start'), 1);
+  const { tab } = env.stub.of('host/lane-start')[0].message;
+  assert.deepEqual(Object.keys(tab).sort(), ['originalVolume', 'pick'], 'no stream id: the host asks through the picker');
+  assert.match(tab.pick, /^[a-f0-9]{32}$/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// §19 (2026-09-30): the panel's Start alone. These fail on v0.3.1, where an un-armed tab answered NEEDS_ARM (all but the
+// last one, the control that an ARMED tab is untouched by the new path).
+test('§19 an UN-ARMED tab is not refused: the panel\'s tab alone gets a capture label, then the host is asked to open the share picker', async (t) => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });      // the tab the panel is on, never armed
+  env.browser.addTab({ id: 8, url: 'http://example.com/video', active: false });
+  env.browser.addTab({ id: 9, url: 'chrome://extensions', active: false, content: false });
+  await env.browser.settle();
+  env.stub.choice = { tabId: 7 };
+  env.log.length = 0;
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  await env.browser.settle();
+  t.diagnostic(`un-armed start call log: ${JSON.stringify(env.log)}`);
+
+  assert.equal(env.calls('tabCapture.getMediaStreamId'), 0, 'no mint is attempted for a tab that was never armed');
+  const [start] = env.stub.of('host/lane-start');
+  assert.equal(env.stub.count('host/lane-start'), 1);
+  const nonce = start.message.tab.pick;
+  assert.match(nonce, /^[a-f0-9]{32}$/);
+  assert.deepEqual(start.message.tab, { pick: nonce, originalVolume: 65 }, 'a nonce and the volume: no stream id, no tab id');
+  assert.equal(start.message.key, KEY);
+
+  // ONE label, `<nonce>.<tabId>`, for the tab the panel is on, to its top frame, BEFORE the host is asked. No other
+  // page is touched: a page has one capture-handle setting and cannot get its own back once it is replaced.
+  const labels = env.attaches.filter((entry) => entry.message.type === 'content/capture-label');
+  assert.deepEqual(labels.map((entry) => [entry.tabId, entry.message.label]), [[7, `${nonce}.7`]]);
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 1);
+  assertOrder(env.log, ['storage.local.get', 'tabs.get', 'offscreen.createDocument',
+    'tabs.sendMessage:content/capture-label', 'runtime.sendMessage:host/lane-start']);
+
+  // the tab the host identified gets the page captions
+  const attached = env.attaches.filter((entry) => entry.message.type === 'content/overlay-attach');
+  assert.deepEqual(attached.map((entry) => entry.tabId), [7]);
+  assert.equal(env.session()[STORAGE_KEYS.host].up, true);
+  // the nonce is in the label message and the one start message, never in storage
+  assert.equal(JSON.stringify([env.session(), env.browser.storageData('local')]).includes(nonce), false);
+});
+
+test('§19 a page that cannot take a label is not asked, and a page that never answers delays the start by LIMITS.labelWaitMs at most', async () => {
+  // chrome:// and file: pages have no content script: no message at all, the start goes straight to the host.
+  for (const url of ['chrome://extensions', 'file:///tmp/a.html']) {
+    const env = makeEnv();
+    await env.seedKey();
+    env.browser.addTab({ id: 7, url, active: true, content: false });
+    await env.browser.settle();
+    const res = await env.start('tab', 7);
+    assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 0, url);
+    if (url.startsWith('file:')) assert.deepEqual(res, { ok: true }); else assert.deepEqual(res, { ok: false, code: 'TAB_UNSUPPORTED' });
+  }
+  // A content script that never answers (a frozen tab).
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  env.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? new Promise(() => {}) : real());
+  const pending = env.start('tab', 7);
+  await env.browser.clock.advance(LIMITS.labelWaitMs - 1);
+  assert.equal(env.stub.count('host/lane-start'), 0, 'still waiting for the label');
+  await env.browser.clock.advance(1);
+  assert.deepEqual(await pending, { ok: true });
+  assert.equal(env.stub.count('host/lane-start'), 1);
+});
+
+test('§19 Stop during the label wait ends the start at once: nothing reaches the host as a start, and the next Start works', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  env.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? new Promise(() => {}) : real());
+  const first = env.start('tab', 7);
+  await env.browser.settle();
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 1, 'the start is inside the label wait');
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  // No clock advance: the wait does not run out its 500 ms. (Raced, so a worker that kept waiting fails here instead of hanging.)
+  await env.browser.settle();
+  assert.deepEqual(await Promise.race([first, Promise.resolve('still waiting for the label')]), { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.stub.count('host/lane-start'), 0);
+  delete env.hooks['tabs.sendMessage'];
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+});
+
+test('§19 HOST_UNAVAILABLE on a picker start is re-sent only while the document may not have been listening yet', async () => {
+  // At once: the one retry of every start (a document that was not listening yet).
+  const early = makeEnv();
+  await early.seedKey();
+  early.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await early.browser.settle();
+  let sends = 0;
+  early.stub.on('host/lane-start', () => (++sends === 1 ? { ok: false, code: 'HOST_UNAVAILABLE' } : PASS));
+  assert.deepEqual(await early.start('tab', 7), { ok: true });
+  assert.equal(early.stub.count('host/lane-start'), 2);
+
+  // After the dialog has been open for a while: the document went away. A re-send would open a second dialog by
+  // itself and send the key again, so the failure is reported instead.
+  const late = makeEnv();
+  await late.seedKey();
+  late.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await late.browser.settle();
+  const answer = deferred();
+  late.stub.on('host/lane-start', () => answer.promise);
+  const pending = late.start('tab', 7);
+  await late.browser.settle();
+  await late.browser.clock.advance(5000);
+  answer.release({ ok: false, code: 'HOST_UNAVAILABLE' });
+  assert.deepEqual(await pending, { ok: false, code: 'HOST_UNAVAILABLE' });
+  assert.equal(late.stub.count('host/lane-start'), 1, 'not asked a second time');
+  // and the keep-alive loop ended with the start
+  late.log.length = 0;
+  await late.browser.clock.advance(LIMITS.pickKeepAliveMs * 2);
+  assert.equal(late.calls('storage.session.get'), 0);
+});
+
+test('§19 each start uses a fresh nonce, and a tab that could not be identified gets no page captions', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  env.stub.choice = { tabId: null };   // a page without the content script: the host cannot tell which tab it is
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  await env.advance(3000, env.browser.settle());
+  assert.equal(env.attaches.filter((entry) => entry.message.type === 'content/overlay-attach').length, 0,
+    'never the active tab by guess: captions of one tab must not be drawn over another');
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.equal(env.stub.picks.length, 2);
+  assert.notEqual(env.stub.picks[0], env.stub.picks[1]);
+});
+
+test('§19 closing the picker comes back as the silent START_CANCELLED; what was shared without audio as TAB_SHARE_NO_AUDIO', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  env.stub.choice = { code: 'START_CANCELLED' };
+  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'START_CANCELLED' });
+  env.stub.choice = { code: 'TAB_SHARE_NO_AUDIO' };
+  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'TAB_SHARE_NO_AUDIO' });
+  assert.equal(env.session()[STORAGE_KEYS.lastStop], undefined);
+  env.stub.choice = { tabId: 7 };
+  assert.deepEqual(await env.start('tab', 7), { ok: true }, 'and the next Start asks again');
+});
+
+test('§19 while the picker is open the worker keeps itself awake, a second Start is ALREADY_RUNNING, and Stop ends the start at once', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  const gate = env.stub.hold('pick');
+  const first = env.start('tab', 7);
+  await env.browser.settle();
+  assert.equal(env.stub.count('host/lane-start'), 1, 'the start is waiting for the user inside host/lane-start');
+  env.log.length = 0;
+  // Two keep-alive periods pass with the dialog open: one cheap storage read each, nothing else.
+  await env.browser.clock.advance(LIMITS.pickKeepAliveMs * 2);
+  assert.equal(env.calls('storage.session.get'), 2);
+  assert.deepEqual(env.log.filter((entry) => entry !== 'timer' && entry !== 'storage.session.get'), []);
+  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'ALREADY_RUNNING' });
+  // Stop: the host is told, and the start answers START_CANCELLED as soon as the host lets go.
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  gate.release();
+  assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
+  assert.ok(env.stub.stops.tab >= 1);
+  // The loop has ended: more time brings no further reads.
+  env.log.length = 0;
+  await env.browser.clock.advance(LIMITS.pickKeepAliveMs * 3);
+  assert.equal(env.calls('storage.session.get'), 0);
+});
+
+test('§19 an ARMED tab whose start succeeds never keeps the worker awake and never labels a page', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  env.log.length = 0;
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  await env.browser.settle();
+  env.log.length = 0;
+  await env.browser.clock.advance(LIMITS.pickKeepAliveMs * 2);
+  assert.equal(env.calls('storage.session.get'), 0);
+  assert.equal(env.attaches.filter((entry) => entry.message.type === 'content/capture-label').length, 0);
 });
 
 test('the other mint strings map to their codes and never leak the message', async () => {
@@ -445,11 +646,12 @@ test('the other mint strings map to their codes and never leak the message', asy
 });
 
 // ---------------------------------------------------------------------------------------------
-test('ensureOffscreen: ten concurrent calls create ONE document with reasons exactly [USER_MEDIA]', async () => {
+// §19: DISPLAY_MEDIA joined USER_MEDIA (the share picker runs in the document); still never AUDIO_PLAYBACK.
+test('ensureOffscreen: ten concurrent calls create ONE document with reasons exactly [USER_MEDIA, DISPLAY_MEDIA]', async () => {
   const env = makeEnv();
   const answers = await Promise.all(Array.from({ length: 10 }, () => env.sw.ensureOffscreen()));
   assert.equal(env.calls('offscreen.createDocument'), 1);
-  assert.deepEqual(env.browser.offscreenDocument.reasons, ['USER_MEDIA']);
+  assert.deepEqual(env.browser.offscreenDocument.reasons, ['USER_MEDIA', 'DISPLAY_MEDIA']);
   assert.equal(env.browser.offscreenDocument.url, HOST_URL);
   assert.ok(answers.every((answer) => answer.hostId === 'h-stub'));
   await env.sw.ensureOffscreen();   // an existing document is found with getContexts, not recreated

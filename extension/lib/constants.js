@@ -48,7 +48,25 @@ export const DEFAULT_STYLE = Object.freeze({ size: CAPTION_SIZE.initial, positio
 export const MACHINE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,40}$/;
 export const KEY_PATTERN = /^[\x21-\x7e]{1,512}$/;
 export const HOST_ID_PATTERN = /^[\x21-\x7e]{1,64}$/;
+// §19 (2026-09-30): a tab lane started through the browser's share picker does not know which tab the user chose. Before
+// asking, the service worker tags every page with a label `<nonce>.<tabId>` (a capture handle only this extension's
+// origin may read, set by the overlay content script); the captured track then carries the label of the chosen tab.
+// The nonce is random per start, so a page cannot claim to be another tab.
+export const CAPTURE_NONCE_PATTERN = /^[a-f0-9]{32}$/;
+export const CAPTURE_LABEL_PATTERN = /^[a-f0-9]{32}\.\d{1,15}$/;
+/** The tab id a capture label names, or null when the label is missing, malformed or carries another start's nonce. */
+export function tabIdOfCaptureLabel(label, nonce) {
+  if (typeof label !== 'string' || typeof nonce !== 'string' || !CAPTURE_NONCE_PATTERN.test(nonce)
+    || !CAPTURE_LABEL_PATTERN.test(label) || !label.startsWith(`${nonce}.`)) return null;
+  const tabId = Number(label.slice(nonce.length + 1));
+  return Number.isSafeInteger(tabId) ? tabId : null;
+}
 export const isMachineCode = (value) => typeof value === 'string' && MACHINE_CODE_PATTERN.test(value);
+// 2026-09-30: WHY an INVALID_RESULT was raised (the engine's snapshot.errorReason, one of the app's
+// INVALID_RESULT_REASONS, e.g. `audio-encoding`). It crosses as an identifier of this shape and nothing else, next to
+// its code: the panel shows it after the failure notice so the next failure can be diagnosed from a screenshot.
+export const ERROR_REASON_PATTERN = /^[a-z][a-z-]{1,31}$/;
+export const isErrorReason = (value) => typeof value === 'string' && ERROR_REASON_PATTERN.test(value);
 // `request.model` on the wire and `LaneState.model` are both bounded to this many characters (4.2.1, 4.6.1).
 export const MODEL_MAX_CHARS = 64;
 

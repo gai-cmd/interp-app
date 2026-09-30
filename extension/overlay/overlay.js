@@ -5,13 +5,16 @@
 // the microphone lane are the user's own translated speech) and listens to two document events. It never reads
 // page content, never stores anything, never logs, and never throws into the page: every entry point is guarded and
 // a failure removes the overlay instead. It opens no port until the service worker asks (`content/overlay-attach`),
-// and it only ever sends `hello`. Strings come from chrome.i18n (`_locales`): a content script cannot load the
+// and it only ever sends `hello`. One more thing the service worker may ask (`content/capture-label`, §19): to tag
+// this page with a capture handle, a short label that only this extension can read from a captured track. That is
+// how the extension learns which tab was chosen in Chrome's share picker; the page itself cannot read the label. Strings come from chrome.i18n (`_locales`): a content script cannot load the
 // extension dictionary.
 (function () {
   'use strict';
 
   // The wire constants live in ONE frozen literal so a test can pin them without importing protocol.js (3.5).
   const WIRE = Object.freeze({ port: 'interp-overlay/1', v: 1, maxRows: 6, maxRowChars: 400 });
+  const CAPTURE_LABEL = /^[a-f0-9]{32}\.\d{1,15}$/;   // `<nonce>.<tabId>`, the same rule as lib/constants.js
   const KEY = Symbol.for('interp.overlay.v1');
   if (globalThis[KEY]) return;   // a second injection (static script + executeScript fallback) does nothing
 
@@ -469,12 +472,20 @@
     if (globalThis[KEY] === handle) attempt(() => { delete globalThis[KEY]; });
   }
 
+  // §19: the label is readable by this extension's origin only, never by the page or by another capturer.
+  function setCaptureLabel(label) {
+    if (typeof label !== 'string' || !CAPTURE_LABEL.test(label)) return;
+    navigator.mediaDevices.setCaptureHandleConfig({ handle: label, exposeOrigin: false,
+      permittedOrigins: [`chrome-extension://${chrome.runtime.id}`] });
+  }
+
   function onRuntimeMessage(message, sender, sendResponse) {
     const trusted = isObject(message) && message.v === WIRE.v && message.target === 'content'
-      && message.type === 'content/overlay-attach' && isObject(sender)
+      && (message.type === 'content/overlay-attach' || message.type === 'content/capture-label') && isObject(sender)
       && sender.id === attempt(() => chrome.runtime.id) && sender.tab === undefined;
     if (!trusted) return undefined;   // not ours: stay silent
-    attempt(attach);
+    if (message.type === 'content/capture-label') attempt(() => setCaptureLabel(message.label));
+    else attempt(attach);
     attempt(() => sendResponse({ ok: true }));   // answered in every case, so the service worker does not retry
     return undefined;
   }

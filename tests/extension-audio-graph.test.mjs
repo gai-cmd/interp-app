@@ -31,7 +31,7 @@ test('attach wires raw -> source -> gain -> destination and reports a running gr
   assert.ok(source.connections.has(gain), 'source feeds the gain');
   assert.ok(gain.connections.has(context.destination), 'gain feeds what the user hears');
   assert.equal(gain.gain.value, 0.65, 'gain is percent / 100 (linear)');
-  assert.deepEqual(graph.snapshot(), { attached: true, contextState: 'running', volume: 65 });
+  assert.deepEqual(graph.snapshot(), { attached: true, contextState: 'running', volume: 65, passthrough: true });
   assert.equal(graph.rawEnded(), false);
   assert.equal(Object.isFrozen(graph), true);
   assert.equal(Object.isFrozen(graph.snapshot()), true);

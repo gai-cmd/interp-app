@@ -967,7 +967,7 @@ test('the ext.error.* keys are exactly EXTENSION_ERROR_CODES plus OVERRIDDEN_ENG
   const { EXTENSION_ERROR_CODES, OVERRIDDEN_ENGINE_CODES } = await importFromRoot(repoRoot, 'extension/lib/ui-state.js');
   assert.equal(new Set([...EXTENSION_ERROR_CODES, ...OVERRIDDEN_ENGINE_CODES]).size, EXTENSION_ERROR_CODES.length + OVERRIDDEN_ENGINE_CODES.length, 'the two code lists are disjoint');
   const expected = sorted([...EXTENSION_ERROR_CODES, ...OVERRIDDEN_ENGINE_CODES].map((code) => `ext.error.${code}`));
-  assert.equal(expected.length, 28);
+  assert.equal(expected.length, 29);   // 28 until §19 (2026-09-30) added TAB_SHARE_NO_AUDIO
   for (const language of LANGS) {
     const dictionary = await readJson(repoRoot, `extension/i18n/${language}.json`);
     assert.deepEqual(sorted(Object.keys(dictionary).filter((key) => key.startsWith('ext.error.'))), expected, `${language} ext.error.* set`);

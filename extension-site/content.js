@@ -88,12 +88,13 @@ export const CONTENT = Object.freeze({
         id: 'first-use',
         title: '처음 쓸 때',
         steps: [
-          '통역할 탭(화상회의·영상)에서 툴바의 [ext] Live Interpreter 아이콘을 **먼저** 누르세요. Chrome은 이렇게 해야만 그 탭의 소리를 가져가도록 허락해 줘요. 오른쪽에 사이드패널이 열려요.',
+          '통역할 탭(화상회의·영상)에서 툴바의 [ext] Live Interpreter 아이콘을 누르세요. 오른쪽에 사이드패널이 열리고, 이렇게 연 탭은 [btn:시작]만 누르면 바로 통역돼요.',
           '패널의 **탭 오디오** 탭에서 **도착 언어**(통역해서 들을 언어)를 고른 다음 [btn:시작]을 누르세요.',
           '내 말도 통역하려면 **마이크** 탭에서 마이크를 켜세요. 아직 허용하지 않았다면 허용 창이 저절로 뜨고, 허용하면 바로 시작해요.',
           '두 언어가 오가는 대화라면 **양방 통역**을 켜고 **상대 언어**를 고르세요. 들리는 언어에 따라 통역 방향이 정해져요.',
         ],
         bullets: [
+          '아이콘을 누르지 않고 패널을 열었다면(Chrome의 사이드 패널 버튼 등), [btn:시작]을 눌렀을 때 Chrome이 통역할 탭을 물어봐요. 탭을 고르고 **탭 오디오도 공유**를 켠 채로 [btn:공유]를 누르세요.',
           '사이드패널을 닫으면 통역도 멈춰요. 통역하는 동안에는 열어 두세요.',
           '통역 음성을 스피커로 들으면 마이크가 그 소리를 다시 받아 되울릴 수 있어요. 헤드폰을 권장해요.',
           { win: '단축키 [kbd:Alt][kbd:Shift][kbd:Y]로도 패널을 열 수 있어요.', mac: '단축키 [kbd:Option][kbd:Shift][kbd:Y]로도 패널을 열 수 있어요.' },
@@ -167,7 +168,7 @@ export const CONTENT = Object.freeze({
           },
           {
             q: '탭 소리가 통역되지 않아요.',
-            a: '통역할 탭에서 툴바 아이콘을 먼저 누른 뒤 [btn:시작]을 누르세요.',
+            a: '[btn:시작]을 누른 뒤 Chrome이 연 창에서 통역할 탭을 고르고, **탭 오디오도 공유**가 켜져 있는지 확인한 다음 [btn:공유]를 누르세요. 통역할 탭에서 툴바 아이콘을 먼저 누르면 이 창 없이 바로 시작해요.',
           },
           {
             q: '툴바에 아이콘이 없어요.',
@@ -242,12 +243,13 @@ export const CONTENT = Object.freeze({
         id: 'first-use',
         title: 'はじめて使うとき',
         steps: [
-          '通訳したいタブ（Web 会議・動画）で、ツールバーの [ext] Live Interpreter アイコンを**先に**押します。Chrome はこの操作をしたときだけ、そのタブの音声の取得を許可します。右側にサイドパネルが開きます。',
+          '通訳したいタブ（Web 会議・動画）で、ツールバーの [ext] Live Interpreter アイコンを押します。右側にサイドパネルが開き、こうして開いたタブは [btn:開始] を押すだけですぐに通訳されます。',
           'パネルの **タブの音声** タブで **通訳先の言語** を選び、[btn:開始] を押します。',
           '自分の話も通訳するときは **マイク** タブでマイクをオンにします。まだ許可していなければ許可画面が自動で開き、許可するとすぐに始まります。',
           '2つの言語が行き交う会話では **双方向通訳** をオンにして **相手の言語** を選びます。聞こえた言語によって通訳の向きが決まります。',
         ],
         bullets: [
+          'アイコンを押さずにパネルを開いた場合（Chrome のサイドパネル ボタンなど）は、[btn:開始] を押すと Chrome が通訳するタブを尋ねます。タブを選び、**タブの音声も共有する**をオンにしたまま [btn:共有] を押してください。',
           'サイドパネルを閉じると通訳も止まります。通訳中は開いたままにしてください。',
           '通訳音声をスピーカーで流すと、マイクがその音を拾って反響することがあります。ヘッドホンをおすすめします。',
           { win: 'ショートカット [kbd:Alt][kbd:Shift][kbd:Y] でもパネルを開けます。', mac: 'ショートカット [kbd:Option][kbd:Shift][kbd:Y] でもパネルを開けます。' },
@@ -321,7 +323,7 @@ export const CONTENT = Object.freeze({
           },
           {
             q: 'タブの音声が通訳されません。',
-            a: '通訳したいタブでツールバーのアイコンを先に押してから [btn:開始] を押してください。',
+            a: '[btn:開始] を押したあと、Chrome が開いたウィンドウで通訳するタブを選び、**タブの音声も共有する**がオンになっていることを確かめてから [btn:共有] を押してください。通訳したいタブでツールバーのアイコンを先に押しておくと、このウィンドウなしですぐに始まります。',
           },
           {
             q: 'ツールバーにアイコンがありません。',
@@ -396,12 +398,13 @@ export const CONTENT = Object.freeze({
         id: 'first-use',
         title: 'First use',
         steps: [
-          'On the tab you want to interpret (a video call or a video), press the [ext] Live Interpreter icon in the toolbar **first**. That is the only way Chrome lets the extension take that tab’s audio. The side panel opens on the right.',
+          'On the tab you want to interpret (a video call or a video), press the [ext] Live Interpreter icon in the toolbar. The side panel opens on the right, and a tab opened this way is interpreted as soon as you press [btn:Start].',
           'In the panel’s **Tab audio** tab, choose a language under **Interpret into**, and press [btn:Start].',
           'To interpret your own speech too, open the **Microphone** tab and turn it on. If it is not allowed yet, the permission prompt opens by itself and interpreting starts as soon as you allow it.',
           'For a conversation in two languages, turn on **Two-way interpretation** and choose the **Other language**. The direction follows the language it hears.',
         ],
         bullets: [
+          'If you opened the panel without the icon (with Chrome’s side panel button, for example), pressing [btn:Start] makes Chrome ask which tab to interpret. Choose the tab, leave **Also share tab audio** on, and press [btn:Share].',
           'Closing the side panel stops interpretation. Keep it open while interpreting.',
           'If interpreted speech plays through speakers, the microphone can pick it up again and echo. Headphones are recommended.',
           { win: 'You can also open the panel with [kbd:Alt][kbd:Shift][kbd:Y].', mac: 'You can also open the panel with [kbd:Option][kbd:Shift][kbd:Y].' },
@@ -475,7 +478,7 @@ export const CONTENT = Object.freeze({
           },
           {
             q: 'Tab audio is not interpreted.',
-            a: 'On that tab, press the toolbar icon first, then press [btn:Start].',
+            a: 'After pressing [btn:Start], choose the tab in the window Chrome opens, make sure **Also share tab audio** is on, and press [btn:Share]. If you press the toolbar icon on that tab first, it starts right away without that window.',
           },
           {
             q: 'The icon is not on the toolbar.',

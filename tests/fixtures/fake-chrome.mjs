@@ -105,10 +105,13 @@ export function createMediaSource(onRelease) {
 
 let trackSerial = 0;
 export class FakeTrack extends EventTarget {
-  constructor({ kind = 'audio', label = '', source = null, deviceId = 'fake-device' } = {}) {
+  constructor({ kind = 'audio', label = '', source = null, deviceId = 'fake-device', settings = {}, captureHandle = null } = {}) {
     super();
     this.id = `fake-track-${++trackSerial}`;
     this.kind = kind; this.label = label; this.deviceId = deviceId;
+    // §19: a display-capture track reports extra settings (suppressLocalAudioPlayback) and, on its video track, the
+    // capture handle of the captured page ({ handle } or null).
+    this.settings = { ...settings }; this.captureHandle = captureHandle;
     this.readyState = 'live'; this.muted = false; this.enabled = true; this.stops = 0;
     this.source = source;
     source?.add(this);
@@ -132,7 +135,9 @@ export class FakeTrack extends EventTarget {
   clone() {
     return new FakeTrack({ kind: this.kind, label: this.label, source: this.source, deviceId: this.deviceId });
   }
-  getSettings() { return { deviceId: this.deviceId }; }
+  getSettings() { return { deviceId: this.deviceId, ...this.settings }; }
+  /** Like the real one: a track that was stopped no longer tells which page it captured. */
+  getCaptureHandle() { return this.readyState === 'ended' ? null : this.captureHandle; }
 }
 
 let streamSerial = 0;

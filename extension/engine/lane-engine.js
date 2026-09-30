@@ -137,12 +137,13 @@ const ACTIVE_PHASES = Object.freeze(['starting', 'running', 'reconnecting']);
 
 const TERMINAL_STATUSES = Object.freeze(['idle', 'stopped', 'failed']);
 
-// What stays of an engine snapshot once its run is over: enough for LaneState (status, error, model), no captions.
+// What stays of an engine snapshot once its run is over: enough for LaneState (status, error and its reason, model), no captions.
 // A run that is over is never `running` any more, whatever a snapshot taken from a wedged engine still says.
 function slimSnapshot(snapshot) {
   if (snapshot === null || snapshot === undefined) return null;
   const status = TERMINAL_STATUSES.includes(snapshot.status) ? snapshot.status : 'stopped';
-  return Object.freeze({ status, errorCode: snapshot.errorCode ?? null, retries: snapshot.retries ?? 0,
+  return Object.freeze({ status, errorCode: snapshot.errorCode ?? null, errorReason: snapshot.errorReason ?? null,
+    retries: snapshot.retries ?? 0,
     model: snapshot.model ?? null, route: snapshot.route ?? null, fallback: snapshot.fallback === true,
     output: null, captions: null, skippedSegments: Object.freeze([]) });
 }
@@ -150,6 +151,9 @@ function slimSnapshot(snapshot) {
 /**
  * `acquire({ run, params })` performs the lane-specific steps before the engine exists and returns { platform };
  * it must check `run.cancelled` after every await and may keep its own resources on `run` (e.g. `run.graph`).
+ * A step that can wait on the user for a long time (Chrome's share picker, §19) races `run.cancelSignal`, a promise
+ * that resolves when the run is cancelled, so a Stop never has to wait for the dialog. `acquire` may also return
+ * `tabId` (an integer or null): the tab the lane really captures, when only the acquisition can know it.
  * `release(run)` is the lane-specific teardown step (5.7 step 3). Both may throw Error{code}.
  * `params` is the validated host/lane-start message plus the host-assigned `epoch`.
  */
@@ -169,6 +173,12 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
     const timer = timers.setTimeout(resolve, ms);
     promise.then(() => { timers.clearTimeout(timer); resolve(); }, () => { timers.clearTimeout(timer); resolve(); });
   });
+
+  // The one place a run is marked cancelled: the flag every await re-checks, and the signal a long wait races.
+  function cancelRun(current) {
+    current.cancelled = true;
+    current.signalCancel();
+  }
 
   // 5.7 steps 1-3. `quiet` = the lane ended by itself (engine failed): the state keeps showing the engine's own
   // verdict instead of a transient `stopping`.
@@ -200,15 +210,17 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
   // The internal teardown of a start that cannot go on: 5.7 steps 1-4 and 6, NOT the wait for the start itself
   // (the start calls it from inside its own promise; waiting would deadlock).
   function abandon(current, { error } = {}) {
-    current.cancelled = true;
+    cancelRun(current);
     if (error !== undefined) current.error ??= error;
     return releaseResources(current).then(() => finalize(current));
   }
 
   async function begin(current, params) {
     try {
-      const { platform } = await acquire({ run: current, params });
+      const { platform, tabId } = await acquire({ run: current, params });
       if (current.cancelled) throw codedError('START_CANCELLED');
+      // §19: a share-picker start learns here which tab the user chose (null: it could not be told).
+      if (tabId !== undefined) { facts.tabId = tabId; current.identified = true; }
       const created = createLaneEngine({ lane, deps, env, platform, onChange: () => emit('data') });
       engineLane = created;
       // The key travels inside `params` untouched: only the lane engine names it. `muted` is the newest value: a
@@ -218,7 +230,7 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
       attempt(() => handle.ready.catch(() => {}));
       handle.done.then(() => onEngineDone(current), () => onEngineDone(current));
       emit('phase');
-      return Object.freeze({ epoch: current.epoch });
+      return Object.freeze({ epoch: current.epoch, ...(current.identified ? { tabId: facts.tabId } : {}) });
     } catch (error) {
       const code = current.error ?? (current.cancelled ? 'START_CANCELLED' : codeOf(error));
       await abandon(current, code === 'START_CANCELLED' ? {} : { error: code });
@@ -232,14 +244,15 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
   // engine's verdict as the lane state (error code, or BROWSER_INTERRUPTED because `stopRequested` is false).
   function onEngineDone(current) {
     if (run !== current || current.cancelled) return;
-    current.cancelled = true;
+    cancelRun(current);
     releaseResources(current, { quiet: true }).then(() => finalize(current));
   }
 
   function start(params) {
     if (run) return Promise.reject(codedError(run.cancelled ? 'LANE_STOPPING' : 'ALREADY_RUNNING'));
     const current = { epoch: params.epoch, cancelled: false, error: null, resources: null, finalized: null,
-      startPending: true, startPromise: null };
+      startPending: true, startPromise: null, identified: false, cancelSignal: null, signalCancel: null };
+    current.cancelSignal = new Promise((resolve) => { current.signalCancel = resolve; });
     run = current; cached = null; engineLane = null; muted = params.muted === true;
     Object.assign(facts, { tabId: params.tab?.tabId ?? null, epoch: params.epoch,
       targetLanguage: params.request.targetLanguage, languages: params.request.languages ?? null, hostError: null,
@@ -258,7 +271,7 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
   async function stop({ error } = {}) {
     const current = run;
     if (!current) return;
-    current.cancelled = true;
+    cancelRun(current);
     if (error !== undefined) current.error ??= error; else facts.stopRequested = true;
     await releaseResources(current);
     if (current.startPending) await settleWithin(current.startPromise, LIMITS.startSettleMs);

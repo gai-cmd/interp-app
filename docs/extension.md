@@ -3968,3 +3968,79 @@ assembler calls `clock.setTimeout(...)` as a method; a browser answers "Illegal 
 automated test passed. Fixed in the app (`app/providers/gemini/index.js`, arrow wrappers; commit `1ef50ec`) and pinned
 by `tests/browser-timers.test.mjs`, which runs the engine under the browser's rule. Found by reproducing the owner's
 steps in Chrome for Testing. 0.3.1 changes nothing else in the extension.
+
+## 19. Release 0.4.0 (2026-09-30): Start from the panel alone, the reason of a failure, no false gap notes
+
+Owner: "인터프리터 아이콘을 누르는게 아니라 하단에 시작만 누르면 될 수 있게 해놔" (it must work by pressing only the
+panel's Start, not the toolbar icon). This REVERSES the last sentence of §17 ("capturing a tab without the toolbar-icon
+click: not possible and therefore not attempted"), K1's consequence for the panel, and the whole "awaiting arm" flow.
+
+What Chrome allows (each point checked on 2026-09-30, the first three in Chrome for Testing on this Mac, the fourth in
+the Chromium source and the extension docs):
+- `tabCapture.getMediaStreamId` still needs an invocation (toolbar icon, shortcut, context menu). A click inside the
+  side panel is not one. That path is unchanged and stays the instant one.
+- `navigator.mediaDevices.getDisplayMedia` works in the offscreen document (offscreen reason `DISPLAY_MEDIA`, the use
+  the offscreen API documents), WITHOUT a user gesture there, and opens Chrome's own share dialog as a window.
+- With `audio.suppressLocalAudioPlayback: true` the shared tab is silenced for the user exactly as a tabCapture stream
+  silences it, so the passthrough graph and the "original volume" setting behave the same. The video track is required
+  by the API and can be stopped at once; the audio track keeps running.
+- `chrome.desktopCapture.chooseDesktopMedia` was the first candidate and is NOT usable here: its stream id can only be
+  consumed by the frame that asked (the panel), not by the offscreen document (`AbortError`), and an audio-only request
+  with that id kills the renderer (`MSDH_INVALID_STREAM_TYPE_COMBINATION`).
+
+| # | Change | Overrides | Where |
+|---|--------|-----------|-------|
+| 1 | **Share-picker start.** `sw/lane-start` for a tab the toolbar icon did not arm is no longer refused with `NEEDS_ARM`. The worker sends `host/lane-start` with `tab: { pick: <nonce>, originalVolume }` (no stream id, no tab id); the tab lane calls `getDisplayMedia(DISPLAY_MEDIA_CONSTRAINTS)`: tab list first, no whole-screen choice, no system-audio checkbox, no "share this tab instead" button, unprocessed audio, local playback suppressed. An armed tab whose grant turns out to be gone (`Extension has not been invoked…`) takes the same path after the record is cleared. | 6.3 step 2 and 6.4 (`NEEDS_ARM`), 4.2 error column, 5.6.1 step 3, K1 | `extension/background/sw-core.js`, `extension/engine/tab-lane.js`, `lib/protocol.js`; `extension-sw`, `extension-lanes`, `extension-protocol`, `extension-integration` tests |
+| 2 | **Which tab was chosen.** The picker lets the user choose any tab and the stream does not say which. Before asking, the worker sends ONE page, the tab the panel is on, `content/capture-label { label: "<nonce>.<tabId>" }` (14th catalog row; the wait is at most `LIMITS.labelWaitMs` = 500 ms and a Stop ends it); the overlay content script sets it as a capture handle readable by this extension's origin only (`setCaptureHandleConfig`, `exposeOrigin: false`). The lane reads the label from the video track before stopping it and reports `tabId` in the `host/lane-start` answer; the nonce is random per start and never stored, so a page cannot claim another tab. **Only that one page is labelled, on purpose**: a document has a single capture-handle setting with no getter, so a label replaces the page's own for good (until it reloads), and labelling every open page would break pages that use the setting themselves (a slide deck presented through a call) on tabs unrelated to the start (review finding, 2026-09-30). Known side effect: the page the panel is on loses its own capture handle, if it had one, when Start asks through the dialog. No label on the captured track (another tab was chosen, a page without the content script: opened before the install, a restricted page, or a plain `http:` page, where `navigator.mediaDevices` does not exist) means `tabId: null`: the lane still interprets, the panel shows the captions and says why the page has none (`ext.error.OVERLAY_UNAVAILABLE`, reworded to name the "another tab" case), and NO page gets an overlay (never the active tab by guess). | 6.7 (the overlay target was the armed tab), 8.5 ("the script does nothing until attach") | `extension/overlay/overlay.js`, `lib/constants.js` (`tabIdOfCaptureLabel`), `engine/lane-host.js`; `extension-overlay`, `extension-protocol`, `extension-sw`, `extension-integration` tests |
+| 3 | **The dialog and Stop.** While the dialog is open the host lane is `starting` with no engine. A Stop does not wait for it (`run.cancelSignal`): the lane goes `off` at once, and whatever the dialog still delivers is released at once. The dialog itself cannot be closed from the document; a later Start takes it over instead of stacking a second one. Closing the dialog (`NotAllowedError`) is not an error: the lane settles in `off` (`START_CANCELLED`, silent). Something shared without audio (a window, or "Also share tab audio" off) is the new `TAB_SHARE_NO_AUDIO`. A tab Chrome did not silence (`suppressLocalAudioPlayback` not `true` in the track settings) is not played back by the graph (`passthrough: false`), so it is never heard twice. | 5.6.1, 5.3, 5.7 | `extension/engine/lane-engine.js`, `tab-lane.js`, `audio-graph.js` |
+| 4 | **The worker stays alive while the user chooses.** A picker start answers only after the choice; an idle MV3 worker would be stopped after 30 s and the panel's start would end in an error. One `storage.session.get` every `LIMITS.pickKeepAliveMs` (20 s) keeps it alive until the host answers. The one `HOST_UNAVAILABLE` retry of a start is made for a picker start only within 1 s of the send (the "document was not listening yet" case); later than that the document went away with the dialog open, and a re-send would open a second dialog and send the key again, so the failure is reported. | 6.10, 6.3 step 6 | `sw-core.js` `keepAwake`, `PICK_RETRY_WINDOW_MS` |
+| 5 | **Panel.** The local "waiting for the toolbar click" state and its auto-start are gone; Start is always sent. `awaiting` now means "the share dialog is open". Once the host reports, the host decides it: tab lane `starting` with no engine and no `tabId` (a stream-id start names its tab from the first state, a picker start cannot), so every panel reads the same whatever tab is active or armed now; before the host reports it is this panel's own start on a tab that is not armed. With both lanes on, the microphone lane is sent without waiting for the dialog (an armed tab keeps the old order: tab, then microphone). Pill and lane status `ext.status.awaitingArm` ("choosing the tab"), button Cancel, arm note `ext.arm.waiting` (what to do in the dialog; no pin hint, no shortcut). Idle and not armed: `ext.arm.needed` now says Start will ask and the toolbar icon skips the question. `NEEDS_ARM` left the silent codes. | 8.2.3 rules 1, 2, 9; 8.2.5; the "Awaiting arm" rows of 8.2.6 | `extension/panel/controller.js`, `view-model.js`; `extension-panel` tests |
+| 6 | **Offscreen reasons** are `['USER_MEDIA', 'DISPLAY_MEDIA']`. No new manifest permission: `getDisplayMedia` needs none. | 6.3.1 ("exactly USER_MEDIA") | `extension-sw` test |
+| 7 | **The reason of an `INVALID_RESULT`.** The engine names which check refused a result (`snapshot.errorReason`, one of the app's `INVALID_RESULT_REASONS`, e.g. `audio-encoding`, `flag-shape`, `adapter-handler`); `LaneState.errorReason` carries it (an identifier matching `ERROR_REASON_PATTERN`, only next to that code and only for an engine that failed with it), and the panel shows it after the notice: "… (INVALID_RESULT · flag-shape)". The engine also skips or repairs harmless audio parts instead of ending the session, and replaces a connection that ended with `INVALID_RESULT` within its ordinary budget (three replacements) before it fails. Details: `docs/design-p2.md` §9. | 4.6.1 field list, 5.11 | `lib/constants.js`, `lib/protocol.js`, `lib/ui-state.js`, `panel/view-model.js`; `app/**` |
+| 8 | **No false gap notes.** Every session showed `ext.gap.input` ("some audio was not sent") from its first second: frames captured while the FIRST connection was being set up were marked as an input gap, and the flag is sticky. With the voice muted (the default) every session also showed `sim.gap.audio`, because muted audio counted as dropped. Both are fixed in the engine (`app/engine/sim.js`); a reconnect and a cut-off turn still mark their gaps. The same rule covers a skipped audio part in a muted session and the reception gap of a first setup that failed and was retried (nothing had been received yet). | 5.11 gap mapping (unchanged; the engine no longer raises the flags falsely) | `tests/sim-input-gap.test.mjs` |
+
+Strings: `ext.status.awaitingArm`, `ext.arm.needed`, `ext.arm.waiting`, `ext.howto.step2`, `ext.error.TAB_GONE`,
+`ext.error.TAB_ENDED` and `ext.error.TAB_INPUT_LOST` were reworded (no sentence sends the user to the toolbar icon any
+more; the dialog texts quote Chrome's own labels "Also share tab audio" / 「タブの音声も共有する」 / ‘탭 오디오도 공유’, read
+from Chrome 154's resources), and `ext.error.TAB_SHARE_NO_AUDIO` is new: 143 `ext.*` keys. The table of 9.2 still shows
+the first-delivery wording; `extension/i18n/*.json` is the source.
+
+Not changed (owner decision the same day): the tab lane's default model stays the translation-only model. A 30 s
+comparison on one clip through this path showed complete sentences on it and mostly cut-off ("interrupted") captions
+on `gemini-3.8-live`; one clip is not a measurement of quality, and the `activityHandling` A/B of
+`docs/live-api-review.md` is still open.
+
+Verified on 2026-09-30 in Chrome for Testing (headless, the keyed build, a real key, a local page playing recorded
+speech): with NO toolbar click, shortcut or context-menu click (armed record empty), Start in the real side panel
+started the tab lane through the (auto-answered) dialog; the panel named the chosen tab, the page got the overlay
+element, captions arrived on both the translation-only model and `gemini-3.8-live`, no gap note and no failure notice
+appeared in 30 s, and Stop returned to idle. In a headful run the real dialog window appeared for the offscreen request.
+Known limits: (1) the page captions need the tab to be the one the panel is on, see change 2; (2) if the worker is
+stopped while the dialog is open (a worker crash, or Chrome's 5-minute cap on one pending event, which the keep-alive
+cannot extend) the panel's start ends with `HOST_UNAVAILABLE` while the dialog is still open; choosing a tab then still
+starts the lane and the panel follows the host's state, but the page overlay is attached only at the next event of that
+tab (activating or reloading it); (3) Start is still a no-op on a page that cannot be captured (`chrome://`, the
+extension's own pages), although the dialog could offer another tab; (4) after the extension is reloaded, tabs that were
+already open have no content script until they are reloaded, so a picker start there has captions in the panel only
+(the toolbar icon path injects the script and does not have this limit).
+
+NOT verified by Claude: a person choosing in the real dialog (the run answered it by flag), what the dialog and the
+blue "sharing" bar look like to the user and whether the bar stays after the video track is stopped, closing the dialog
+by hand, "Stop sharing", Windows, a real video-call tab, and the armed path in a real browser after this change (its
+code path is unchanged and covered by the fake-browser tests).
+
+Manual checks for the owner (they replace the "click the icon first" precondition of 13.4, 13.5, 13.18 and 13.27; the
+icon path of 13.4 stays valid as the instant path):
+
+| # | Item | Status | Steps | Expected |
+|---|---|---|---|---|
+| 19.1 | Start alone | NOT TESTED BY A PERSON (automated run only, dialog answered by flag) | open the panel with Chrome's side-panel button (not the toolbar icon) on a page with a video; press Start | Chrome's share dialog opens on its tab list; the panel says "Waiting for you to choose the tab" and the button reads Cancel; choose the tab, leave "Also share tab audio" on, press Share: Connected, captions in the panel and on the page |
+| 19.2 | Original volume | NOT TESTED BY CLAUDE | while 19.1 runs, move the volume slider 0 -> 65 -> 100 | the tab is heard only through the slider (not twice, not at full volume underneath); RECORD if the tab stays audible at 0 |
+| 19.3 | Another tab | NOT TESTED BY CLAUDE | in the dialog choose a tab OTHER than the one the panel is on | that tab is interpreted with captions in the panel only; the note "Captions cannot be shown on this page… a tab other than the one the panel was opened on"; no page gets captions; "Target tab" stays empty |
+| 19.4 | Cancel and close | NOT TESTED BY CLAUDE | press Start, then Cancel in the panel while the dialog is open; press Start again; then close the dialog with its own Cancel | the panel returns to Start at once both times, no error notice; RECORD whether the first dialog is still open after the panel's Cancel and whether the second Start reuses it |
+| 19.5 | No audio | NOT TESTED BY CLAUDE | press Start and share a window, or a tab with "Also share tab audio" off | notice "The tab's audio was not shared…"; nothing stays shared |
+| 19.6 | Stop sharing | NOT TESTED BY CLAUDE | while 19.1 runs press Chrome's "Stop sharing" | the lane ends with the "audio can no longer be taken from this tab" note; RECORD whether the blue sharing bar is shown at all (the video track is stopped at once) |
+| 19.7 | Icon path | NOT TESTED BY CLAUDE after this change | click the toolbar icon on the tab, then Start | no dialog; starts at once as in 0.3.1 |
+| 19.9 | Both lanes | NOT TESTED BY CLAUDE | switch the microphone on as well, press Start on an un-armed tab | the microphone starts interpreting while the dialog is still open; the tab lane joins after the choice |
+| 19.8 | Old tabs | NOT TESTED BY CLAUDE | right after installing or reloading the extension, WITHOUT reloading an already open video tab, press Start and choose that tab | interpreted, captions in the panel only ("captions cannot be shown on this page…" note), "Target tab" empty; after reloading the tab and starting again the page captions appear |
+

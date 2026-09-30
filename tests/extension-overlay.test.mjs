@@ -291,6 +291,60 @@ test('attach: refused (no answer, no port) for a sender with a tab, a foreign id
   assert.deepEqual(await env.attach(), { ok: true }, 'a good message still works afterwards');
 });
 
+// §19 (2026-09-30): the capture label. Both tests fail on v0.3.1, whose overlay ignored every message but overlay-attach.
+const LABEL = `${'0123456789abcdef'.repeat(2)}.7`;
+const LABEL_MESSAGE = Object.freeze({ v: 1, target: 'content', type: 'content/capture-label', label: LABEL });
+async function bootWithCapture(capture) {
+  const env = await boot({ install: false });
+  env.sandbox.navigator = { mediaDevices: capture };
+  env.run();
+  return env;
+}
+
+test('capture-label: the page is tagged with the label for this extension\'s origin only; nothing connects, nothing is drawn, the answer is {ok:true}', async () => {
+  const configs = [];
+  const env = await bootWithCapture({ setCaptureHandleConfig: (config) => { configs.push(config); } });
+  assert.deepEqual(await env.sender.chrome.tabs.sendMessage(7, LABEL_MESSAGE), { ok: true });
+  // (compared as JSON: the script runs in its own realm, so its objects have that realm's prototypes)
+  assert.equal(JSON.stringify(configs), JSON.stringify([{ handle: LABEL, exposeOrigin: false,
+    permittedOrigins: [`chrome-extension://${env.content.chrome.runtime.id}`] }]));
+  assert.equal(env.spy.log.connects, 0, 'a label opens no port');
+  assert.equal(env.hostElement(), null, 'and draws nothing');
+  assert.deepEqual([...env.documentReads], [], 'the page is not read');
+  // A later start sends a new label: the newest one replaces the old one.
+  const next = `${'f'.repeat(32)}.7`;
+  await env.sender.chrome.tabs.sendMessage(7, { ...LABEL_MESSAGE, label: next });
+  assert.equal(configs.at(-1).handle, next);
+  // and the overlay still attaches as before
+  assert.deepEqual(await env.attach(), { ok: true });
+  assert.equal(env.spy.log.connects, 1);
+});
+
+test('capture-label: a malformed label sets nothing, an untrusted sender gets no answer, and a page without the API never throws', async () => {
+  const configs = [];
+  const env = await bootWithCapture({ setCaptureHandleConfig: (config) => { configs.push(config); } });
+  for (const label of [undefined, null, 7, '', 'interp:abc', LABEL.toUpperCase(), `${LABEL}.1`, LABEL.slice(1), `${LABEL} `, `${'0'.repeat(32)}.`, `x${LABEL}`]) {
+    assert.deepEqual(await env.sender.chrome.tabs.sendMessage(7, { ...LABEL_MESSAGE, label }), { ok: true }, `answered: ${JSON.stringify(label)}`);
+  }
+  assert.equal(configs.length, 0, 'nothing but a well-formed label reaches the page');
+  const withTab = env.browser.createContext('panel', { tabId: 7 });
+  await assert.rejects(withTab.chrome.tabs.sendMessage(7, LABEL_MESSAGE), /port closed/, 'a sender with a tab is not the service worker');
+  env.spy.control.id = 'a-different-extension-id';
+  await assert.rejects(env.sender.chrome.tabs.sendMessage(7, LABEL_MESSAGE), /port closed/);
+  env.spy.control.id = undefined;
+  assert.equal(configs.length, 0);
+
+  // No navigator at all, no mediaDevices, no method, or a method that throws: answered, silent, and attach still works.
+  for (const capture of [undefined, {}, { setCaptureHandleConfig() { throw new Error('InvalidStateError'); } }]) {
+    const bare = await bootWithCapture(capture);
+    assert.deepEqual(await bare.sender.chrome.tabs.sendMessage(7, LABEL_MESSAGE), { ok: true });
+    assert.deepEqual(await bare.attach(), { ok: true });
+  }
+  const none = await boot();   // the sandbox has no `navigator` global
+  assert.deepEqual(await none.sender.chrome.tabs.sendMessage(7, LABEL_MESSAGE), { ok: true });
+  assert.equal(none.listenerCount(), 1);
+});
+
 test('attach: while a port is open a second attach opens no second port but still answers {ok:true}', async () => {
   const env = await boot();
   await env.attach();

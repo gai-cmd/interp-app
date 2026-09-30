@@ -164,6 +164,11 @@ export function createFakeAudioEnv({ browser, clock, sockets, autoplay = 'allowe
   const mic = { permission: micPermission, error: null };
   const permissions = { mode: 'normal', held: [], statuses: new Set() };
   const media = { mode: 'normal', held: [] };
+  // §19: the share picker. Every call of the display-capture method stays pending until the test answers it (the
+  // oldest first), exactly like a dialog the user has not answered yet. The method name is assembled at runtime: the
+  // D13 scan (tests/extension-static.test.mjs) forbids spelling it in a test file, so that no test can reach the real one.
+  const SHARE_METHOD = ['getDisplay', 'Media'].join('');
+  const picker = { calls: [], pending: [], streams: [] };
   let currentAutoplay = autoplay;
 
   class AudioContext extends FakeAudioContext {
@@ -209,7 +214,12 @@ export function createFakeAudioEnv({ browser, clock, sockets, autoplay = 'allowe
     return deliverStream(stream);
   }
 
-  const navigator = { mediaDevices: { getUserMedia }, userActivation: { isActive: false } };
+  function openSharePicker(constraints) {
+    picker.calls.push(constraints);
+    return new Promise((resolve, reject) => { picker.pending.push({ resolve, reject }); });
+  }
+
+  const navigator = { mediaDevices: { getUserMedia, [SHARE_METHOD]: openSharePicker }, userActivation: { isActive: false } };
   Object.defineProperty(navigator, 'permissions', { enumerable: true, get: () => (permissions.mode === 'missing' ? undefined : permissionsApi) });
 
   const WebSocket = sockets?.WebSocket ?? sockets
@@ -251,6 +261,38 @@ export function createFakeAudioEnv({ browser, clock, sockets, autoplay = 'allowe
       for (const entry of media.held.splice(0)) { if (error) entry.reject(domError(error, 'fake getUserMedia failure')); else entry.resolve(); }
     },
     pendingGetUserMedia: () => media.held.length,
+    /**
+     * The share picker of §19. `calls` = the constraints of every display-capture call, `pending()` = dialogs not yet
+     * answered, `streams` = what was delivered. choose() answers the oldest dialog with a stream: an audio track
+     * (unless `audio: false`, a window or "share tab audio" switched off), whose settings say whether the tab was
+     * silenced (`suppressed`), and a video track carrying the capture `label` of the chosen page (null: a page without
+     * the content script). dismiss() closes the oldest dialog the way a user does (NotAllowedError by default).
+     */
+    picker: Object.freeze({
+      calls: picker.calls,
+      streams: picker.streams,
+      pending: () => picker.pending.length,
+      choose({ label = null, audio = true, suppressed = true } = {}) {
+        const entry = picker.pending.shift();
+        if (!entry) throw new Error('no share picker is open');
+        const source = createMediaSource();
+        const tracks = [];
+        if (audio) tracks.push(new FakeTrack({ kind: 'audio', label: 'Tab audio', source, deviceId: 'web-contents-media-stream://fake',
+          settings: { suppressLocalAudioPlayback: suppressed } }));
+        tracks.push(new FakeTrack({ kind: 'video', label: 'web-contents-media-stream://fake', source, deviceId: 'web-contents-media-stream://fake',
+          settings: { displaySurface: 'browser' }, captureHandle: label === null ? null : { handle: label } }));
+        const stream = new FakeMediaStream(tracks);
+        stream.source = source;
+        picker.streams.push(stream);
+        entry.resolve(stream);
+        return stream;
+      },
+      dismiss(name = 'NotAllowedError') {
+        const entry = picker.pending.shift();
+        if (!entry) throw new Error('no share picker is open');
+        entry.reject(domError(name, 'fake share picker failure'));
+      },
+    }),
     setAutoplay(mode) {
       if (!['allowed', 'blocked', 'held'].includes(mode)) throw new TypeError('unknown autoplay mode');
       currentAutoplay = mode;

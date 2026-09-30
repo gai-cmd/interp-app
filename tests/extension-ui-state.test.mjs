@@ -19,8 +19,9 @@ function isDeepFrozen(value) {
   return Object.isFrozen(value) && Object.values(value).every(isDeepFrozen);
 }
 // 2026-09-30: reconnectReason joined the documented fields (a key swap or the planned handover is not a lost connection).
-const LANE_KEYS = ['lane', 'phase', 'engineStatus', 'retries', 'reconnectReason', 'output', 'model', 'route', 'fallback', 'targetLanguage', 'errorCode', 'quota',
-  'keyFailure', 'level', 'tabId', 'captions', 'overlay', 'gap', 'epoch'];
+// 2026-09-30 (later the same day): errorReason joined them too (which check refused an INVALID_RESULT).
+const LANE_KEYS = ['lane', 'phase', 'engineStatus', 'retries', 'reconnectReason', 'output', 'model', 'route', 'fallback', 'targetLanguage', 'errorCode',
+  'errorReason', 'quota', 'keyFailure', 'level', 'tabId', 'captions', 'overlay', 'gap', 'epoch'];
 
 // ---------------------------------------------------------------------------------------------
 // errorKeyFor
@@ -38,9 +39,10 @@ test('the code lists of section 4.6.2 are frozen and their sizes match section 9
   assert.deepEqual(QUOTA_CODES, ['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']);
   assert.deepEqual(KEY_FAILURE_CODES, ['CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'INVALID_KEY', 'PERMISSION_DENIED']);
   assert.deepEqual(TAB_CAPTURE_CODES, ['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'BROWSER_INTERRUPTED']);
-  assert.equal(EXTENSION_ERROR_CODES.length, 12);
+  assert.equal(EXTENSION_ERROR_CODES.length, 13);   // §19 added TAB_SHARE_NO_AUDIO
   assert.equal(OVERRIDDEN_ENGINE_CODES.length, 16);
-  assert.equal(new Set([...EXTENSION_ERROR_CODES, ...OVERRIDDEN_ENGINE_CODES]).size, 28, 'the two families do not overlap: 28 ext.error keys');
+  assert.equal(new Set([...EXTENSION_ERROR_CODES, ...OVERRIDDEN_ENGINE_CODES]).size, 29, 'the two families do not overlap: 29 ext.error keys');
+  assert.ok(EXTENSION_ERROR_CODES.includes('TAB_SHARE_NO_AUDIO'));
   assert.ok(EXTENSION_ERROR_CODES.includes('TAB_INPUT_LOST'));
   assert.ok(TAB_CAPTURE_CODES.every((code) => OVERRIDDEN_ENGINE_CODES.includes(code)));
 });
@@ -116,16 +118,40 @@ const validated = (state) => { assert.deepEqual(validateLaneState(state, state.l
 test('laneStateFromSnapshot: a running lane copies exactly the documented fields', () => {
   const state = validated(laneOf());
   assert.deepEqual(state, { lane: 'tab', phase: 'running', engineStatus: 'running', retries: 0, reconnectReason: null, output: 'ready', model: 'gemini-3.8-live', route: 'flash',
-    fallback: false, targetLanguage: 'ko', errorCode: null, quota: false, keyFailure: false, level: 40, tabId: 12, captions: true, overlay: 'attached',
-    gap: null, epoch: 2 });
+    fallback: false, targetLanguage: 'ko', errorCode: null, errorReason: null, quota: false, keyFailure: false, level: 40, tabId: 12, captions: true,
+    overlay: 'attached', gap: null, epoch: 2 });
   assert.deepEqual(Object.keys(state), LANE_KEYS);
   assert.ok(isDeepFrozen(state));
   const idle = validated(createIdleLaneState('mic'));
   assert.deepEqual(idle, { lane: 'mic', phase: 'off', engineStatus: null, retries: 0, reconnectReason: null, output: null, model: null, route: null, fallback: false, targetLanguage: null,
-    errorCode: null, quota: false, keyFailure: false, level: 0, tabId: null, captions: false, overlay: 'unknown', gap: null, epoch: 0 });
+    errorCode: null, errorReason: null, quota: false, keyFailure: false, level: 0, tabId: null, captions: false, overlay: 'unknown', gap: null, epoch: 0 });
   assert.throws(() => laneStateFromSnapshot({ lane: 'both' }), (error) => error.code === 'INVALID_REQUEST');
   assert.throws(() => laneStateFromSnapshot({}), (error) => error.code === 'INVALID_REQUEST');
   assert.throws(() => laneStateFromSnapshot(), (error) => error.code === 'INVALID_REQUEST');
+});
+
+// 2026-09-30: the reason of an INVALID_RESULT. Fails on v0.3.1, whose lane state had no such field.
+test('laneStateFromSnapshot: errorReason is copied only for an engine that FAILED with INVALID_RESULT, and only as a bare identifier', () => {
+  const failed = (extra) => laneOf({ snapshot: snap({ status: 'failed', errorCode: 'INVALID_RESULT', ...extra }) });
+  const state = validated(failed({ errorReason: 'audio-encoding' }));
+  assert.deepEqual([state.phase, state.errorCode, state.errorReason], ['error', 'INVALID_RESULT', 'audio-encoding']);
+  assert.equal(failed({}).errorReason, null, 'an engine that gives no reason');
+  assert.equal(failed({ errorReason: null }).errorReason, null);
+  // never anything but a short lowercase identifier: no text, no code-shaped value, nothing long
+  for (const bad of ['Audio-Encoding', 'audio encoding', 'audio_encoding', 'a', 'x'.repeat(33), '-audio', 'audio-1', 7, {}, ['audio-mime'], 'the server said: bad']) {
+    assert.equal(validated(failed({ errorReason: bad })).errorReason, null, JSON.stringify(bad));
+  }
+  // only next to INVALID_RESULT, and only when the ENGINE failed with it
+  assert.equal(validated(laneOf({ snapshot: snap({ status: 'failed', errorCode: 'INVALID_KEY', errorReason: 'audio-encoding' }) })).errorReason, null);
+  assert.equal(validated(laneOf({ snapshot: snap({ status: 'running', errorReason: 'audio-encoding' }) })).errorReason, null);
+  const hostWins = validated(laneOf({ snapshot: snap({ status: 'failed', errorCode: 'INVALID_RESULT', errorReason: 'audio-encoding' }), hostError: 'TAB_ENDED' }));
+  assert.deepEqual([hostWins.errorCode, hostWins.errorReason], ['TAB_ENDED', null], 'a host-level error outranks the engine and has no reason');
+  // the frame validator refuses a reason that stands alone or is malformed
+  const good = failed({ errorReason: 'audio-encoding' });
+  assert.notEqual(validateLaneState(good, 'tab'), null);
+  for (const patch of [{ errorCode: 'INVALID_KEY' }, { errorCode: null, phase: 'running' }, { errorReason: 'Bad Reason' }, { errorReason: 5 }, { errorReason: undefined }]) {
+    assert.equal(validateLaneState({ ...good, ...patch }, 'tab'), null, JSON.stringify(patch));
+  }
 });
 
 test('laneStateFromSnapshot (2026-09-30): reconnectReason is copied only while reconnecting, and only for a key swap or the planned handover', () => {

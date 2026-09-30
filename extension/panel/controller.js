@@ -1,7 +1,7 @@
 // New implementation of docs/extension.md §8.2.4-§8.2.7; no legacy code is ported.
 // The side panel's DOM binding and actions. All state is derived by the pure view model (view-model.js); this file
-// owns the local pieces of the state machine (a Start waiting for the toolbar-icon click, starts in flight, local
-// errors, why the last run ended), turns user events into one-field settings writes plus commands to the service
+// owns the local pieces of the state machine (starts in flight, one of which may be waiting for the user's choice in
+// Chrome's share picker (§19), local errors, why the last run ended), turns user events into one-field settings writes plus commands to the service
 // worker, and renders the frozen view model with textContent and attributes only. The panel never holds an engine,
 // a key or a stream, and it never sends host/lane-start or host/lane-stop: Stop goes through the worker, which alone
 // knows about a start that has not reached the host yet (6.11).
@@ -81,14 +81,15 @@ export function createPanelController({
   const t = (key, params) => i18n.current.t(key, params);
 
   // ---------------------------------------------------------------------------------------------
-  // State. `awaiting` = Start pressed on an un-armed tab (the toolbar click will start it); `inFlight` = a
-  // sw/lane-start is under way. Both are "pending" to the view model, which tells them apart by the armed flag.
+  // State. `inFlight` = a sw/lane-start is under way ("pending" to the view model). For a tab the toolbar icon did
+  // not arm, that start stays in flight while Chrome's share picker is open (§19); the view model tells the two apart
+  // by the armed flag.
   const S = {
     settings: createDefaultSettings('en'), keyPresent: BUILTIN_KEYS.length > 0,
     host: null, hostUp: false, lastActive: false, previews: { tab: null, mic: null },
     windowId: null, targetTab: null, armed: false, armedRecord: undefined, armedTick: 0, shortcut: null,
     micPermission: 'unknown', micWasGranted: false,
-    awaiting: false, inFlight: { tab: false, mic: false }, localErrors: { tab: null, mic: null },
+    inFlight: { tab: false, mic: false }, localErrors: { tab: null, mic: null },
     // The two-way choice each running lane was started with (LaneState does not carry it); written by startOne.
     runWith: { tab: null, mic: null },
     stopReason: null, ownStopAt: -Infinity, startRun: 0, capturedTabId: null, capturedTitle: null,
@@ -123,7 +124,7 @@ export function createPanelController({
 
   // ---------------------------------------------------------------------------------------------
   // The view model and its rendering.
-  const pendingOf = () => ({ tab: S.awaiting || S.inFlight.tab, mic: S.inFlight.mic || S.awaitingMic });
+  const pendingOf = () => ({ tab: S.inFlight.tab, mic: S.inFlight.mic || S.awaitingMic });
   function computeViewModel() {
     return buildViewModel({
       settings: S.settings, keyPresent: S.keyPresent, host: S.host, armed: S.armed, targetTab: S.targetTab,
@@ -227,7 +228,9 @@ export function createPanelController({
     setText(`${lane}-route-note`, vm.routeNote ? t(vm.routeNote) : '');
     setText(`${lane}-output`, vm.output ? t(vm.output) : '');
     setText(`${lane}-gap`, vm.gap ? t(vm.gap) : '');
-    setText(`${lane}-notice`, vm.notice ? t(vm.notice.key, vm.notice.params) : '');
+    // The optional detail is a machine identifier (view-model.js), shown after the sentence in parentheses.
+    const noticeText = vm.notice ? t(vm.notice.key, vm.notice.params) : '';
+    setText(`${lane}-notice`, vm.notice?.detail ? `${noticeText} (${vm.notice.detail})` : noticeText);
     setHidden(`${lane}-level`, !vm.levelVisible);
     setValue(`${lane}-level`, vm.level);
     renderPreview(lane, vm.preview);
@@ -381,7 +384,6 @@ export function createPanelController({
     if (seen === S.armedTick) S.armedRecord = record;
     S.targetTab = tabViewOf(Array.isArray(found) ? found[0] : null);
     S.armed = armedIn(S.armedRecord, S.targetTab?.id);
-    maybeAutoStart();
     render();
   }
 
@@ -409,7 +411,8 @@ export function createPanelController({
       // The arm note already says this page cannot be captured: an alert and a pill turned to "failed" would only
       // repeat it, so the press is a no-op for this lane (the microphone lane of the same Start still runs).
       if (S.targetTab.capturable === false) return;
-      if (!S.armed) { S.awaiting = true; render(); return; }   // the toolbar-icon click will start it
+      // §19: an un-armed tab starts too. The worker then asks through Chrome's share picker, and this start stays in
+      // flight until the user has chosen (or closed the dialog, which comes back as the silent START_CANCELLED).
     }
     S.inFlight[lane] = true;
     render();
@@ -424,8 +427,6 @@ export function createPanelController({
     if (res.ok) {
       S.runWith[lane] = started;
       link.connect();   // (c) a successful start: the host exists now
-    } else if (res.code === 'NEEDS_ARM') {
-      if (run === S.startRun && lane === 'tab') { S.awaiting = true; S.armed = false; }
     } else if (res.code !== 'ALREADY_RUNNING' && res.code !== 'START_CANCELLED' && run === S.startRun) {
       S.localErrors[lane] = res.code;
     }
@@ -437,30 +438,26 @@ export function createPanelController({
     for (const lane of all ? LANES : lanes) S.localErrors[lane] = null;
     const run = ++S.startRun;
     render();
+    let choosing = null;
     for (const lane of LANES) {   // sequential: the tab lane first, then the microphone
       if (!lanes.includes(lane)) continue;
-      if (run !== S.startRun) return;   // a Stop pressed meanwhile also prevents the second lane from being sent
+      if (run !== S.startRun) break;   // a Stop pressed meanwhile also prevents the second lane from being sent
       if (!S.settings.lanes[lane].enabled) continue;   // so does unchecking that lane while the first one was starting
+      // §19: a tab that is not armed answers only after the user chose in Chrome's share dialog, which can take as
+      // long as the user likes. The microphone does not wait for that.
+      if (lane === 'tab' && !S.armed) { choosing = startOne(lane, run); continue; }
       await startOne(lane, run);
     }
-  }
-
-  function maybeAutoStart() {
-    if (!S.awaiting || !S.armed || S.inFlight.tab || S.targetTab === null) return;
-    S.awaiting = false;
-    S.localErrors.tab = null;
-    void startOne('tab', S.startRun);
+    await choosing;
   }
 
   async function stopLanes(lane) {
     S.ownStopAt = now();
     if (lane === undefined) {
       S.startRun += 1;
-      S.awaiting = false;
       S.awaitingMic = false;
       S.inFlight = { tab: false, mic: false };
     } else {
-      if (lane === 'tab') S.awaiting = false;
       if (lane === 'mic') S.awaitingMic = false;
       S.inFlight[lane] = false;
     }
@@ -599,7 +596,6 @@ export function createPanelController({
         S.armedTick += 1;
         S.armedRecord = changes[STORAGE_KEYS.armed].newValue;
         S.armed = armedIn(S.armedRecord, S.targetTab?.id);
-        maybeAutoStart();
       }
       if (changes[STORAGE_KEYS.host]) onHostRecord(changes[STORAGE_KEYS.host].newValue);
       if (changes[STORAGE_KEYS.lastStop]) {

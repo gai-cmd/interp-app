@@ -36,7 +36,8 @@ async function makeWorld({ tabs = [{ id: 5, url: 'https://claude.ai/doc' }], set
   const browser = createFakeBrowser({ messages: { menuOpen: 'Interpret this tab' } });
   const sockets = createSocketFixture();
   const audio = createFakeAudioEnv({ browser, sockets, micPermission });
-  const world = { browser, sockets, audio, clock: browser.clock, hosts: [], overlays: [], attaches: [], swCores: [], engineStarts: [] };
+  const world = { browser, sockets, audio, clock: browser.clock, hosts: [], overlays: [], attaches: [], swCores: [], engineStarts: [],
+    labels: new Map() };   // §19: tab id -> the capture label its page was last given
   browser.sw.idleTimeoutMs = 1e12;   // the tests kill the worker explicitly
 
   // The REAL sim engine, watched at its one entry point: every request the host hands to `engine.start` is recorded (a
@@ -59,9 +60,11 @@ async function makeWorld({ tabs = [{ id: 5, url: 'https://claude.ai/doc' }], set
     host.start();
     world.hosts.push(host);
   };
-  // The overlay stand-in: it answers content/overlay-attach and then opens the port like the real script does.
+  // The overlay stand-in: it answers content/overlay-attach and then opens the port like the real script does, and it
+  // keeps the capture label the worker gives the page before a share-picker start (§19).
   browser.onContentCreated = (context) => {
     context.chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message?.type === 'content/capture-label') { world.labels.set(context.tabId, message.label); sendResponse({ ok: true }); return true; }
       if (message?.type !== 'content/overlay-attach') return false;
       world.attaches.push(context.tabId);
       if (!world.overlays.some((overlay) => overlay.context === context && !overlay.disconnected)) {
@@ -360,7 +363,9 @@ test('closing the captured tab ends the tab lane with TAB_ENDED while the microp
   panel.close();
 });
 
-test('a cross-origin navigation clears the arming: the panel asks for a fresh click and a Start waits for it', async () => {
+// §19 (2026-09-30) reverses the end of this test: a Start on the tab whose arming was cleared used to WAIT for a fresh
+// toolbar click; now it asks through the share picker and runs as soon as the tab is chosen.
+test('a cross-origin navigation clears the arming: the panel says Start will ask, and Start runs through the share picker', async () => {
   const world = await makeWorld();
   const panel = await world.openPanel();
   await world.armTab(5);
@@ -369,14 +374,168 @@ test('a cross-origin navigation clears the arming: the panel asks for a fresh cl
   await world.browser.navigate(5, 'https://elsewhere.example/');
   await world.settle();
   assert.equal(world.session()[STORAGE_KEYS.armed].tabs['5'], undefined);
-  assert.match(panel.text('tab-arm-note'), /click the Live Interpreter icon/i);
+  assert.match(panel.text('tab-arm-note'), /Chrome asks which tab/i);
   assert.equal(/This tab is ready/.test(panel.text('tab-arm-note')), false);
 
   await panel.click('btn-start');
-  assert.equal(panel.text('btn-start'), 'Cancel', 'Start waits for the toolbar click');
+  assert.equal(panel.text('btn-start'), 'Cancel', 'the start is waiting for the choice in the share picker');
+  assert.equal(world.audio.picker.pending(), 1);
   assert.equal(world.sockets.sockets.length, 0);
-  await world.armTab(5);                          // the click both arms and starts
+  world.audio.picker.choose({ label: world.labels.get(5) });
   await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(running(world.lastState(), 'tab'), true);
+  assert.equal(world.lastState().lanes.tab.tabId, 5);
+  panel.close();
+});
+
+// =============================================================================================
+// §19 (2026-09-30): the panel's Start alone, end to end over the real worker, host and panel. The tests fail on v0.3.1,
+// except the last one (the control: an armed tab still starts at once, as it did).
+
+test('§19 Start WITHOUT the toolbar icon: the picker opens, the chosen tab is interpreted, and its page gets the captions', async () => {
+  const world = await makeWorld({ tabs: [{ id: 5, url: 'https://video.example/watch', title: 'Video' }, { id: 6, url: 'https://claude.ai/doc', title: 'Doc' }] });
+  const { browser } = world;
+  const panel = await world.openPanel();
+  assert.deepEqual(browser.panelOpens, [], 'the toolbar icon was never clicked');
+  assert.equal(world.session()[STORAGE_KEYS.armed], undefined);
+  assert.match(panel.text('tab-arm-note'), /Chrome asks which tab/i);
+
+  await panel.click('btn-start');
+  // The dialog is open: one share-picker call in the host document, the panel's tab labelled, no stream id minted.
+  assert.equal(world.audio.picker.pending(), 1);
+  assert.equal(panel.text('btn-start'), 'Cancel');
+  assert.match(panel.text('status-pill'), /choose the tab/i);
+  assert.match(panel.text('tab-arm-note'), /choose the tab to interpret and press Share/i);
+  assert.equal(panel.el('tab-arm-note').getAttribute('data-attention'), 'true');
+  assert.deepEqual(browser.offscreenDocument.reasons, ['USER_MEDIA', 'DISPLAY_MEDIA']);
+  const [start] = laneStarts(world);
+  assert.deepEqual(Object.keys(start.tab).sort(), ['originalVolume', 'pick']);
+  assert.deepEqual([...world.labels], [[5, `${start.tab.pick}.5`]], 'only the tab the panel is on was labelled; the other page was not touched');
+  assert.equal(browser.captures.size, 0, 'nothing is captured through tabCapture');
+  assert.equal(world.lastState().lanes.tab.tabId, null, 'no tab is claimed before the user chose');
+
+  world.audio.picker.choose({ label: world.labels.get(5) });
+  const tab = await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(panel.el('status-pill').getAttribute('data-state'), 'running');
+  assert.equal(world.lastState().lanes.tab.tabId, 5);
+  assert.equal(setupOf(tab.socket).model, `models/${TRANSLATION_ONLY}`, 'the tab lane default model, as on the armed path');
+  assert.deepEqual(start.request, { targetLanguage: 'en', model: TRANSLATION_ONLY });
+  assert.match(panel.text('tab-tabline'), /Video/, 'the panel names the tab that is interpreted');
+  assert.equal(panel.text('tab-arm-note'), '');
+
+  content(tab.socket, { outputTranscription: { text: 'hello from the chosen tab' } });
+  await tick();
+  await world.clock.advance(LIMITS.frameIntervalMs);
+  await world.settle();
+  assert.ok(panel.el('tab-preview').textContent.includes('hello from the chosen tab'));
+  assert.deepEqual(world.overlays.map((overlay) => overlay.tabId), [5]);
+  assert.equal(world.overlays[0].frames.some((frame) => frame.type === 'captions' && frame.lane === 'tab'
+    && frame.rows.some((row) => row.text.includes('hello from the chosen tab'))), true);
+
+  // The key is in the one lane-start message; the nonce is in that message and the label message, never stored.
+  assertNothingLeaks(world);
+  const nonce = start.tab.pick;
+  for (const entry of browser.deliveries.filter((delivery) => delivery.json.includes(nonce))) {
+    assert.ok(['host/lane-start', 'content/capture-label'].includes(JSON.parse(entry.json).type), entry.json);
+  }
+  assert.equal(JSON.stringify([browser.storageData('session'), browser.storageData('local')]).includes(nonce), false);
+
+  // Stop releases the share.
+  await panel.click('btn-start');
+  await world.settle();
+  assert.equal(world.audio.picker.streams[0].getTracks().every((track) => track.readyState === 'ended'), true);
+  assert.equal(world.lastState().lanes.tab.phase, 'off');
+  panel.close();
+});
+
+test('§19 ANOTHER tab chosen in the dialog is interpreted too, with captions in the panel only: its page was never labelled', async () => {
+  const world = await makeWorld({ tabs: [{ id: 5, url: 'https://claude.ai/doc', title: 'Doc' }, { id: 6, url: 'https://video.example/watch', title: 'Video' }] });
+  const panel = await world.openPanel();
+  await panel.click('btn-start');
+  assert.equal(world.labels.has(6), false);
+  world.audio.picker.choose({ label: null });   // what the captured track of an unlabelled page reports
+  const tab = await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(running(world.lastState(), 'tab'), true);
+  assert.equal(world.lastState().lanes.tab.tabId, null);
+  content(tab.socket, { outputTranscription: { text: 'from the other tab' } });
+  await tick();
+  await world.clock.advance(LIMITS.frameIntervalMs);
+  await world.settle();
+  assert.ok(panel.el('tab-preview').textContent.includes('from the other tab'));
+  assert.deepEqual(world.overlays, [], 'no page is drawn on, above all not the labelled tab the panel is on');
+  assert.match(panel.text('tab-notice'), /Captions cannot be shown on this page/i);
+  panel.close();
+});
+
+test('§19 both lanes on: the microphone is interpreting while the share dialog of the tab lane is still open', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await panel.change('mic-enabled', true);
+  await panel.click('btn-start');
+  assert.equal(world.audio.picker.pending(), 1);
+  const mic = await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(running(world.lastState(), 'mic'), true, 'the microphone did not wait for the dialog');
+  assert.equal(world.lastState().lanes.tab.phase, 'starting');
+  assert.equal(panel.text('btn-start'), 'Stop');
+  assert.match(panel.text('tab-arm-note'), /choose the tab to interpret and press Share/i);
+  world.audio.picker.choose({ label: world.labels.get(5) });
+  await world.connect({ worklet: 1, socket: 1 });
+  assert.equal(running(world.lastState(), 'tab') && running(world.lastState(), 'mic'), true);
+  assert.equal(mic.socket.closeCalls, 0);
+  assertNothingLeaks(world);
+  panel.close();
+});
+
+test('§19 Cancel while the picker is open returns to idle at once; the next Start takes the same dialog over and runs', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await panel.click('btn-start');
+  assert.equal(world.audio.picker.pending(), 1);
+  await panel.click('btn-start');   // Cancel
+  assert.equal(panel.text('btn-start'), 'Start');
+  assert.equal(panel.el('status-pill').getAttribute('data-state'), 'idle');
+  assert.equal(panel.text('tab-notice'), '');
+  assert.equal(world.lastState().lanes.tab.phase, 'off');
+
+  await panel.click('btn-start');
+  assert.equal(world.audio.picker.calls.length, 1, 'the dialog that was left open is reused, not stacked');
+  assert.equal(panel.text('btn-start'), 'Cancel');
+  world.audio.picker.choose({ label: world.labels.get(5) });   // the page was labelled again for this start
+  await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(running(world.lastState(), 'tab'), true);
+  assert.equal(world.lastState().lanes.tab.tabId, 5);
+  panel.close();
+});
+
+test('§19 closing the picker is not an error, and a share without audio says how to share it', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await panel.click('btn-start');
+  world.audio.picker.dismiss();
+  await world.settle();
+  assert.equal(panel.text('btn-start'), 'Start');
+  assert.equal(panel.text('tab-notice'), '');
+  assert.equal(panel.el('status-pill').getAttribute('data-state'), 'idle');
+
+  await panel.click('btn-start');
+  const stream = world.audio.picker.choose({ label: world.labels.get(5), audio: false });
+  await world.settle();
+  assert.match(panel.text('tab-notice'), /Also share tab audio/);
+  assert.equal(panel.text('tab-arm-note'), '');
+  assert.equal(stream.getTracks().every((track) => track.readyState === 'ended'), true);
+  assert.equal(world.sockets.sockets.length, 0);
+  panel.close();
+});
+
+test('§19 an armed tab still starts at once, without any dialog', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  await world.armTab(5);
+  await panel.click('btn-start');
+  await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(world.audio.picker.calls.length, 0);
+  assert.equal(world.labels.size, 0);
+  assert.equal(world.browser.captures.has(5), true);
   assert.equal(running(world.lastState(), 'tab'), true);
   panel.close();
 });
@@ -431,6 +590,7 @@ test('a quota error on one lane shows its notice and keeps the other lane runnin
 
 const TRANSLATION_ONLY = 'gemini-3.5-live-translate-preview';
 const INSTRUCTION_MODEL = 'gemini-3.8-live';
+
 const PAIR_LANGUAGES = ['ko', 'en', 'ja'];
 const setupOf = (socket) => socket.sent[0].setup;
 const instructionOf = (socket) => setupOf(socket).systemInstruction?.parts[0].text ?? '';

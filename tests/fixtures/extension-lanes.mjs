@@ -54,12 +54,13 @@ export function createRig({ autoplay, micPermission, autoClose = true } = {}) {
   /** The params of a lane start as the lane sees them (the validated host/lane-start message + epoch). */
   async function laneParams(lane, { tabId = 5, epoch = 1, muted = true, captions = true, targetLanguage = 'ko',
     model = 'gemini-3.5-live-translate-preview', key = fakeKey(lane), originalVolume = 65, streamId, style = STYLE,
-    voiceGender = 'female', languages } = {}) {
+    voiceGender = 'female', languages, pick } = {}) {
     // `languages` (a two-way pair) is part of the request only when given, exactly like the SW builds it.
     const params = { v: 1, target: 'offscreen', type: 'host/lane-start', lane, key,
       request: { targetLanguage, model, ...(languages === undefined ? {} : { languages }) },
       voiceGender, muted, captions, style: { ...style }, epoch };
-    if (lane === 'tab') params.tab = { tabId, streamId: streamId ?? await tabStreamId(tabId), originalVolume };
+    // §19: `pick` (a nonce) makes it a share-picker start, which carries no tab id and no stream id.
+    if (lane === 'tab') params.tab = pick === undefined ? { tabId, streamId: streamId ?? await tabStreamId(tabId), originalVolume } : { pick, originalVolume };
     return params;
   }
 
