@@ -3958,3 +3958,13 @@ test('extension sources are checked against the union of app and extension keys;
   assert.deepEqual(checkSource("const s = `ext.status.${state}`;", { ...app.en }, { literalPrefix: 'ext.' }), [], 'dynamic keys are not literals');
 });
 ```
+
+## 18. Release 0.3.1 (2026-09-30): sessions no longer end at the first caption
+
+Versions up to 0.3.0 ended every lane with `INVALID_RESULT` ("통역 결과를 확인하지 못했어요") as soon as the first
+caption arrived, on any model. Cause: the app built the caption assembler's clock from the bare native
+`setTimeout`/`clearTimeout` when no timers were injected (the lane engine injects none into `createAppConfig`), and the
+assembler calls `clock.setTimeout(...)` as a method; a browser answers "Illegal invocation", Node does not, so every
+automated test passed. Fixed in the app (`app/providers/gemini/index.js`, arrow wrappers; commit `1ef50ec`) and pinned
+by `tests/browser-timers.test.mjs`, which runs the engine under the browser's rule. Found by reproducing the owner's
+steps in Chrome for Testing. 0.3.1 changes nothing else in the extension.
