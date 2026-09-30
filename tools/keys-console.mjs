@@ -8,9 +8,9 @@
 // terminal; the page shows them masked once saved.
 //   node tools/keys-console.mjs            (opens http://127.0.0.1:8799/)
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, mkdtemp, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,10 +58,22 @@ function run(command, args, cwd) {
     child.on('error', (error) => done({ code: -1, out: `${out}\n${error.message}` }));
   });
 }
+// The release is built from a clean export of the last COMMIT, never from the
+// working tree: an unfinished edit in progress (2026-09-30, a deploy from this
+// console ran while code was being changed) must not reach the live site.
+async function exportHead() {
+  const dir = await mkdtemp(join(tmpdir(), 'interp-keys-src-'));
+  const { code } = await run('sh', ['-c', 'git -C "$0" archive HEAD | tar -x -C "$1"', APP, dir], APP);
+  if (code !== 0) throw new Error('git archive HEAD failed');
+  const head = (await run('git', ['-C', APP, 'rev-parse', '--short', 'HEAD'], APP)).out.trim();
+  const dirty = (await run('git', ['-C', APP, 'status', '--porcelain', '--', 'app', 'styles.css', 'index.html', 'sw.js', 'admin', 'policy.json'], APP)).out.trim();
+  return { dir, head, dirty };
+}
 async function deploy() {
   const keys = await readKeys();
   const log = [];
-  const step = async (label, command, args, cwd = APP) => {
+  let source = null;
+  const step = async (label, command, args, cwd = source?.dir ?? APP) => {
     const { code, out } = await run(command, args, cwd);
     const clean = keys.reduce((text, key) => text.replaceAll(key, '<key>'), out);
     log.push(`$ ${label}\n${clean.trim()}`);
@@ -72,6 +84,8 @@ async function deploy() {
   const id = `keys-${stamp.toISOString().slice(0, 10).replaceAll('-', '')}-${stamp.toISOString().slice(11, 16).replace(':', '')}`;
   try {
     if (!keys.length) throw new Error('no keys saved');
+    source = await exportHead();
+    log.push(`source: commit ${source.head} (clean export)${source.dirty ? ' — uncommitted changes in the working tree were NOT deployed' : ''}`);
     await mkdir(DEPLOY_ROOT, { recursive: true });
     await step('stage-release', process.execPath, ['scripts/stage-release.mjs', '--id', id, '--out', DEPLOY_ROOT, '--builtin-key-file', KEY_FILE]);
     const checked = await step('check-release', process.execPath, ['scripts/check-release.mjs', DEPLOY_ROOT]);
@@ -86,6 +100,8 @@ async function deploy() {
     return { ok: true, id, log: log.join('\n\n') };
   } catch (error) {
     return { ok: false, id, log: `${log.join('\n\n')}\n\n${error.message}` };
+  } finally {
+    if (source) await rm(source.dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
