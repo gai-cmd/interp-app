@@ -184,6 +184,19 @@ async function worklet({ sampleRate = 48000 } = {}) {
   const rms = data => Math.sqrt(data.reduce((sum, v) => sum + v * v, 0) / data.length);
   return { processor, messages, frames, gates, rms, configure: config => processor.port.onmessage({ data: { type: 'configure', ...config } }) };
 }
+test('worklet output is an inaudible, zero-mean keep-alive signal, never exact silence', async () => {
+  // 2026-09-30: an all-zero output let desktop Chrome slow the capture to a
+  // quarter of real time in a covered window (see capture-worklet.js).
+  const w = await worklet();
+  for (const input of [[[new Float32Array(128).fill(0.3)]], [[new Float32Array(128)]], []]) {
+    const out = new Float32Array(128);
+    assert.equal(w.processor.process(input, [[out]]), true);
+    assert.ok(out.every(v => v !== 0), 'no exact silence');
+    assert.ok(out.every(v => Math.abs(v) <= 2 ** -19), 'about -120 dBFS at most');
+    assert.equal(out.reduce((sum, v) => sum + v, 0), 0, 'no DC offset');
+  }
+});
+
 // 128-sample blocks as the audio thread delivers them.
 const blocks = (samples, size = 128) => Array.from({ length: Math.ceil(samples.length / size) }, (_, i) => samples.subarray(i * size, (i + 1) * size));
 

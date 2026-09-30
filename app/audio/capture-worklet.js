@@ -10,6 +10,15 @@
  * post { type: 'configure', filter, sensitivity } on the port. Gate state
  * changes are reported as { type: 'gate', open, rms } before the PCM block;
  * consumers that only accept Float32Array messages ignore them.
+ * 2026-09-30: the output is no longer exact digital silence. It carries a
+ * +-2^-20 (about -120 dBFS) signal at half the sample rate: far below hearing
+ * and zero on average. Measured the same day in desktop Chrome on macOS: a
+ * context whose output stayed all zeros for about 30 s kept its capture
+ * running at only a quarter to a half of real time once the window was behind
+ * another one (worklet blocks per second fell from 375 to about 100-200), so
+ * most of the speech never reached the interpreter. The same graph with this
+ * signal kept all 375 blocks a second for 75 s. The node stays connected to
+ * the destination because WebKit only renders nodes that reach it.
  */
 const HIGH_PASS_HZ = 80;
 const LOW_PASS_HZ = 8000;
@@ -19,6 +28,8 @@ const GATE_THRESHOLDS = Object.freeze({ low: 0.015, normal: 0.006, high: 0.002 }
 // The gate stays open this long after the level drops, so word tails survive.
 const GATE_HOLD_MS = 400;
 const DEFAULT_CONFIG = Object.freeze({ filter: true, sensitivity: 'normal' });
+// See the header: nonzero so the browser never treats this context as silent.
+const KEEP_ALIVE = 2 ** -20;
 
 class CaptureProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -57,7 +68,10 @@ class CaptureProcessor extends AudioWorkletProcessor {
     this.previousInput = x1; this.highPassOutput = hp; this.lowPassOutput = lp;
   }
 
-  process(inputs) {
+  process(inputs, outputs) {
+    for (const out of outputs?.[0] ?? []) {
+      for (let i = 0; i < out.length; i++) out[i] = i & 1 ? KEEP_ALIVE : -KEEP_ALIVE;
+    }
     const channel = inputs[0]?.[0];
     if (!channel?.length) return true;
     const samples = channel.slice();
