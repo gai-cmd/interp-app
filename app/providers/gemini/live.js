@@ -8,48 +8,84 @@
  * Changes: Injected browser Live client, bounded PCM, independent assemblers;
  * no Node/Electron, audio discard, credentials, buffering, retries or rotation.
  */
-import { ProviderError, assertActive, isResumeHandle, normalizeError } from '../contract.js';
+import { ProviderError, assertActive, invalidResult, isResumeHandle, normalizeError } from '../contract.js';
 import { SegmentAssembler } from '../../engine/segment-assembler.js';
 import { buildLiveSetup, SIM_LIMITS } from './live-config.js';
 
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const count = (v) => Number.isSafeInteger(v) && v >= 0;
 const USAGE_FIELDS = Object.freeze(['promptTokens', 'responseTokens', 'totalTokens', 'cachedTokens']);
-const invalid = () => { throw new ProviderError('INVALID_RESULT'); };
+// Every INVALID_RESULT of this adapter names why (contract.js INVALID_RESULT_REASONS).
+const invalid = (reason) => { throw invalidResult(reason); };
+// What the player can play: PCM16 mono at the Live output rate. An omitted
+// rate is the documented Live output rate. The type is read as a parameter
+// list (2026-09-30) so that a harmless variation — channels=1, other spacing,
+// case or order, a parameter this code does not know — no longer ends a whole
+// interpretation. A rate or channel count that says something else is not
+// playable as it stands, and neither is any other type.
+function playable(mimeType) {
+  if (typeof mimeType !== 'string' || mimeType.length > 256) return false;
+  const [type, ...parameters] = mimeType.split(';').map((item) => item.trim().toLowerCase());
+  if (type !== 'audio/pcm') return false;
+  for (const parameter of parameters) {
+    const at = parameter.indexOf('=');
+    const name = (at < 0 ? parameter : parameter.slice(0, at)).trim();
+    // A quoted value is the same value (MIME allows both spellings).
+    const value = at < 0 ? '' : parameter.slice(at + 1).trim().replace(/^"(.*)"$/, '$1');
+    if (name === 'rate' && value !== String(SIM_LIMITS.outputSampleRate)) return false;
+    if (name === 'channels' && value !== '1') return false;
+  }
+  return true;
+}
+// Returns the decoded bytes, or { skip, dropped } for a part that is left out
+// without ending the session: one bad part costs at most a moment of sound,
+// which the engine marks as an audio gap when something playable was lost.
+// The size limits and a payload that is not canonical base64 stay fatal.
 function decodeAudio(inline) {
-  if (!object(inline)) invalid();
+  if (!object(inline)) invalid('parts-shape');
   const { mimeType, data } = inline;
-  // An omitted rate uses the documented Live output rate; other parameters fail closed.
-  if (typeof mimeType !== 'string' || !/^audio\/pcm(?:;\s*rate=24000)?$/i.test(mimeType)) invalid();
-  if (typeof data !== 'string' || !data.length || data.length > Math.ceil(SIM_LIMITS.maxAudioBytes / 3) * 4
-    || data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) invalid();
+  if (!playable(mimeType)) {
+    return { skip: 'audio-mime', dropped: typeof mimeType === 'string' && /^\s*audio\//i.test(mimeType)
+      && typeof data === 'string' && data.length > 0 };
+  }
+  if (typeof data !== 'string') invalid('audio-encoding');
+  if (!data.length) return { skip: 'audio-empty', dropped: false };
+  if (data.length > Math.ceil(SIM_LIMITS.maxAudioBytes / 3) * 4) invalid('audio-size');
+  if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) invalid('audio-encoding');
   const binary = atob(data);
-  if (btoa(binary) !== data || binary.length % 2 || binary.length > SIM_LIMITS.maxAudioBytes) invalid();
+  if (btoa(binary) !== data) invalid('audio-encoding');
+  if (binary.length > SIM_LIMITS.maxAudioBytes) invalid('audio-size');
+  // An odd byte count is not refused here: see align() in connect().
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
+// The whole message is validated before anything of it is emitted. Returns the
+// decoded audio parts in order and the parts that were skipped.
 function validateContent(content) {
-  if (!object(content)) invalid();
+  if (!object(content)) invalid('content-shape');
   const encoded = JSON.stringify(content);
   if (encoded.length > SIM_LIMITS.maxContentBytes
-    || new TextEncoder().encode(encoded).byteLength > SIM_LIMITS.maxContentBytes) invalid();
+    || new TextEncoder().encode(encoded).byteLength > SIM_LIMITS.maxContentBytes) invalid('content-size');
   for (const key of ['turnComplete', 'generationComplete', 'interrupted']) {
-    if (content[key] !== undefined && typeof content[key] !== 'boolean') invalid();
+    if (content[key] !== undefined && typeof content[key] !== 'boolean') invalid('flag-shape');
   }
   for (const key of ['inputTranscription', 'outputTranscription']) {
     const t = content[key];
     if (t === undefined) continue;
-    if (!object(t) || (t.text !== undefined && (typeof t.text !== 'string' || t.text.length > SIM_LIMITS.maxTranscriptChars))
-      || (t.finished !== undefined && typeof t.finished !== 'boolean')) invalid();
+    if (!object(t) || (t.text !== undefined && typeof t.text !== 'string')
+      || (t.finished !== undefined && typeof t.finished !== 'boolean')) invalid('transcript-shape');
+    if (t.text !== undefined && t.text.length > SIM_LIMITS.maxTranscriptChars) invalid('transcript-size');
   }
-  if (content.modelTurn !== undefined && !object(content.modelTurn)) invalid();
+  if (content.modelTurn !== undefined && !object(content.modelTurn)) invalid('parts-shape');
   const parts = content.modelTurn?.parts;
-  if (parts !== undefined && !Array.isArray(parts)) invalid();
-  const audio = [];
+  if (parts !== undefined && !Array.isArray(parts)) invalid('parts-shape');
+  const audio = [], skipped = [];
   for (const part of parts ?? []) {
-    if (!object(part)) invalid();
-    if (part.inlineData !== undefined) audio.push(decodeAudio(part.inlineData));
+    if (!object(part)) invalid('parts-shape');
+    if (part.inlineData === undefined) continue;
+    const decoded = decodeAudio(part.inlineData);
+    if (decoded instanceof Uint8Array) audio.push(decoded); else skipped.push(decoded);
   }
-  return audio;
+  return { audio, skipped };
 }
 
 /**
@@ -66,6 +102,12 @@ function validateContent(content) {
  * sending and receiving until the engine closes it. resumption {handle} and
  * usage {...} are forwarded as validated numbers/handles; malformed ones are
  * dropped without ending the session.
+ * 2026-09-30: one unplayable part no longer ends the interpretation. A part
+ * that is not 24 kHz mono PCM, or has no data, is left out; a part with an odd
+ * byte count is joined with the next one of the same turn, as a streaming
+ * PCM16 decoder does. Each is reported as anomaly {reason, dropped}. The
+ * memory bounds and wrong field types still end the connection with
+ * INVALID_RESULT, and error.reason then says which check it was.
  */
 export function createGeminiLive({ live, clock } = {}) {
   if (typeof live?.open !== 'function') throw new ProviderError('INVALID_REQUEST');
@@ -118,6 +160,24 @@ export function createGeminiLive({ live, clock } = {}) {
       emit({ type: 'error', error: failure });
       close();
     }
+    // PCM16 samples are two bytes, and a chunk may end between them. The
+    // dangling byte is the first half of a sample whose second half opens the
+    // next chunk, so it is carried there instead of being refused (which ended
+    // the session) or dropped (which would shift every later sample by one
+    // byte into noise). A turn boundary, an interruption and a new connection
+    // (this closure) start clean: half a sample is not worth keeping across them.
+    let carry = null;
+    function align(chunk) {
+      if (chunk.byteLength % 2) emit({ type: 'anomaly', reason: 'audio-odd-bytes', dropped: false });
+      if (carry === null && chunk.byteLength % 2 === 0) return chunk;
+      const joined = new Uint8Array((carry === null ? 0 : 1) + chunk.byteLength);
+      if (carry !== null) joined[0] = carry;
+      joined.set(chunk, carry === null ? 0 : 1);
+      const dangling = joined.byteLength % 2 === 1;
+      carry = dangling ? joined[joined.byteLength - 1] : null;
+      // An exact-length copy: the player reads whole samples from what it is given.
+      return joined.slice(0, joined.byteLength - (dangling ? 1 : 0));
+    }
     function handle(event) {
       if (event?.type === 'closed') {
         if (closedEmitted) return;
@@ -131,7 +191,7 @@ export function createGeminiLive({ live, clock } = {}) {
       try {
         if (event.type === 'error') { fail(event.error); return; }
         if (event.type === 'goAway') {
-          if (!Number.isFinite(event.timeLeftMs) || event.timeLeftMs < 0) invalid();
+          if (!Number.isFinite(event.timeLeftMs) || event.timeLeftMs < 0) invalid('goaway-shape');
           // Advisory only: input and output continue; the engine decides when
           // to hand over and closes this session itself.
           emit({ type: 'goAway', timeLeftMs: event.timeLeftMs });
@@ -148,9 +208,15 @@ export function createGeminiLive({ live, clock } = {}) {
         }
         if (event.type !== 'content') return;
         const c = event.content;
-        const audio = validateContent(c);
+        const { audio, skipped } = validateContent(c);
+        // Counted first, so an interruption in the same message cannot hide them.
+        // What an interruption cuts anyway was not lost to the anomaly.
+        for (const part of skipped) {
+          emit({ type: 'anomaly', reason: part.skip, dropped: part.dropped && c.interrupted !== true });
+        }
         // Interruption wins over co-located completion/audio; never finalize a cut tail.
         if (c.interrupted) {
+          carry = null;
           for (const asm of assemblers) asm.interrupt();
           emit({ type: 'interrupted' });
           return;
@@ -162,14 +228,22 @@ export function createGeminiLive({ live, clock } = {}) {
         }
         for (const chunk of audio) {
           if (stopped) return;
-          emit({ type: 'audio', audio: chunk, sampleRate: SIM_LIMITS.outputSampleRate });
+          const pcm = align(chunk);
+          // A lone half sample yields nothing to play yet.
+          if (pcm.byteLength && !stopped) emit({ type: 'audio', audio: pcm, sampleRate: SIM_LIMITS.outputSampleRate });
         }
         if (!stopped && c.turnComplete) {
+          carry = null;
           for (const asm of assemblers) asm.turnComplete();
           if (!stopped) emit({ type: 'complete' });
         }
         // generationComplete is not a playback/turn boundary.
-      } catch { fail(new ProviderError('INVALID_RESULT')); }
+      } catch (error) {
+        // A validation above names its reason; anything else thrown in here is
+        // this adapter's own fault (2026-09-30: a browser "Illegal invocation"
+        // from a timer surfaced exactly like a malformed server message).
+        fail(error instanceof ProviderError && error.code === 'INVALID_RESULT' ? error : invalidResult('adapter-handler'));
+      }
     }
     context.signal.addEventListener('abort', abort, { once: true });
     try {

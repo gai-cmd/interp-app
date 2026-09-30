@@ -7,7 +7,7 @@
  * Changes: Browser events, ordered bounded decoding, abort/deadlines, confirmed
  * shutdown, safe errors; no ws/Buffer, logging, overlap, or hidden retries.
  */
-import { ProviderError, assertActive, isResumeHandle, normalizeError } from '../contract.js';
+import { ProviderError, assertActive, invalidResult, isResumeHandle, normalizeError } from '../contract.js';
 import { normalizeGeminiError, normalizeGeminiLiveClose } from './errors.js';
 
 // Local transport contract until P1-12/13 supply capability setup/registration.
@@ -33,6 +33,11 @@ const USAGE_FIELDS = Object.freeze([['promptTokenCount', 'promptTokens'], ['resp
  * goAway (2026-09-30) is advisory: sends and output keep working until the
  * consumer closes, and only the advertised deadline (timeLeft) stops the
  * socket, with UNAVAILABLE. Malformed resumption/usage metadata is ignored.
+ * Every INVALID_RESULT raised here names why in error.reason (2026-09-30), one
+ * of contract.js INVALID_RESULT_REASONS: message-type, message-size,
+ * queue-overflow, message-parse, message-shape, setup-shape, content-shape,
+ * client-handler. These stay fatal for this connection: they are the memory
+ * bounds and the envelope itself. The engine decides whether to open another.
  * No raw socket, authentication URL, close reason or provider error is exposed.
  * Route opens through createSessionManager; this is one transport attempt.
  * close() has a deadline; closed resolves ONLY on confirmed physical closure.
@@ -158,10 +163,10 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
       },
     });
     function dispatch(message) {
-      if (!object(message)) throw new ProviderError('INVALID_RESULT');
+      if (!object(message)) throw invalidResult('message-shape');
       if (message.error) { stop(normalizeGeminiError(message)); return; }
       if (Object.hasOwn(message, 'setupComplete')) {
-        if (!object(message.setupComplete) || !setupSent) throw new ProviderError('INVALID_RESULT');
+        if (!object(message.setupComplete) || !setupSent) throw invalidResult('setup-shape');
         if (!ready) { ready = true; clearTimeout(setupTimer); resolveOpen(session); emit({ type: 'ready' }); }
       } else if (message.goAway) {
         if (!ready) { stop(new ProviderError('UNAVAILABLE')); return; }
@@ -178,7 +183,7 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
           emit({ type: 'goAway', timeLeftMs });
         }
       } else if (message.serverContent) {
-        if (!ready || !object(message.serverContent)) throw new ProviderError('INVALID_RESULT');
+        if (!ready || !object(message.serverContent)) throw invalidResult('content-shape');
         emit({ type: 'content', content: message.serverContent });
       } else if (Object.hasOwn(message, 'sessionResumptionUpdate') && ready && active()) {
         resumption(message.sessionResumptionUpdate);
@@ -212,12 +217,18 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
         const { data, bytes } = queue[0];
         decodeTimer = setTimeout(() => stop(new ProviderError('TIMEOUT')), decodeTimeoutMs);
         try {
-          const text = typeof data === 'string' ? data
-            : new TextDecoder('utf-8', { fatal: true }).decode(data instanceof ArrayBuffer ? data : await data.arrayBuffer());
-          if (!active()) break;
-          dispatch(JSON.parse(text));
+          // Reading and parsing fail as message-parse; anything else thrown
+          // while the message is handled is this client's own fault.
+          let message;
+          try {
+            const text = typeof data === 'string' ? data
+              : new TextDecoder('utf-8', { fatal: true }).decode(data instanceof ArrayBuffer ? data : await data.arrayBuffer());
+            if (!active()) break;
+            message = JSON.parse(text);
+          } catch { throw invalidResult('message-parse'); }
+          dispatch(message);
         } catch (error) {
-          if (active()) stop(error instanceof ProviderError ? error : new ProviderError('INVALID_RESULT'));
+          if (active()) stop(error instanceof ProviderError ? error : invalidResult('client-handler'));
         } finally { clearTimeout(decodeTimer); }
         if (!active()) break;
         queue.shift(); queuedBytes -= bytes;
@@ -237,8 +248,11 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
         const bytes = typeof data === 'string' ? new TextEncoder().encode(data).byteLength
           : data instanceof ArrayBuffer ? data.byteLength
             : typeof BlobType === 'function' && data instanceof BlobType ? data.size : -1;
-        if (bytes < 0 || bytes > LIVE_LIMITS.maxMessageBytes || queuedBytes + bytes > LIVE_LIMITS.maxQueueBytes
-          || queue.length >= LIVE_LIMITS.maxQueueMessages) { stop(new ProviderError('INVALID_RESULT')); return; }
+        // Memory bounds: fatal for this connection, each with its own reason.
+        const refused = bytes < 0 ? 'message-type' : bytes > LIVE_LIMITS.maxMessageBytes ? 'message-size'
+          : queuedBytes + bytes > LIVE_LIMITS.maxQueueBytes || queue.length >= LIVE_LIMITS.maxQueueMessages
+            ? 'queue-overflow' : null;
+        if (refused) { stop(invalidResult(refused)); return; }
         queue.push({ data, bytes }); queuedBytes += bytes;
         void drain();
       },

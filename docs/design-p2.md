@@ -259,6 +259,7 @@ Gemini `voice`와 `live`는 `createGeminiAdapter()` 안에서 같은 `createGemi
 - 잠깐 setup이 성공했다고 실패 횟수를 초기화하지 않는다.
 - 복구 중 녹음 전체·마지막 발화를 자동 재전송하지 않는다. 예외는 키 교체와 `goAway` 교체의 보류 입력·사전 롤뿐이다(2026-09-30).
 - 2026-09-30: 사이트 기본 키의 429 계열 종료는 예외다. 종료 확인 후 앱이 예비 키가 넘겨받았다고 답하면 같은 작업이 대기 없이 즉시 새 연결을 연다(같은 요청·모델·캡처·재생기·자막 저장소). 이 연결은 위 3회 예산을 쓰지 않으며 키 풀이 상한이다. 예비 키가 없으면 종전처럼 끝난다.
+- 2026-09-30: Live 연결을 끝낸 `INVALID_RESULT`도 이 경로로 교체한다. 전에는 서버 메시지 하나를 거부하면 통역 전체가 그 자리에서 끝났다. 이제 전송 오류와 같은 대기(약 1·2·4초)와 같은 3회 예산 안에서 같은 요청·같은 모델로 다시 연다. 모델 폴백은 하지 않는다(거부된 메시지는 모델에 대해 알려 주는 것이 없다). 화면은 횟수가 보이는 보통의 '세션 교체 중'이고 `reconnectReason`은 `null`이며, 누락 표시도 다른 끊김과 같다. 예산을 다 쓰면 `BUDGET_EXHAUSTED`가 아니라 마지막 `INVALID_RESULT`와 그 사유로 끝난다(아래 오류 절). 퇴역 중(`goAway` 뒤) 연결의 `INVALID_RESULT`는 다른 끊김과 같이 종전대로 예산 밖 교체다.
 
 ### 오류
 
@@ -277,6 +278,26 @@ Gemini `voice`와 `live`는 `createGeminiAdapter()` 안에서 같은 `createGemi
 - 제공자 원문·close reason·인증 URL을 UI·로그·진단에 보관하지 않는다.
 
 허브 `fatal.detail`은 구조화된 제공자 오류가 아니다. 그대로 표시하거나 정규식만으로 일일 소진으로 바꾸지 않는다. 안전한 “방송 오류” 상태로 매핑한다.
+
+#### INVALID_RESULT의 사유와 처리 (2026-09-30)
+
+2026-09-30 오너의 실제 실행이 `INVALID_RESULT`("통역 결과를 확인하지 못했어요")로 끝났는데 화면만으로는 원인을 알 수 없었다. 그날의 원인은 엔진 이벤트 처리 안에서 난 브라우저 예외였다(`1ef50ec`에서 수정). 남은 약점 둘을 고쳤다: 사유가 없다는 것, 그리고 메시지 하나로 작업 전체가 끝난다는 것.
+
+Live 경로에서 `INVALID_RESULT`를 내는 모든 곳은 고정 목록(`contract.js`의 `INVALID_RESULT_REASONS`, `isInvalidResultReason`)의 사유 하나를 오류 객체의 `reason`에 싣는다. 사유는 코드가 정한 식별자이며 제공자 문구·메시지 내용·값이 아니다. `normalizeError`는 목록에 있는 값만 옮긴다. 순차(비 Live) 목소리 경로는 바꾸지 않았다.
+
+| 처리 | 사유 | 뜻 |
+|---|---|---|
+| 건너뜀 (연결 유지) | `audio-mime` | 24kHz 모노 PCM이 아닌 오디오 파트. `audio/pcm`에 붙은 `channels=1`, 공백·대소문자·순서 차이, 모르는 매개변수는 그대로 재생한다. `rate`가 24000이 아니거나 `channels`가 1이 아니거나 다른 형식이면 그 파트만 버린다 |
+| 건너뜀 (연결 유지) | `audio-empty` | 데이터가 없는 오디오 파트 |
+| 보정 (연결 유지) | `audio-odd-bytes` | 바이트 수가 홀수인 파트. 남는 1바이트를 같은 턴의 다음 오디오 청크 앞에 이어 붙인다(스트리밍 PCM16 디코더의 방식). `turnComplete`·`interrupted`·새 연결에서는 버린다 |
+| 연결 종료 → 예산 안 교체 | `message-type` `message-size` `queue-overflow` `message-parse` `message-shape` `setup-shape` `content-shape` | 전송 계층: 프레임 종류·크기, 대기열 초과, UTF-8/JSON 해석 실패, 객체가 아닌 메시지, setup 응답·`serverContent`의 형식과 순서 |
+| 연결 종료 → 예산 안 교체 | `content-size` `flag-shape` `transcript-shape` `transcript-size` `parts-shape` `audio-encoding` `audio-size` `goaway-shape` | 어댑터: 크기 한도, `turnComplete`·`interrupted`·`generationComplete`·전사 필드의 형식, 파트 구조, 정규 base64가 아닌 오디오, 시간이 없는 `goAway` |
+| 연결 종료 → 예산 안 교체 | `client-handler` `adapter-handler` `event-handler` | 서버 메시지가 아니라 전송 계층·어댑터·엔진 자신의 처리 중 난 예외 |
+
+- 건너뛰거나 보정한 파트는 어댑터가 `anomaly { reason, dropped }` 이벤트로 알린다. 엔진은 사유별로 세고, 재생할 수 있었던 소리를 버렸을 때(`dropped`)만 오디오 누락을 표시한다.
+- 크기 한도(메시지·content·오디오·전사), 대기열 초과, 해석할 수 없는 JSON, 객체가 아닌 메시지·`serverContent`, 제어·전사 필드의 잘못된 형식은 계속 그 연결을 끝낸다. 끝난 연결은 위 'goAway와 재연결' 절대로 예산 안에서 교체한다.
+- 최종인 것: 예산을 다 쓴 뒤의 `INVALID_RESULT`. 이때 `snapshot().errorReason`(결과 객체에도 있음)이 마지막 실패의 사유다. 그 밖의 결과와 다음 시작에서는 `null`이다.
+- 표시는 식별자와 숫자뿐이다: `snapshot().errorReason`, 지표 `metrics.invalidResults`(`{ 사유: 횟수 }`, 건너뜀·보정과 연결 종료를 함께 센다), 동시통역 화면 실패 안내 아래의 작은 글씨 `INVALID_RESULT · <사유>`.
 
 ## §10 기존 맥 허브 수신
 

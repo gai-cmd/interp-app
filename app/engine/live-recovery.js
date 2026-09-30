@@ -2,9 +2,16 @@
 import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
 import { createBudget, createLiveRetryPolicy } from './retry.js';
 
+// 2026-09-30: INVALID_RESULT is replaced like a transport failure. One server
+// message this code refuses used to end the whole interpretation; the damage
+// is to that connection only, and the same budget and backoff bound how often
+// a server that keeps sending such messages is asked again.
 const retryable = new Set(['RATE_LIMITED', 'UNAVAILABLE', 'NETWORK_ERROR', 'TIMEOUT',
-  'SESSION_LIMIT', 'SESSION_CLOSED']);
+  'SESSION_LIMIT', 'SESSION_CLOSED', 'INVALID_RESULT']);
+// INVALID_RESULT stays out: a refused message says nothing about the model.
 const fallbackable = new Set(['MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'UNAVAILABLE', 'NETWORK_ERROR']);
+// Waited for like an unavailable service; the retry policy knows no such codes.
+const asUnavailable = new Set(['SESSION_CLOSED', 'INVALID_RESULT']);
 
 /**
  * One policy per user operation, shared across every model and connection.
@@ -21,6 +28,10 @@ const fallbackable = new Set(['MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'UNAV
  * as wait() does (review, 2026-09-30): a goAway used to pass through wait(),
  * which renewed the budget and the retry count after 60 s of stable
  * connection, and a failure soon after a handover must still find them renewed.
+ * wait() of an INVALID_RESULT (2026-09-30) backs off and reopens the same
+ * request within the same budget, never a model fallback. Once the budget is
+ * spent it rejects with that INVALID_RESULT itself, reason included, rather
+ * than BUDGET_EXHAUSTED: the person is told what kept failing.
  */
 export function createLiveRecovery({ now = () => performance.now(), ...timing } = {}) {
   const policy = createLiveRetryPolicy({ now, ...timing });
@@ -83,12 +94,15 @@ export function createLiveRecovery({ now = () => performance.now(), ...timing } 
           ? resolveFallback?.(error, request) : null;
         if (!goAway && !replacement && !retryable.has(error.code)) throw error;
         settle();
-        if (!attempts.remaining) throw new ProviderError('BUDGET_EXHAUSTED');
+        // A spent budget reports the refused result that spent it, not the budget.
+        const spent = () => (!goAway && error.code === 'INVALID_RESULT' ? error : new ProviderError('BUDGET_EXHAUSTED'));
+        if (!attempts.remaining) throw spent();
         // Reuse existing jitter, server wait, cancellation and retry counter.
-        const scheduling = new ProviderError(goAway || replacement || error.code === 'SESSION_CLOSED'
+        const scheduling = new ProviderError(goAway || replacement || asUnavailable.has(error.code)
           ? 'UNAVAILABLE' : error.code);
         if (error.retryAfterMs !== undefined) scheduling.retryAfterMs = error.retryAfterMs;
-        await policy.wait(scheduling, { signal, closed: true });
+        try { await policy.wait(scheduling, { signal, closed: true }); }
+        catch (refused) { throw normalizeError(refused).code === 'BUDGET_EXHAUSTED' ? spent() : refused; }
         permitted = true;
         return replacement || request;
       } catch (error) { throw normalizeError(error); }

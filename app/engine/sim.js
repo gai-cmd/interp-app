@@ -6,7 +6,8 @@
  * serial physical closure, generation guards, no IPC, extra voice or raw errors.
  */
 import { isPolicyError, PolicyError, POLICY_ERROR_CODES } from '../policy/errors.js';
-import { ProviderError, QUOTA_ERROR_CODES, assertActive, isResumeHandle, normalizeError } from '../providers/contract.js';
+import { ProviderError, QUOTA_ERROR_CODES, assertActive, invalidResult, isInvalidResultReason, isResumeHandle,
+  normalizeError } from '../providers/contract.js';
 import { createListenMetrics } from './listen-metrics.js';
 import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply,
   normalizeLanguagePair } from '../providers/gemini/live-config.js';
@@ -27,6 +28,8 @@ const deferred = () => {
 const attempt = fn => { try { return fn(); } catch { /* Observer-owned failure. */ } };
 const normalizeFailure = error => isPolicyError(error) ? new PolicyError(error.code) : normalizeError(error);
 const captureCodes = new Set(['MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'TIMEOUT']);
+// The fixed reason an INVALID_RESULT carries (contract.js), or null.
+const reasonOf = error => error?.code === 'INVALID_RESULT' && isInvalidResultReason(error.reason) ? error.reason : null;
 // P3-02e: a session is replaced automatically (live-recovery: at most three
 // reopenings, 1/2/4 s) only for transport failures. Every 429 family code and
 // every key/permission rejection ends the operation at once with its own code:
@@ -114,6 +117,15 @@ const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
  * model without a handle (never a model fallback). A turn boundary waits up
  * to HANDLE_GRACE_MS for a handle newer than a "not resumable" update.
  * metrics also records usageMetadata reports (numbers only).
+ * INVALID_RESULT (2026-09-30): a connection that ends with it is replaced like
+ * a dropped one — the ordinary, visible reconnect (reconnectReason null, gaps
+ * marked, live-recovery's backoff and budget) and never a model fallback. When
+ * the budget is spent the operation fails with INVALID_RESULT, and
+ * snapshot.errorReason (also on the result) is the fixed reason of that last
+ * failure, from contract.js INVALID_RESULT_REASONS; it is null for every other
+ * outcome and again after the next start. The adapter's anomaly events (a part
+ * it skipped or repaired) end nothing: they are counted with the fatal ones in
+ * metrics.invalidResults, by reason, and mark an audio gap when sound was lost.
  * context.restart === true marks an app-initiated restart of an operation the
  * person started earlier: capture then accepts sticky user activation.
  */
@@ -139,10 +151,10 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   const models = () => mergeLiveModels(LIVE_MODELS, discovered);
   const knownModel = (model) => models().includes(model);
   const routeOf = (model) => (LIVE_MODELS.includes(model) ? liveRoute(model) : liveSetupFor(model));
-  let active, store, errorCode = null, disposed = false, lastResult, skipped = [];
+  let active, store, errorCode = null, errorReason = null, disposed = false, lastResult, skipped = [];
   const snapshot = () => {
     const model = active?.model ?? lastResult?.model ?? selectedModel;
-    return Object.freeze({ ...state.snapshot(), errorCode,
+    return Object.freeze({ ...state.snapshot(), errorCode, errorReason,
       messageKey: errorCode ? `error.${errorCode}` : null,
       metrics: metrics?.snapshot() ?? null, model, route: routeOf(model),
       fallback: active?.fallback ?? lastResult?.fallback ?? false, defaultModel: DEFAULT_LIVE_MODEL,
@@ -202,10 +214,18 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       onDrop(value) { if (alive(op) && value.durationMs > 0 && !op.connection?.skipping) store.markGap('audio'); } });
     op.player = player;
   }
+  // Every INVALID_RESULT that ends a connection is counted by its reason,
+  // whether the operation then reconnects or fails. fault() and handover()
+  // each run once per connection, so each is counted once.
+  function tally(failure) {
+    const reason = reasonOf(failure);
+    if (reason !== null) metrics.invalidResult(reason);
+  }
   function fault(op, c, error, goAway = false) {
     if (!alive(op) || op.connection !== c || !c.enabled) return;
     c.enabled = false; unwatch(c);
     const failure = normalizeFailure(error);
+    tally(failure);
     // A quota close may be answered by a key swap: keep the player and start
     // holding input now, before the swap is decided, so nothing is lost while
     // the old socket closes. goAway and transport faults keep design-p2 §9.
@@ -278,6 +298,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   function handover(op, c, error = null) {
     if (!alive(op) || op.connection !== c || !c.enabled) return;
     c.enabled = false; unwatch(c);
+    if (error) tally(error);
     metrics.resetInput();
     op.held = [...c.sent, ...(op.uplink?.takeUnsent() ?? [])];
     op.uplink?.cancel();
@@ -316,6 +337,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     }
     if (ev.totalTokens !== undefined) metrics.observe('totalTokensSum', ev.totalTokens);
   }
+  // A part the adapter skipped or repaired. Validated here as at any boundary:
+  // only a listed reason is counted. Sound that was discarded is a playback
+  // gap, except inside a turn whose audio is being discarded as a reply anyway.
+  function anomaly(c, ev) {
+    if (!isInvalidResultReason(ev.reason) || typeof ev.dropped !== 'boolean') return;
+    metrics.invalidResult(ev.reason);
+    if (ev.dropped && !c.skipping) store.markGap('audio');
+  }
   function event(op, c, ev) {
     if (!alive(op) || op.connection !== c || ev.generation !== c.generation) return;
     // Metadata still counts while this connection is being closed: the usage
@@ -327,6 +356,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     try {
       if (ev.type === 'goAway') { retire(op, c, ev.timeLeftMs); return; }
       if (ev.type === 'error' || ev.type === 'closed') { lost(op, c, ev.error ?? new ProviderError('SESSION_CLOSED')); return; }
+      if (ev.type === 'anomaly') { anomaly(c, ev); return; }
       if (ev.type === 'audio') {
         heard(op, c);
         op.recovery.activity(); metrics.mark('firstAudioReceivedMs'); metrics.audioReceived();
@@ -372,10 +402,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         c.skipping = false; c.turnOpen = false; store.interrupt(); op.player?.interrupt();
         if (c.retiring) boundary(op, c);
       }
-    } catch { lost(op, c, new ProviderError('INVALID_RESULT')); }
+    } catch {
+      // Nothing above validates provider data (the adapter did): whatever is
+      // thrown here is this engine's own fault, and the reason says so.
+      lost(op, c, invalidResult('event-handler'));
+    }
   }
   async function run(op, request, route) {
-    let failure;
+    let failure, reason = null;
     try {
       await op.prepared.promise;
       assertActive(op.controller.signal);
@@ -497,21 +531,24 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         notify();
       }
     } catch (raw) {
-      failure = op.failure ?? (op.controller.signal.aborted ? null : normalizeFailure(raw).code);
+      const error = normalizeFailure(raw);
+      failure = op.failure ?? (op.controller.signal.aborted ? null : error.code);
+      // Only for the INVALID_RESULT that is this operation's outcome.
+      if (failure === error.code) reason = reasonOf(error);
     } finally {
       silence(op); op.controller.abort(); op.capture?.cancel();
       try {
         if (op.ownsSession) await (op.lease ? op.lease.close() : sessionManager.close());
-      } catch (raw) { failure = normalizeFailure(raw).code; }
+      } catch (raw) { const error = normalizeFailure(raw); failure = error.code; reason = reasonOf(error); }
       await op.capture?.done;
       op.detach();
-      errorCode = failure;
+      errorCode = failure; errorReason = reason;
       if (failure) state.transition('failed');
       else {
         if (state.snapshot().status !== 'stopping') state.transition('stopping');
         state.transition('stopped');
       }
-      lastResult = Object.freeze({ status: failure ? 'failed' : 'stopped', errorCode: failure,
+      lastResult = Object.freeze({ status: failure ? 'failed' : 'stopped', errorCode: failure, errorReason: reason,
         messageKey: failure ? `error.${failure}` : null, retries: op.recovery.retries,
         model: op.model, fallback: op.fallback });
       metrics.stop(); active = null; notify(); op.ready.resolve(lastResult); op.done.resolve(lastResult);
@@ -548,7 +585,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     if (!LIVE_MODELS.includes(op.model)) throw new ProviderError('MODEL_UNSUPPORTED');
     op.requestedModel = op.model; skipped = [];
     store?.close(); store = createCaptionStore({ sessionId: op.sessionId, now }); store.subscribe(notify);
-    errorCode = null; active = op;
+    errorCode = null; errorReason = null; active = op;
     state.transition('preparing'); op.generation = state.snapshot().generation;
     const abort = () => cancel(op);
     context.signal?.addEventListener('abort', abort, { once: true });

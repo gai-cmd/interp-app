@@ -16,7 +16,7 @@
 // supported / unsupported / stopped / lost, the control revision and the
 // venue's notice text. Joining never starts the microphone, a key or speech.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
-import { QUOTA_ERROR_CODES, normalizeError } from '../providers/contract.js';
+import { QUOTA_ERROR_CODES, isInvalidResultReason, normalizeError } from '../providers/contract.js';
 import { LIVE_VOICE_GENDERS, LIVE_GENDER_VOICES, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder, SOURCE_OPTIONS } from './seq-view.js';
 import { createCaptionBoard, DEFAULT_DISPLAY } from './caption-board.js';
@@ -225,6 +225,12 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   const broadcast = node('p', 'sim-broadcast', section, null, { role: 'status' });
   const notice = node('p', 'sim-notice', section, null, { role: 'status' });
   section.append(openSettings);
+  // 2026-09-30: "the result could not be validated" said nothing about which
+  // check refused it. The engine's fixed reason follows the notice in small
+  // text, as the identifier it is (no sentence, so nothing to translate); the
+  // key action above stays the element right after the notice.
+  const noticeReason = node('p', 'sim-notice-reason', section);
+  noticeReason.hidden = true;
   const meter = node('meter', 'sim-level', section, null, { min: '0', max: '100', value: '0' });
   bind.attribute(meter, 'aria-label', 'seq.inputLevel');
   // Gate state: "no speech" while only music/noise (or nothing) reaches the microphone.
@@ -662,6 +668,11 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
       setText(notice, i18n.t(rotated ? BUILTIN_ROTATED_KEY : builtinBlocked ? BUILTIN_QUOTA_KEY : shown.key));
     }
     notice.setAttribute('data-failure', shown ? (rotated ? 'builtin-rotated' : builtinBlocked ? 'builtin-quota' : shown.code ?? 'unknown') : 'none');
+    // Only beside the INVALID_RESULT notice itself, and only a listed reason.
+    const why = shown?.code === 'INVALID_RESULT' && snapshot.errorCode === 'INVALID_RESULT'
+      && isInvalidResultReason(snapshot.errorReason) ? snapshot.errorReason : null;
+    noticeReason.hidden = why === null;
+    setText(noticeReason, why === null ? '' : `INVALID_RESULT · ${why}`);
     openSettings.hidden = hub || !shown || typeof onOpenSettings !== 'function'
       || !(KEY_FAILURE_CODES.includes(shown.code) || builtinBlocked);
     fallback.hidden = hub || snapshot.status !== 'failed' || !onSequential;

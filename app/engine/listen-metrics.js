@@ -1,6 +1,10 @@
 // New implementation of design-p2 §17; no legacy runtime code is ported.
 // Feed local observations explicitly. Never subtract server timestamps or
-// AudioContext seconds from this clock. No text, identifiers or audio is kept.
+// AudioContext seconds from this clock. No text, identifiers or audio is kept
+// (the INVALID_RESULT reasons counted below are names this code owns, from a
+// closed list; they identify a check, never a person, a session or content).
+import { isInvalidResultReason } from '../providers/contract.js';
+
 export const METRICS_POLICY = Object.freeze({ maxSamples: 512, maxValue: Number.MAX_SAFE_INTEGER });
 export const METRIC_NAMES = Object.freeze([
   'speechToFirstAudioMs', 'speechEndToFirstAudioMs', 'setupMs', 'reconnects', 'recoveryMs', 'closeFailures', 'inputSampleRate', 'sentFrames',
@@ -31,6 +35,11 @@ const bounded = value => Math.min(METRICS_POLICY.maxValue, value);
  * observe(name, number) adds counters or updates gauges. queue(ms) samples
  * queue wait, not end-to-end latency. stop() freezes duration accounting.
  * Memory is optional and must be an explicit browser measurement in bytes.
+ * invalidResult(reason) (2026-09-30) counts one Live INVALID_RESULT check by
+ * its fixed reason (contract.js INVALID_RESULT_REASONS): the parts the adapter
+ * skipped or repaired and the failures that ended a connection alike. The
+ * snapshot's invalidResults is a frozen { reason: count } of the reasons seen
+ * so far (empty when none): identifiers of that list and numbers, nothing else.
  */
 export function createListenMetrics({ now = () => performance.now(), maxSamples = METRICS_POLICY.maxSamples,
   getMemory = null } = {}) {
@@ -47,6 +56,7 @@ export function createListenMetrics({ now = () => performance.now(), maxSamples 
   const samples = [];
   let speechStart = null, lastSpeech = null, firstSpeechAudio = null, speechEnded = false;
   let stopped = false, delayedAt = null, delayed = 0, observations = 0;
+  const invalidResults = new Map();
   const listeners = new Set();
   function snapshot() {
     const sorted = [...samples].sort((a, b) => a - b);
@@ -56,7 +66,8 @@ export function createListenMetrics({ now = () => performance.now(), maxSamples 
     return Object.freeze({ ...values, queueP50Ms: percentile(0.5), queueP95Ms: percentile(0.95),
       delayedMs: bounded(delayed + (delayedAt === null ? 0 : clock() - delayedAt)),
       sampleCount: samples.length, observations, stopped, memoryBytes,
-      memoryState: memoryBytes === null ? 'unsupported' : 'measured' });
+      memoryState: memoryBytes === null ? 'unsupported' : 'measured',
+      invalidResults: Object.freeze(Object.fromEntries(invalidResults)) });
   }
   function notify() { const value = snapshot(); for (const fn of [...listeners]) { try { fn(value); } catch { /* Consumer. */ } } }
   return Object.freeze({ snapshot,
@@ -94,6 +105,11 @@ export function createListenMetrics({ now = () => performance.now(), maxSamples 
         || ['queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs'].includes(name)) return false;
       values[name] = bounded(counters.has(name) ? values[name] + value
         : maxima.has(name) ? Math.max(values[name] ?? 0, value) : value);
+      notify(); return true;
+    },
+    invalidResult(reason) {
+      if (stopped || !isInvalidResultReason(reason)) return false;
+      invalidResults.set(reason, bounded((invalidResults.get(reason) ?? 0) + 1));
       notify(); return true;
     },
     queue(value) {

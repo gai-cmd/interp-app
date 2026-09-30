@@ -9,6 +9,8 @@ export const STREAM_EVENT_FIELDS = Object.freeze(Object.fromEntries(Object.entri
   goAway: ['timeLeftMs'],
   // 2026-09-30: session resumption and token accounting (live only).
   resumption: ['handle'], usage: ['promptTokens', 'responseTokens', 'totalTokens', 'cachedTokens'],
+  // 2026-09-30: a harmless per-part anomaly the adapter skipped or repaired (live only).
+  anomaly: ['reason', 'dropped'],
   interrupted: [], complete: [], error: ['error'], closed: [],
 }).map(([type, fields]) => [type, Object.freeze(fields)])));
 // An opaque provider resumption handle: printable ASCII, 1..4096 characters.
@@ -30,6 +32,40 @@ export const ERROR_CODES = Object.freeze([
 // swapCredential() so the site's built-in keys can be swapped without a stop.
 export const QUOTA_ERROR_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']);
 
+// 2026-09-30: WHY a Live INVALID_RESULT was raised. On that day real runs ended
+// with INVALID_RESULT and nothing on screen said which check had refused what,
+// so every place on the Live path that raises the code now names one of these.
+// The list is closed: a reason is an identifier chosen by this code, never a
+// provider text, a message fragment or a value. In receive order:
+//   message-type      a socket frame that is not text, ArrayBuffer or Blob
+//   message-size      one frame above the transport's byte limit
+//   queue-overflow    frames arriving faster than they are decoded (count or bytes)
+//   message-parse     not UTF-8, not JSON, or a Blob that could not be read
+//   message-shape     the parsed message is not an object
+//   setup-shape       setupComplete is not an object, or came before the setup was sent
+//   content-shape     serverContent before setup completed, or not an object
+//   content-size      one serverContent above the adapter's byte limit
+//   flag-shape        turnComplete / generationComplete / interrupted is not a boolean
+//   transcript-shape  a transcription that is not {text?: string, finished?: boolean}
+//   transcript-size   a transcription text above the character limit
+//   parts-shape       modelTurn, its parts, one part or its inlineData has the wrong type
+//   audio-encoding    audio data that is not a canonical base64 string
+//   audio-size        one audio part above the byte limit
+//   audio-mime        (skipped, never fatal) a part that is not 24 kHz mono PCM
+//   audio-empty       (skipped, never fatal) an audio part without data
+//   audio-odd-bytes   (repaired, never fatal) an audio part that ends in half a sample
+//   goaway-shape      a goAway event without a usable time
+//   client-handler    an exception inside the transport's own message handling
+//   adapter-handler   an exception inside the adapter's event handling
+//   event-handler     an exception inside the engine's event handling
+export const INVALID_RESULT_REASONS = Object.freeze([
+  'message-type', 'message-size', 'queue-overflow', 'message-parse', 'message-shape',
+  'setup-shape', 'content-shape', 'content-size', 'flag-shape', 'transcript-shape', 'transcript-size',
+  'parts-shape', 'audio-encoding', 'audio-size', 'audio-mime', 'audio-empty', 'audio-odd-bytes',
+  'goaway-shape', 'client-handler', 'adapter-handler', 'event-handler',
+]);
+export const isInvalidResultReason = (value) => typeof value === 'string' && INVALID_RESULT_REASONS.includes(value);
+
 // Codes are machine identifiers, never UI text. P1-04/P1-15 own translations.
 // Never retain a raw error, cause, credential, request, or caller-supplied message.
 export class ProviderError extends Error {
@@ -41,6 +77,13 @@ export class ProviderError extends Error {
   }
 }
 
+/** An INVALID_RESULT that says why: error.reason is one of INVALID_RESULT_REASONS, or absent. */
+export function invalidResult(reason) {
+  const error = new ProviderError('INVALID_RESULT');
+  if (isInvalidResultReason(reason)) error.reason = reason;
+  return error;
+}
+
 export function normalizeError(error, normalize) {
   try {
     const result = error instanceof ProviderError ? error : normalize?.(error);
@@ -49,6 +92,8 @@ export function normalizeError(error, normalize) {
     if (Number.isFinite(result?.retryAfterMs) && result.retryAfterMs >= 0) {
       safe.retryAfterMs = result.retryAfterMs;
     }
+    // ...and the fixed reason of an INVALID_RESULT: a listed identifier or nothing.
+    if (safe.code === 'INVALID_RESULT' && isInvalidResultReason(result?.reason)) safe.reason = result.reason;
     return safe;
   } catch {
     return new ProviderError('PROVIDER_ERROR');
@@ -170,6 +215,10 @@ export function defineProvider(definition, adapter = {}) {
  * resumable point (null: not resumable now); usage { promptTokens?,
  * responseTokens?, totalTokens?, cachedTokens? } carries nonnegative safe
  * integers only. A live request may name resumeHandle (live only).
+ * anomaly { reason: one of INVALID_RESULT_REASONS, dropped: boolean } (live
+ * only, 2026-09-30) reports one part the adapter skipped or repaired without
+ * ending the session; dropped says whether playable audio was lost with it.
+ * An error event's INVALID_RESULT may carry error.reason from the same list.
  * Routing IDs are snapshotted from context and override all adapter event IDs.
  * Consumer close/abort/cancel suppress events immediately, including 'closed'.
  * LiveSession: sendAudio(pcm), finishInput(), close() -> Promise<void>.

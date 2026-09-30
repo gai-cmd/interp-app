@@ -93,7 +93,8 @@ UI 문구는 모두 app/i18n/ko.json·en.json·ja.json의 같은 키로 관리�
 | `goAway` | `timeLeftMs` |
 | `resumption` (2026-09-30, live) | `handle` (재개 가능할 때만 문자열, 아니면 `null`) |
 | `usage` (2026-09-30, live) | `promptTokens`, `responseTokens`, `totalTokens`, `cachedTokens` (음이 아닌 안전 정수만) |
-| `error` | 기존 `normalizeError`로 정규화한 `error` |
+| `anomaly` (2026-09-30, live) | `reason`(`INVALID_RESULT_REASONS` 중 하나), `dropped`(재생할 소리를 버렸는지) |
+| `error` | 기존 `normalizeError`로 정규화한 `error`. 2026-09-30: `INVALID_RESULT`면 고정 목록의 `error.reason`이 함께 온다 |
 | `interrupted`, `complete`, `closed` | 추가 데이터 없음 |
 
 모든 이벤트에는 `type`과 라우터 호출 시점 context의 `turnId`, `sessionId`, `generation`을 붙인다. 어댑터가 보낸 같은 이름의 ID나 호출 이후 context 변경은 이를 덮어쓰지 못한다. `segmentId`는 어댑터가 조립한 구간 식별자로 유지한다. 없는 선택 필드는 생략하며 `0`, `false`, 빈 문자열 등 기존 값은 유지한다. 알려지지 않은 이벤트 및 허용 목록 밖 raw payload·임의 필드는 폐기한다. 이벤트 객체는 얕게 동결하며 PCM을 복제하거나 버퍼 내부까지 동결하지 않는다.
@@ -131,6 +132,18 @@ REST 호출을 보존한다. live는 별도 resolveGeminiLiveFallback을 반환�
 모델·설정 미지원, UNAVAILABLE, NETWORK_ERROR만 모델 폴백에 해당한다.
 분당 제한·SESSION_LIMIT은 같은 모델로 제한 복구하며 한도·키·권한·안전 오류를
 이유로 모델을 순환하지 않는다. REST의 INVALID_RESULT 품질 폴백은 Live에 적용하지 않는다.
+
+2026-09-30: Live의 `INVALID_RESULT` 처리를 바꿨다(세부와 사유 목록은 design-p2 §9 오류 절).
+
+| 경우 | 전 | 지금 |
+|---|---|---|
+| 재생할 수 없는 오디오 파트(`audio-mime`), 빈 파트(`audio-empty`) | 연결·작업 종료 | 그 파트만 건너뛰고 `anomaly` 이벤트 |
+| 홀수 바이트 오디오(`audio-odd-bytes`) | 연결·작업 종료 | 남는 바이트를 같은 턴의 다음 청크에 이어 붙임 |
+| 그 밖의 `INVALID_RESULT`(크기 한도, 봉투·필드 형식, 내부 예외) | 작업 즉시 종료 | 연결만 종료. `wait`가 전송 오류처럼 대기 후 같은 요청·모델로 다시 연다(같은 3회 예산, 모델 폴백 없음) |
+| 예산 소진 | — | `BUDGET_EXHAUSTED`가 아니라 그 `INVALID_RESULT`(사유 포함)로 끝남 |
+
+사유는 `contract.js`의 `INVALID_RESULT_REASONS`(동결된 고정 목록)이며 `isInvalidResultReason`으로 검사한다.
+오류 객체의 `reason`, `snapshot().errorReason`, `metrics.invalidResults`에 식별자와 횟수로만 나타난다.
 
 ### 후속 엔진에서 사용할 인터페이스
 

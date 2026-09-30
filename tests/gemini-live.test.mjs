@@ -278,20 +278,23 @@ test('interruption wins over co-located audio and complete, then next turn conti
   await h.close();
 });
 
-for (const [label, content] of [
-  ['wrong rate', pcmContent('AAAA', 'audio/pcm;rate=16000')],
-  ['bad rate suffix', pcmContent('AAAA', 'audio/pcm;rate=24000evil')],
-  ['stereo', pcmContent('AAAA', 'audio/pcm;rate=24000;channels=2')],
-  ['non-PCM', pcmContent('AAAA', 'audio/wav')],
-  ['odd PCM', pcmContent('AAAA')], ['empty PCM', pcmContent('')],
-  ['bad base64', pcmContent('!!!!')], ['unpadded base64', pcmContent('AAA')],
-  ['noncanonical base64', pcmContent('AAB=')], ['bad padding', pcmContent('AA=A')],
-  ['large PCM', pcmContent('A'.repeat(1048580))],
-  ['large envelope', { ignored: 'あ'.repeat(400000) }],
-  ['large transcript', { outputTranscription: { text: 'x'.repeat(SIM_LIMITS.maxTranscriptChars + 1) } }],
-  ['bad text', { inputTranscription: { text: 42 } }], ['bad finished', { outputTranscription: { finished: 'yes' } }],
-  ['bad content', null], ['bad parts', { modelTurn: { parts: {} } }],
-  ['bad control', { turnComplete: 'yes' }],
+// 2026-09-30 (owner's runs ended with INVALID_RESULT and no reason): this table
+// also pinned six audio cases as fatal — 'wrong rate', 'bad rate suffix',
+// 'stereo', 'non-PCM', 'odd PCM' and 'empty PCM'. The spec reverses exactly
+// those: one unplayable part is skipped, and an odd byte count is carried into
+// the next chunk, without ending the interpretation. They moved to
+// invalid-result.test.mjs, which pins the new behaviour. Every case that
+// remains is still fatal, and now also says why (error.reason).
+for (const [label, content, reason] of [
+  ['bad base64', pcmContent('!!!!'), 'audio-encoding'], ['unpadded base64', pcmContent('AAA'), 'audio-encoding'],
+  ['noncanonical base64', pcmContent('AAB='), 'audio-encoding'], ['bad padding', pcmContent('AA=A'), 'audio-encoding'],
+  ['large PCM', pcmContent('A'.repeat(1048580)), 'content-size'],
+  ['large envelope', { ignored: 'あ'.repeat(400000) }, 'content-size'],
+  ['large transcript', { outputTranscription: { text: 'x'.repeat(SIM_LIMITS.maxTranscriptChars + 1) } }, 'transcript-size'],
+  ['bad text', { inputTranscription: { text: 42 } }, 'transcript-shape'],
+  ['bad finished', { outputTranscription: { finished: 'yes' } }, 'transcript-shape'],
+  ['bad content', null, 'content-shape'], ['bad parts', { modelTurn: { parts: {} } }, 'parts-shape'],
+  ['bad control', { turnComplete: 'yes' }, 'flag-shape'],
 ]) test(`malformed receive closes once with sanitized error: ${label}`, async () => {
   const h = await harness();
   h.live.content(content); h.live.content(pcmContent());
@@ -299,6 +302,7 @@ for (const [label, content] of [
   assert.equal(h.live.closes, 1);
   assert.equal(h.events.length, 1);
   assert.equal(h.events[0].error.code, 'INVALID_RESULT');
+  assert.equal(h.events[0].error.reason, reason);
   assert.equal(h.events[0].error.cause, undefined);
   h.live.confirm(); h.live.confirm();
   assert.equal(h.events.filter((e) => e.type === 'closed').length, 1);

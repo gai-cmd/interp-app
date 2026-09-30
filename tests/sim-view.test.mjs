@@ -987,3 +987,49 @@ test('a planned handover reads as a calm reconnecting, with no count and no fail
   assert.equal(f.get('status').getAttribute('data-reconnect'), 'key');
   f.view.destroy();
 });
+
+// 2026-09-30: "the result could not be validated" said nothing about which
+// check refused it. The engine's fixed reason follows the notice as small
+// text, only beside the INVALID_RESULT notice and only as a listed identifier.
+test('an INVALID_RESULT failure shows its fixed reason in small text after the notice, and nothing else ever does', () => {
+  const f = setup({ onOpenSettings() {} });
+  const reason = f.get('notice-reason');
+  assert.equal(reason.hidden, true); assert.equal(reason.textContent, '');
+  const section = f.get('notice').parentNode;
+  assert.deepEqual(section.children.slice(section.children.indexOf(f.get('notice')), section.children.indexOf(reason) + 1),
+    [f.get('notice'), f.get('open-settings'), reason], 'after the notice; the key action keeps its place right behind it');
+  f.direct.start = () => { f.direct.patch({ status: 'failed', errorCode: 'INVALID_RESULT', errorReason: 'audio-encoding' }); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').textContent, dictionaries.en['error.INVALID_RESULT']);
+  assert.equal(f.get('notice').getAttribute('data-failure'), 'INVALID_RESULT');
+  assert.equal(reason.hidden, false);
+  assert.equal(reason.textContent, 'INVALID_RESULT · audio-encoding');
+  assert.equal(f.get('open-settings').hidden, true);
+  // The identifier is not a sentence: it reads the same in every UI language.
+  f.i18n.setLanguage('ko'); f.view.refresh();
+  assert.equal(f.get('notice').textContent, dictionaries.ko['error.INVALID_RESULT']);
+  assert.equal(reason.textContent, 'INVALID_RESULT · audio-encoding');
+  // Anything that is not a listed reason is never rendered, whatever the engine object carries.
+  for (const errorReason of ['SECRET provider text', '<b>audio-encoding</b>', '', null, undefined, 42, { toString: () => 'audio-encoding' }]) {
+    f.direct.patch({ errorReason });
+    assert.equal(reason.hidden, true); assert.equal(reason.textContent, '');
+  }
+  f.direct.patch({ errorReason: 'event-handler' });
+  assert.equal(reason.textContent, 'INVALID_RESULT · event-handler');
+  // Another failure code never borrows a reason.
+  f.direct.patch({ errorCode: 'NETWORK_ERROR', errorReason: 'event-handler' });
+  assert.equal(reason.hidden, true); assert.equal(reason.textContent, '');
+  // A failure of this screen (a rejected start) wins over the engine's last result, reason included.
+  f.direct.patch({ errorCode: 'INVALID_RESULT', errorReason: 'event-handler' });
+  assert.equal(reason.hidden, false);
+  f.direct.start = () => { throw new ProviderError('CREDENTIAL_REQUIRED'); };
+  f.get('start').dispatch('click');
+  assert.equal(f.get('notice').getAttribute('data-failure'), 'CREDENTIAL_REQUIRED');
+  assert.equal(reason.hidden, true); assert.equal(reason.textContent, '');
+  // A new run clears it with the error code.
+  f.direct.start = (request) => { f.direct.calls.push(['start', request]); f.direct.patch({ status: 'running', errorCode: null, errorReason: null }); };
+  f.get('start').dispatch('click');
+  assert.equal(reason.hidden, true);
+  assert.equal(f.root.textContent.includes('SECRET'), false);
+  f.view.destroy();
+});

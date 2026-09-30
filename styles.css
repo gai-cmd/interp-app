@@ -754,6 +754,7 @@ input[type="range"] { accent-color: var(--accent); min-height: var(--touch); }
 .sim-field select, .sim-room { width: 100%; min-width: 0; min-height: var(--touch); font: inherit; }
 .sim-hints, .sim-output, .sim-recent { color: var(--text-muted); }
 .sim-hints p { margin: var(--space-1) 0; }
+.sim-notice-reason { margin: 0; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
 .sim-captions { overflow-y: auto; overflow-anchor: none; max-height: 60vh; min-height: 8rem;
   border: 1px solid var(--border); border-radius: var(--radius); padding: var(--gap); }
 .sim-caption { padding: var(--gap); margin-bottom: var(--gap); background: var(--accent-soft); border-radius: var(--radius); }
