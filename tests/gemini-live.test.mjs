@@ -327,13 +327,20 @@ test('close is idempotent, suppresses late events, and waits for physical close'
   assert.equal(h.events.length, 1); assert.equal(h.clock.size, 0);
 });
 
-test('goAway stops input and closes without reconnecting or forwarding raw fields', async () => {
+// 2026-09-30 (owner approval, goAway handover): this pinned "goAway stops
+// input and closes". The spec reverses it — goAway is advisory, as the stream
+// contract already said: the engine keeps sending until a turn boundary and
+// closes the session itself — so input now continues and nothing closes here.
+test('goAway is advisory: forwarded without raw fields, input continues, and nothing closes or reconnects', async () => {
   const h = await harness();
   h.live.emit({ type: 'goAway', timeLeftMs: 2000, detail: 'private' });
-  await assert.rejects(h.session.sendAudio(new Uint8Array(2)), { code: 'SESSION_CLOSED' });
-  await tick(); assert.equal(h.live.closes, 1); assert.equal(h.live.calls.length, 1);
+  await h.session.sendAudio(new Uint8Array(2));
+  assert.equal(h.live.sent.length, 1, 'input still reaches the retiring transport');
+  await tick(); assert.equal(h.live.closes, 0); assert.equal(h.live.calls.length, 1);
   assert.deepEqual(h.events[0], { type: 'goAway', timeLeftMs: 2000, turnId: 'turn', sessionId: 'sim', generation: 2 });
-  h.live.confirm();
+  h.live.content(pcmContent());
+  assert.equal(h.events.at(-1).type, 'audio', 'output keeps arriving');
+  await h.close();
 });
 
 test('abort during open closes late transport before rejecting', async () => {

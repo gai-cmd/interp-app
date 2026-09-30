@@ -61,6 +61,9 @@ export const ROUTES = Object.freeze(['translation', 'flash']);
 export const GAP_KINDS = Object.freeze(['input', 'audio', 'reception']);
 export const OVERLAY_STATES = Object.freeze(['unknown', 'attached', 'unavailable']);
 export const STATUS_PHASES = Object.freeze(['reconnecting', 'stopped', 'running']);
+// 2026-09-30: why a lane is reconnecting when interpreting goes on (the engine's snapshot.reconnectReason): a spare
+// site key took over, or the planned ~10-minute connection handover. Neither is a lost connection.
+export const RECONNECT_REASONS = Object.freeze(['key', 'handover']);
 export const CAPTION_ROLES = Object.freeze(['translation', 'source']);
 export const CAPTION_STATUSES = Object.freeze(['partial', 'final', 'interrupted']);
 

@@ -6,7 +6,7 @@
  * serial physical closure, generation guards, no IPC, extra voice or raw errors.
  */
 import { isPolicyError, PolicyError, POLICY_ERROR_CODES } from '../policy/errors.js';
-import { ProviderError, QUOTA_ERROR_CODES, assertActive, normalizeError } from '../providers/contract.js';
+import { ProviderError, QUOTA_ERROR_CODES, assertActive, isResumeHandle, normalizeError } from '../providers/contract.js';
 import { createListenMetrics } from './listen-metrics.js';
 import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply,
   normalizeLanguagePair } from '../providers/gemini/live-config.js';
@@ -44,6 +44,32 @@ const noReplacement = new Set([...NO_REPLACEMENT_CODES, ...POLICY_ERROR_CODES]);
 // before); MAX_KEY_SWAPS is only a guard against a hook that never says no.
 const quotaCodes = new Set(QUOTA_ERROR_CODES);
 export const MAX_KEY_SWAPS = 8;
+// 2026-09-30 (owner approval, "진행해"): the ~10-minute goAway uses the same
+// seamless machinery as a key swap. The retiring connection keeps working —
+// input still goes to it, its audio and captions still play — until the
+// first of: a turn boundary on it, QUIET_MS without audio or captions from
+// it, or HANDOVER_MARGIN_MS before its advertised end. Then it is closed and
+// the next one opens at once, free of backoff and of the replacement budget.
+// MIN_HANDOVER_AGE_MS is the runaway guard: a connection told to go away
+// within its first minute takes the ordinary budgeted path instead, so a
+// server that keeps saying goAway cannot make the engine reconnect forever.
+export const QUIET_MS = 1500;
+export const HANDOVER_MARGIN_MS = 2000;
+export const MIN_HANDOVER_AGE_MS = 60000;
+// Speech that started just before the boundary went to a connection that
+// will never answer it, so the last ~1 s already sent there (31 frames of
+// 32 ms) is sent again first on the next one. The cost is at most ~1 s of
+// audio the model may hear twice.
+export const PREROLL_FRAMES = 31;
+// The provider marks a session not resumable while the model generates, so
+// the handle held at a turn boundary may predate that turn; a fresh one can
+// follow the turnComplete as its own message (review, 2026-09-30; when the
+// server sends it is not documented). Only when an update said "not
+// resumable" since the last good handle, the boundary handover waits for the
+// fresh handle, at most HANDLE_GRACE_MS, while input still reaches the old
+// socket. Otherwise the next connection would resume from before the last
+// utterance and might interpret it again.
+export const HANDLE_GRACE_MS = 500;
 const MAX_SKIPPED = 100;
 // 24 kHz PCM16 mono: 48 bytes per millisecond.
 const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
@@ -74,6 +100,20 @@ const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
  * that calm state; otherwise the close is handled exactly as without a hook
  * (review, 2026-09-30: a person's own key must never read as a key swap).
  * Without it, every quota close is treated as possibly swappable.
+ * goAway (2026-09-30) on a connection open for MIN_HANDOVER_AGE_MS or more is
+ * a handover, not a failure: see QUIET_MS above. While it runs the player
+ * keeps playing, input is held (the pre-roll plus what was not yet sent) and
+ * snapshot.reconnectReason is 'handover'; metrics.handovers counts them and
+ * metrics.reconnects does not. A close or error of a retiring connection is a
+ * handover too, unless its code is one that never gets a replacement.
+ * Session resumption: the newest resumable handle of the current connection
+ * is kept in memory only (never in a snapshot, metric or error) and offered
+ * to the next open of the same operation on the same credential and model.
+ * A key swap, a model change and a failed resumed setup discard it; a resumed
+ * setup refused before ready is retried once, at once and free, on the same
+ * model without a handle (never a model fallback). A turn boundary waits up
+ * to HANDLE_GRACE_MS for a handle newer than a "not resumable" update.
+ * metrics also records usageMetadata reports (numbers only).
  * context.restart === true marks an app-initiated restart of an operation the
  * person started earlier: capture then accepts sticky user activation.
  */
@@ -112,10 +152,10 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   const notify = () => { const value = snapshot(); for (const fn of [...listeners]) attempt(() => fn(value)); };
   state.subscribe(notify);
   const alive = op => active === op && !op.controller.signal.aborted;
-  // keepPlayer: a key swap lets already-received audio finish and keeps the
-  // held input for the next session; every other path drops both.
+  // keepPlayer: a key swap or a handover lets already-received audio finish
+  // and keeps the held input for the next session; every other path drops both.
   function silence(op, { keepPlayer = false } = {}) {
-    if (op.connection) op.connection.enabled = false;
+    if (op.connection) { op.connection.enabled = false; unwatch(op.connection); }
     op.uplink?.cancel();
     if (!keepPlayer) { op.player?.cancel(); op.held = null; }
     store?.interrupt();
@@ -162,13 +202,24 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   }
   function fault(op, c, error, goAway = false) {
     if (!alive(op) || op.connection !== c || !c.enabled) return;
-    c.enabled = false;
+    c.enabled = false; unwatch(c);
     const failure = normalizeFailure(error);
     // A quota close may be answered by a key swap: keep the player and start
     // holding input now, before the swap is decided, so nothing is lost while
     // the old socket closes. goAway and transport faults keep design-p2 §9.
     const keySwap = swappable(op, failure, goAway);
     metrics.resetInput(); metrics.observe('reconnects');
+    // A setup that carried a resumption handle and was refused before ready
+    // (review, 2026-09-30): the handle is the likely cause (expired, or not
+    // taken by this model), yet its close reads as a transport failure, which
+    // would reach the model fallback. The same model is asked once more at
+    // once, without a handle. What the step before kept (a handover's player
+    // and held input) stays, and nothing was open on this connection to mark.
+    if (!keySwap && !goAway && c.resumed && c.readyAt === null && !noReplacement.has(failure.code)) {
+      state.transition('reconnecting', op.generation);
+      c.fault.resolve({ error: failure, fresh: true });
+      return;
+    }
     // Input this session never sent — the rest of a backlog still catching up
     // from an earlier swap, or ordinary frames — is held too, ahead of what
     // arrives next (review, 2026-09-30: consecutive swaps lost it).
@@ -183,19 +234,106 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     state.transition('reconnecting', op.generation);
     c.fault.resolve({ error: failure, goAway });
   }
+  function unwatch(c) {
+    clearTimeout(c.quietTimer); clearTimeout(c.deadlineTimer); clearTimeout(c.graceTimer);
+    c.quietTimer = c.deadlineTimer = c.graceTimer = undefined;
+  }
+  // goAway: retire a connection that ran long enough, or take today's path.
+  function retire(op, c, timeLeftMs) {
+    if (c.retiring) return;
+    if (c.readyAt === null || now() - c.readyAt < MIN_HANDOVER_AGE_MS) {
+      fault(op, c, new ProviderError('SESSION_CLOSED'), true); return;
+    }
+    c.retiring = true;
+    quiet(op, c);
+    const left = Number.isFinite(timeLeftMs) ? timeLeftMs : 0;
+    c.deadlineTimer = setTimeout(() => handover(op, c), Math.min(2147483647, Math.max(0, left - HANDOVER_MARGIN_MS)));
+  }
+  // Counted from max(goAway, the last audio or caption of the connection).
+  function quiet(op, c) {
+    clearTimeout(c.quietTimer);
+    c.quietTimer = setTimeout(() => handover(op, c), QUIET_MS);
+  }
+  // Audio or a caption from c: a model turn is open until complete/interrupted.
+  function heard(op, c) {
+    c.turnOpen = true;
+    if (c.retiring) {
+      // A new turn began while a boundary waited for a handle: its own
+      // boundary (or the quiet interval, or the deadline) decides now.
+      clearTimeout(c.graceTimer); c.graceTimer = undefined;
+      quiet(op, c);
+    }
+  }
+  // A turn boundary on a retiring connection: hand over, or first wait
+  // HANDLE_GRACE_MS at most for the handle that follows this turn.
+  function boundary(op, c) {
+    if (!c.handleStale) { handover(op, c); return; }
+    if (c.graceTimer === undefined) c.graceTimer = setTimeout(() => handover(op, c), HANDLE_GRACE_MS);
+  }
+  // The key swap's bridge, for a planned handover: the old connection is done,
+  // the player keeps what it has, and input is held for the next connection,
+  // starting with the pre-roll already sent to this one.
+  function handover(op, c, error = null) {
+    if (!alive(op) || op.connection !== c || !c.enabled) return;
+    c.enabled = false; unwatch(c);
+    metrics.resetInput();
+    op.held = [...c.sent, ...(op.uplink?.takeUnsent() ?? [])];
+    op.uplink?.cancel();
+    const over = op.held.length - UPLINK_LIMITS.backlogFrames;
+    if (over > 0) { op.held.splice(0, over); store.markGap('input'); }
+    op.reconnectReason = 'handover';
+    // Only a model turn left open (the deadline, or the socket dropping) loses
+    // anything; at a clean boundary every caption is already final.
+    op.cleanHandover = !c.turnOpen;
+    if (c.turnOpen) { store.interrupt(); store.markGap('reception'); }
+    state.transition('reconnecting', op.generation);
+    c.fault.resolve({ error: error ?? new ProviderError('SESSION_CLOSED'), handover: true });
+  }
+  // A retiring connection that closes or fails is handed over, unless the code
+  // is one that never gets a replacement (quota, key, policy, safety): those
+  // keep their own path, which for a quota close may still be a key swap.
+  function lost(op, c, error) {
+    const failure = normalizeFailure(error);
+    if (c.retiring && !noReplacement.has(failure.code)) handover(op, c, failure);
+    else fault(op, c, failure);
+  }
+  // Only instruction-driven connections ask for handles. null means "not
+  // resumable right now": it keeps the last good handle but marks it stale.
+  function remember(op, c, handle) {
+    if (!c.flash) return;
+    if (!isResumeHandle(handle)) { c.handleStale = true; return; }
+    op.resume = { handle, model: c.model };
+    c.handleStale = false;
+    // The fresh handle a turn boundary was waiting for.
+    if (c.graceTimer !== undefined) handover(op, c);
+  }
+  function usage(ev) {
+    metrics.observe('usageReports');
+    if (ev.promptTokens !== undefined) {
+      metrics.observe('promptTokensLast', ev.promptTokens); metrics.observe('promptTokensMax', ev.promptTokens);
+    }
+    if (ev.totalTokens !== undefined) metrics.observe('totalTokensSum', ev.totalTokens);
+  }
   function event(op, c, ev) {
-    if (!alive(op) || op.connection !== c || !c.enabled || ev.generation !== c.generation) return;
+    if (!alive(op) || op.connection !== c || ev.generation !== c.generation) return;
+    // Metadata still counts while this connection is being closed: the usage
+    // report may ride on the very turnComplete that started a handover. The
+    // next connection has not opened yet, so a handle here is still the newest.
+    if (ev.type === 'usage') { usage(ev); return; }
+    if (ev.type === 'resumption') { remember(op, c, ev.handle); return; }
+    if (!c.enabled) return;
     try {
-      if (ev.type === 'error' || ev.type === 'closed' || ev.type === 'goAway') {
-        fault(op, c, ev.error ?? new ProviderError('SESSION_CLOSED'), ev.type === 'goAway'); return;
-      }
+      if (ev.type === 'goAway') { retire(op, c, ev.timeLeftMs); return; }
+      if (ev.type === 'error' || ev.type === 'closed') { lost(op, c, ev.error ?? new ProviderError('SESSION_CLOSED')); return; }
       if (ev.type === 'audio') {
+        heard(op, c);
         op.recovery.activity(); metrics.mark('firstAudioReceivedMs'); metrics.audioReceived();
         if (c.skipping) { metrics.observe('droppedAudioMs', audioMs(ev.audio)); return; }
         if (op.player?.enqueue(ev.audio)) metrics.mark('firstAudioScheduledMs');
         if (op.player) metrics.queue(op.player.snapshot().queuedSeconds * 1000);
         notify();
       } else if (ev.type === 'subtitle') {
+        heard(op, c);
         op.recovery.activity();
         const at = now();
         const translation = ev.role === 'translation';
@@ -225,9 +363,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
           gapBefore: c.gapRoles.has(ev.role) });
         c.gapRoles.delete(ev.role);
         if (reply) notify();
-      } else if (ev.type === 'complete') { c.skipping = false; op.player?.turnComplete(); }
-      else if (ev.type === 'interrupted') { c.skipping = false; store.interrupt(); op.player?.interrupt(); }
-    } catch { fault(op, c, new ProviderError('INVALID_RESULT')); }
+      } else if (ev.type === 'complete') {
+        c.skipping = false; c.turnOpen = false; op.player?.turnComplete();
+        if (c.retiring) boundary(op, c);
+      } else if (ev.type === 'interrupted') {
+        c.skipping = false; c.turnOpen = false; store.interrupt(); op.player?.interrupt();
+        if (c.retiring) boundary(op, c);
+      }
+    } catch { lost(op, c, new ProviderError('INVALID_RESULT')); }
   }
   async function run(op, request, route) {
     let failure;
@@ -236,29 +379,42 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       assertActive(op.controller.signal);
       state.transition('connecting', op.generation);
       for (;;) {
-        const c = { enabled: true, fault: deferred(), skipping: false,
+        const c = { enabled: true, fault: deferred(), skipping: false, model: request.model,
           flash: liveRoute(request.model) === 'flash',
-          gapRoles: new Set(op.recovery.budget.used ? ['source', 'translation'] : []) };
+          // A clean handover left nothing open, so the next captions follow on without a gap mark.
+          gapRoles: new Set(op.recovery.budget.used && !op.cleanHandover ? ['source', 'translation'] : []),
+          retiring: false, readyAt: null, turnOpen: false, sent: [], handleStale: false,
+          quietTimer: undefined, deadlineTimer: undefined, graceTimer: undefined };
+        op.cleanHandover = false;
         op.connection = c;
         if (!op.player) makePlayer(op);
+        // Resume the same conversation only on the same credential and model.
+        const resumeHandle = c.flash && op.resume?.model === request.model ? op.resume.handle : null;
+        c.resumed = resumeHandle !== null;
+        const call = c.resumed ? { ...request, resumeHandle } : request;
         let outcome;
         try {
           op.lease = await sessionManager.replace(ctx => {
             op.ownsSession = true;
             c.generation = ctx.generation;
             store.setGeneration(ctx.generation);
-            return router.call('live', request, { ...ctx, ...route, transport: 'direct', budget: op.recovery.budget });
+            return router.call('live', call, { ...ctx, ...route, transport: 'direct', budget: op.recovery.budget });
           }, { signal: op.controller.signal, sessionId: op.sessionId, turnId: op.turnId,
             onEvent: ev => event(op, c, ev) });
           assertActive(op.controller.signal);
           if (c.enabled) {
             op.recovery.opened(); op.model = sanitizeLiveModel(request.model); metrics.mark('setupMs');
-            // Input held across a key swap goes out first (uplink-queue backlog).
+            c.readyAt = now();
+            // Input held across a key swap or a handover goes out first (uplink-queue backlog).
             op.uplink = createUplinkQueue({ clock, backlog: op.held ?? undefined,
               // The transport's buffered byte count paces the held input.
-              sendAudio: async pcm => { const buffered = await op.lease.sendAudio(pcm); metrics.observe('sentFrames'); return buffered; },
+              sendAudio: async pcm => {
+                // The last PREROLL_FRAMES frames handed to this connection, for a handover.
+                c.sent.push(pcm); if (c.sent.length > PREROLL_FRAMES) c.sent.shift();
+                const buffered = await op.lease.sendAudio(pcm); metrics.observe('sentFrames'); return buffered;
+              },
               onDrop: () => { if (alive(op)) store.markGap('input'); },
-              onError: err => fault(op, c, err) });
+              onError: err => lost(op, c, err) });
             op.held = null;
             op.uplink.setReady(true);
             op.reconnectReason = null;
@@ -269,19 +425,48 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         } catch (raw) {
           outcome = { error: normalizeFailure(raw) };
           // An event carries the original remote error, before cleanup aborts.
+          // A rejection that came first faults here; either way the fault's
+          // own outcome is read, since it may mark a refused resumed setup.
+          if (c.enabled) fault(op, c, outcome.error);
           if (!c.enabled) outcome = await c.fault.promise;
-          else fault(op, c, outcome.error);
         }
         const swapping = op.reconnectReason === 'key';
-        silence(op, { keepPlayer: swapping });
-        if (!swapping) op.player = null;
+        const handingOver = outcome.handover === true;
+        const fresh = outcome.fresh === true;
+        // A resumed setup that failed before ready: the next attempt starts fresh.
+        if (c.resumed && c.readyAt === null) op.resume = null;
+        silence(op, { keepPlayer: swapping || handingOver || fresh });
+        if (!swapping && !handingOver && !fresh) op.player = null;
         // finishInput only ends input. Only close certifies lease shutdown.
         if (op.ownsSession) { await (op.lease ? op.lease.close() : sessionManager.close()); op.ownsSession = false; }
         op.lease = null;
         assertActive(op.controller.signal);
         // Credential/routing rejection can precede the router's first charge.
         if (!op.recovery.budget.used) throw outcome.error;
+        if (fresh) {
+          // Same request and model, at once and free of the budget. Bounded:
+          // op.resume is gone, so this attempt carries no handle and never
+          // comes back here; a handle only comes from a connection that was ready.
+          op.recovery.reopenFree();
+          // The next connection marks the gaps the refused one would have.
+          op.cleanHandover = c.gapRoles.size === 0;
+          notify();
+          continue;
+        }
+        if (handingOver) {
+          // Same request, model, capture, player and caption store; no backoff
+          // and no replacement budget (the connection's age bounds these).
+          op.recovery.handedOver();
+          metrics.observe('handovers');
+          // New audio queues behind whatever the old connection left playing.
+          op.player?.turnComplete();
+          notify();
+          continue;
+        }
         if (swapping) {
+          // Another key may belong to another Google project, which cannot
+          // resume this one's session.
+          op.resume = null;
           if (await swapKey(op, outcome.error)) {
             assertActive(op.controller.signal);
             op.recovery.keySwapped();
@@ -304,6 +489,8 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         // Registered fallback only: the translation-only model stays first and a
         // flash model replaces it solely after it failed. Surface the switch.
         op.model = sanitizeLiveModel(request.model);
+        // A handle belongs to the model that issued it.
+        if (op.resume && op.resume.model !== request.model) op.resume = null;
         if (op.model !== op.requestedModel) op.fallback = true;
         notify();
       }
@@ -343,7 +530,9 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       sessionId: context.sessionId, turnId: context.turnId ?? context.sessionId,
       muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {},
       targetLanguage: request.targetLanguage, sourceLanguage: request.sourceLanguage ?? null,
-      languages: pair, fallback: false, keySwaps: 0, reconnectReason: null, held: null };
+      languages: pair, fallback: false, keySwaps: 0, reconnectReason: null, held: null,
+      // Memory only: the newest resumable handle and the model that issued it.
+      resume: null, cleanHandover: false };
     metrics = createListenMetrics({ now });
     // A corrupted stored selection never reaches the router: fall back to the
     // translation-only default rather than failing or steering to flash.

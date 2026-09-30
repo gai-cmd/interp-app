@@ -22,6 +22,9 @@ const IDLE_REPORT_RETRY_MS = 500;
 const PANEL_ROWS = 4;
 // Phases in which a lane has (or is giving up) a session: their end is an event the overlay has to hear about.
 const LIVE_OR_STOPPING = Object.freeze([...ACTIVE_PHASES, 'stopping']);
+// Only a lost connection is announced on the page (2026-09-30). A key swap or the planned ~10-minute handover
+// (LaneState.reconnectReason) reconnects while interpreting goes on; "connection lost" there would be untrue.
+const alarming = (state) => state.phase === 'reconnecting' && state.reconnectReason === null;
 
 /** The realm's own clock (hubs, coalescers, grace timers). Arrow wrappers: a native timer is never called with a foreign `this`. */
 export function createRealmClock(scope = globalThis) {
@@ -214,8 +217,9 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
 
   function onTransition(lane, previous, state) {
     if (state.phase === 'starting') overlayOutcome[lane] = 'unknown';
-    if (state.phase === 'reconnecting') sendStatus(lane, 'reconnecting');
-    else if (state.phase === 'running' && previous.phase === 'reconnecting') sendStatus(lane, 'running');
+    if (alarming(state) && !alarming(previous)) sendStatus(lane, 'reconnecting');
+    // Back, or the reconnect became a calm one: the page's reconnecting row goes.
+    else if (alarming(previous) && !alarming(state) && ['running', 'reconnecting'].includes(state.phase)) sendStatus(lane, 'running');
     if ((state.phase === 'off' || state.phase === 'error') && LIVE_OR_STOPPING.includes(previous.phase)) laneEnded(lane, state);
   }
 
@@ -225,7 +229,8 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
     const state = laneState(lane);
     lastState[lane] = state;
     const moved = previous.phase !== state.phase;
-    if (moved) onTransition(lane, previous, state);
+    // A calm reconnect that turns into a lost connection (or back) keeps the phase but changes what the page is told.
+    if (moved || previous.reconnectReason !== state.reconnectReason) onTransition(lane, previous, state);
     pushState();
     pushCaptions(lane);
     if (moved || reason === 'phase') coalescer.flush();
@@ -270,7 +275,7 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
     const target = routeTab('mic');
     if (target !== null && overlayHub.has(target)) {
       sendCaptionsTo(target, 'mic');
-      if (lastState.mic.phase === 'reconnecting') sendStatus('mic', 'reconnecting', target);
+      if (alarming(lastState.mic)) sendStatus('mic', 'reconnecting', target);
     }
     onLaneChange('mic', 'data');
   }
@@ -291,7 +296,7 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
       for (const lane of LANES) {
         if (routeTab(lane) !== tabId) continue;
         sendCaptionsTo(tabId, lane);
-        if (lastState[lane].phase === 'reconnecting') sendStatus(lane, 'reconnecting', tabId);
+        if (alarming(lastState[lane])) sendStatus(lane, 'reconnecting', tabId);
       }
       refresh();
     },

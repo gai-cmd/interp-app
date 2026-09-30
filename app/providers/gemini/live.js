@@ -8,11 +8,13 @@
  * Changes: Injected browser Live client, bounded PCM, independent assemblers;
  * no Node/Electron, audio discard, credentials, buffering, retries or rotation.
  */
-import { ProviderError, assertActive, normalizeError } from '../contract.js';
+import { ProviderError, assertActive, isResumeHandle, normalizeError } from '../contract.js';
 import { SegmentAssembler } from '../../engine/segment-assembler.js';
 import { buildLiveSetup, SIM_LIMITS } from './live-config.js';
 
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const count = (v) => Number.isSafeInteger(v) && v >= 0;
+const USAGE_FIELDS = Object.freeze(['promptTokens', 'responseTokens', 'totalTokens', 'cachedTokens']);
 const invalid = () => { throw new ProviderError('INVALID_RESULT'); };
 function decodeAudio(inline) {
   if (!object(inline)) invalid();
@@ -58,6 +60,12 @@ function validateContent(content) {
  * resolves with the bytes still in the socket's send buffer (a number only).
  * finishInput ends input once, keeps receiving, and never locally completes a turn.
  * closed is the transport's physical-closure promise, not a cleanup deadline.
+ * request.resumeHandle (optional) asks the instruction-driven setup to resume
+ * an earlier session of the same operation; the translation route ignores it.
+ * goAway is advisory (2026-09-30): it is forwarded and the session keeps
+ * sending and receiving until the engine closes it. resumption {handle} and
+ * usage {...} are forwarded as validated numbers/handles; malformed ones are
+ * dropped without ending the session.
  */
 export function createGeminiLive({ live, clock } = {}) {
   if (typeof live?.open !== 'function') throw new ProviderError('INVALID_REQUEST');
@@ -124,9 +132,18 @@ export function createGeminiLive({ live, clock } = {}) {
         if (event.type === 'error') { fail(event.error); return; }
         if (event.type === 'goAway') {
           if (!Number.isFinite(event.timeLeftMs) || event.timeLeftMs < 0) invalid();
-          inputEnded = true;
+          // Advisory only: input and output continue; the engine decides when
+          // to hand over and closes this session itself.
           emit({ type: 'goAway', timeLeftMs: event.timeLeftMs });
-          close();
+          return;
+        }
+        if (event.type === 'resumption') {
+          if (event.handle === null || isResumeHandle(event.handle)) emit({ type: 'resumption', handle: event.handle });
+          return;
+        }
+        if (event.type === 'usage') {
+          const report = Object.fromEntries(USAGE_FIELDS.filter((key) => event[key] !== undefined).map((key) => [key, event[key]]));
+          if (Object.keys(report).length && Object.values(report).every(count)) emit({ type: 'usage', ...report });
           return;
         }
         if (event.type !== 'content') return;

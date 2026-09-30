@@ -7,8 +7,14 @@ export const STREAM_EVENT_FIELDS = Object.freeze(Object.fromEntries(Object.entri
   audio: ['audio', 'sampleRate'], transcript: ['text', 'final'],
   subtitle: ['sourceText', 'translatedText', 'final', 'revision', 'segmentId', 'seq', 'role'],
   goAway: ['timeLeftMs'],
+  // 2026-09-30: session resumption and token accounting (live only).
+  resumption: ['handle'], usage: ['promptTokens', 'responseTokens', 'totalTokens', 'cachedTokens'],
   interrupted: [], complete: [], error: ['error'], closed: [],
 }).map(([type, fields]) => [type, Object.freeze(fields)])));
+// An opaque provider resumption handle: printable ASCII, 1..4096 characters.
+// It is a credential-like token for one conversation, so it is only ever held
+// in memory and sent back to the provider in a setup, never stored or shown.
+export const isResumeHandle = (value) => typeof value === 'string' && /^[\x20-\x7e]{1,4096}$/.test(value);
 export const ERROR_CODES = Object.freeze([
   'INVALID_PROVIDER', 'DUPLICATE_PROVIDER', 'UNKNOWN_PROVIDER', 'INVALID_REQUEST',
   'CAPABILITY_UNSUPPORTED', 'CAPABILITY_UNIMPLEMENTED', 'INPUT_UNSUPPORTED',
@@ -158,6 +164,12 @@ export function defineProvider(definition, adapter = {}) {
  * Adapters own field validation and segment identity/order, not the router.
  * goAway { timeLeftMs: nonnegative finite number } is an advisory event, not
  * terminal: the engine owns stopping input, confirmed close, and recovery budget.
+ * 2026-09-30: after goAway a live session stays fully usable (input and
+ * output) until the engine closes it or the provider's deadline passes.
+ * resumption { handle: isResumeHandle string | null } carries the newest
+ * resumable point (null: not resumable now); usage { promptTokens?,
+ * responseTokens?, totalTokens?, cachedTokens? } carries nonnegative safe
+ * integers only. A live request may name resumeHandle (live only).
  * Routing IDs are snapshotted from context and override all adapter event IDs.
  * Consumer close/abort/cancel suppress events immediately, including 'closed'.
  * LiveSession: sendAudio(pcm), finishInput(), close() -> Promise<void>.

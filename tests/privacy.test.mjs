@@ -18,7 +18,7 @@ import { UI_LANGUAGE_STORAGE_KEY } from '../app/main.js';
 import { collectVersionedFiles, stageRelease } from '../scripts/stage-release.mjs';
 import { SECRET_EXEMPT_FILES, SECRET_PATTERNS, checkCsp, checkRelease, classifyPath, entryReferences, isSecretExempt, parseHeaders } from '../scripts/check-release.mjs';
 import {
-  SECRET_MARK, boot, byClass, captureConsole, domText, leaks, live, rest, secrets, sharedFragment, until,
+  SECRET_MARK, boot, byClass, captureConsole, domText, leaks, live, rest, secrets, sharedFragment, tick, until,
 } from './fixtures/scenarios.mjs';
 
 // P1-20 privacy regression (design-v0.6 §11, §17.4): where a key may exist
@@ -599,6 +599,48 @@ test('built-in key pool: a 429 on the site key continues on the spare key in the
   const record = JSON.parse(b.storage.get('interp-app.builtin-cooldown.v1'));
   assert.equal(Object.keys(record).length, 2);
   assert.ok(Object.keys(record).every((print) => /^[0-9a-f]{8}$/.test(print)));
+});
+
+// 2026-09-30 session resumption: the provider's handle resumes a conversation,
+// so it is treated like a secret. It lives in the engine's memory and goes
+// back to the provider in the next setup — and nowhere else.
+test('session resumption: the handle reaches the next setup and never the DOM, state, snapshots, metrics, diagnostics, storage or logs', async t => {
+  const captured = captureConsole(); t.after(captured.restore);
+  const b = await boot();
+  t.after(() => b.close());
+  b.enterPersonalKey();
+  const handle = `${SECRET_MARK}-resume-handle-0123456789`;
+  const sim = () => b.app.listenEngines.direct.snapshot();
+  b.el('sim-start').dispatch('click');
+  await until(() => b.audio.nodes.at(-1)?.port.onmessage);
+  b.microphone.feed(new Float32Array(4096).fill(0.1));
+  await until(() => b.sockets.length === 1);
+  live.ready(b.sockets[0]);
+  await until(() => sim().status === 'running');
+  assert.deepEqual(b.sockets[0].sent[0].setup.sessionResumption, {});
+  b.sockets[0].json({ sessionResumptionUpdate: { newHandle: handle, resumable: true } });
+  b.sockets[0].json({ serverContent: { turnComplete: true }, usageMetadata: { promptTokenCount: 4200, totalTokenCount: 4300 } });
+  await until(() => sim().metrics.usageReports === 1);
+  // A dropped connection is replaced on the same key and model: it resumes.
+  b.sockets[0].finishClose(1000);
+  await until(() => sim().status === 'reconnecting');
+  for (let i = 0; i < 20 && b.sockets.length === 1; i++) {
+    b.microphone.feed(new Float32Array(4096).fill(0.1));
+    b.clock.advance(100); await tick();
+  }
+  await until(() => b.sockets.length === 2);
+  live.ready(b.sockets[1]);
+  await until(() => sim().status === 'running');
+  assert.deepEqual(b.sockets[1].sent[0].setup.sessionResumption, { handle }, 'the handle was kept and used');
+  assert.deepEqual([sim().metrics.promptTokensLast, sim().metrics.totalTokensSum], [4200, 4300]);
+  // Everything observable except the provider-bound setup frames.
+  const { socketFrames, ...rest } = observable(b);
+  assert.equal(leaks(socketFrames), true, 'the check itself can see the handle where it belongs');
+  assert.equal(leaks({ ...rest, sim: sim(), metrics: sim().metrics, usage: b.app.usage.snapshot(), logs: captured.calls }), false);
+  assert.equal(leaks([...b.storage]), false, 'never stored');
+  assert.equal(b.text().includes(handle), false, 'never rendered');
+  await b.app.stopWork();
+  assert.equal(leaks({ ...observable(b), socketFrames: null, sim: sim() }), false, 'nor after the operation ended');
 });
 
 test('P3-44 first visit starts Live from the UI with a protected site default and no persistence permission', async t => {

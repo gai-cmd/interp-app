@@ -143,15 +143,23 @@ test('remote close before setup rejects, abnormal ready close terminates without
   assert.equal(JSON.stringify(h.events).includes('SECRET'), false);
 });
 
-test('goAway retires sends, keeps current output, and closes at the advertised deadline without reconnecting', async () => {
+// 2026-09-30 (owner approval, goAway handover): this pinned "goAway retires
+// sends" (send threw SESSION_CLOSED right after goAway). The spec reverses it:
+// a retiring socket keeps taking input until the engine closes it at a turn
+// boundary, so the send now goes through and is refused only after the backstop.
+test('goAway keeps sends and output working, and closes at the advertised deadline without reconnecting', async () => {
   const h = harness(); const { session, ws } = await ready(h);
   ws.json({ goAway: { timeLeft: '2.5s', secret: 'SECRET' } });
   ws.json({ goAway: { timeLeft: '50s' } });
-  assert.throws(() => session.send({ clientContent: {} }), code('SESSION_CLOSED'));
+  session.send({ clientContent: {} });
+  assert.deepEqual(ws.sent.at(-1), { clientContent: {} });
   ws.json({ serverContent: { turnComplete: true } });
   assert.equal(h.events.at(-1).type, 'content');
   h.clock.advance(2499); assert.equal(ws.closeCalls, 0);
+  session.send({ clientContent: {} });
   h.clock.advance(1); await session.closed;
+  assert.throws(() => session.send({ clientContent: {} }), code('SESSION_CLOSED'));
+  assert.equal(h.events.find((e) => e.type === 'error').error.code, 'UNAVAILABLE');
   assert.equal(h.events.filter((e) => e.type === 'goAway').length, 1);
   assert.equal(h.events.find((e) => e.type === 'goAway').timeLeftMs, 2500);
   assert.equal(h.sockets.length, 1); assert.equal(h.clock.size, 0);

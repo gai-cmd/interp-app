@@ -9,11 +9,18 @@ export const METRIC_NAMES = Object.freeze([
   'queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs', 'droppedAudioMs',
   'ttsFirstRequestMs', 'ttsFirstStartMs', 'ttsWaitMs', 'skippedSentences', 'speechFailures', 'repliesSkipped',
   // 2026-09-30: sessions continued on a spare site key after a quota close.
-  'keySwaps'
+  'keySwaps',
+  // 2026-09-30: planned goAway handovers (never also counted as reconnects),
+  // and the provider's usageMetadata. Whether one report covers a turn or the
+  // session so far is not documented, so these are the reported numbers as
+  // they came: how many reports, the last and largest prompt size, and the
+  // sum of reported totals (an over-count if reports turn out cumulative).
+  'handovers', 'usageReports', 'promptTokensLast', 'promptTokensMax', 'totalTokensSum'
 ]);
 const counters = new Set(['reconnects', 'closeFailures', 'sentFrames', 'droppedInputMs', 'revisions',
   'duplicates', 'interrupted', 'possibleGaps', 'droppedAudioMs', 'skippedSentences', 'speechFailures', 'repliesSkipped',
-  'keySwaps']);
+  'keySwaps', 'handovers', 'usageReports', 'totalTokensSum']);
+const maxima = new Set(['inputQueueMax', 'promptTokensMax']);
 const signed = new Set(['speechEndToFirstAudioMs']);
 const firsts = new Set(['setupMs', 'firstPartialMs', 'firstFinalMs', 'firstAudioReceivedMs',
   'firstAudioScheduledMs', 'ttsFirstRequestMs', 'ttsFirstStartMs']);
@@ -86,7 +93,7 @@ export function createListenMetrics({ now = () => performance.now(), maxSamples 
       if (stopped || !METRIC_NAMES.includes(name) || firsts.has(name) || !(number(value) || (signed.has(name) && Number.isFinite(value)))
         || ['queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs'].includes(name)) return false;
       values[name] = bounded(counters.has(name) ? values[name] + value
-        : name === 'inputQueueMax' ? Math.max(values[name] ?? 0, value) : value);
+        : maxima.has(name) ? Math.max(values[name] ?? 0, value) : value);
       notify(); return true;
     },
     queue(value) {

@@ -11,14 +11,33 @@ const fallbackable = new Set(['MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'UNAV
  * Router alone consumes budget. After physical close, wait() authorizes one open.
  * opened() means setup/hello completed; activity() starts the stable interval.
  * Use the operation signal, never the old lease's aborted cleanup signal.
- * keySwapped() (2026-09-30) authorizes one open at once, after physical close,
- * because a spare site key took over from one whose quota was spent: no
- * backoff and no charge — the key pool bounds these opens, not this budget.
+ * reopenFree() (2026-09-30) authorizes one open at once, after physical close:
+ * no backoff and no charge. Its callers bound these opens, not this budget:
+ * keySwapped() (a spare site key took over from one whose quota was spent;
+ * the key pool bounds it) is the same permission under its caller's name, and
+ * so is the engine's retry of a refused resumed setup (once per handle).
+ * handedOver() (a planned goAway handover of a connection that ran for at
+ * least a minute; its age bounds it) first settles the stable window exactly
+ * as wait() does (review, 2026-09-30): a goAway used to pass through wait(),
+ * which renewed the budget and the retry count after 60 s of stable
+ * connection, and a failure soon after a handover must still find them renewed.
  */
 export function createLiveRecovery({ now = () => performance.now(), ...timing } = {}) {
   const policy = createLiveRetryPolicy({ now, ...timing });
   let attempts = createBudget({ limit: 4 });
   let stableSince = null, address, permitted = true, busy = false, swapped = false;
+  function reopenFree() {
+    if (busy || permitted || !attempts.used) throw new ProviderError('INVALID_REQUEST');
+    permitted = true; swapped = true; stableSince = null;
+  }
+  // The stable connection is the initial connection of the renewed window.
+  function settle() {
+    if (stableSince !== null && now() - stableSince >= 60000) {
+      attempts = createBudget({ limit: 4 });
+      attempts.consume(address);
+    }
+    stableSince = null;
+  }
   const budget = Object.freeze({
     get used() { return attempts.used; },
     get remaining() { return attempts.remaining; },
@@ -47,9 +66,10 @@ export function createLiveRecovery({ now = () => performance.now(), ...timing } 
       attempts = createBudget({ limit: 4 });
       address = undefined; permitted = true; swapped = false; stableSince = null; policy.restart();
     },
-    keySwapped() {
+    reopenFree, keySwapped: reopenFree,
+    handedOver() {
       if (busy || permitted || !attempts.used) throw new ProviderError('INVALID_REQUEST');
-      permitted = true; swapped = true; stableSince = null;
+      settle(); policy.settle(); reopenFree();
     },
     async wait(raw, { signal, closed = false, goAway = false, request, resolveFallback } = {}) {
       assertActive(signal);
@@ -62,12 +82,7 @@ export function createLiveRecovery({ now = () => performance.now(), ...timing } 
         const replacement = !goAway && fallbackable.has(error.code)
           ? resolveFallback?.(error, request) : null;
         if (!goAway && !replacement && !retryable.has(error.code)) throw error;
-        if (stableSince !== null && now() - stableSince >= 60000) {
-          attempts = createBudget({ limit: 4 });
-          // The stable connection is the initial connection of the renewed window.
-          attempts.consume(address);
-        }
-        stableSince = null;
+        settle();
         if (!attempts.remaining) throw new ProviderError('BUDGET_EXHAUSTED');
         // Reuse existing jitter, server wait, cancellation and retry counter.
         const scheduling = new ProviderError(goAway || replacement || error.code === 'SESSION_CLOSED'

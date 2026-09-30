@@ -1138,6 +1138,59 @@ test('overlay: a lane that goes reconnecting says so, and running when it is bac
   assert.deepEqual(overlay.last('status'), { v: 1, type: 'status', lane: 'tab', phase: 'running' });
 });
 
+test('overlay (2026-09-30): the planned ~10-minute handover is never "connection lost" on the page; a real loss after it still is', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const tab = await up(rigH, 'tab');
+  const overlay = rigH.openOverlay(5);
+  await rigH.settle();
+  await rigH.keepAlive([tab], 61000);   // a free handover needs a connection at least a minute old
+  const sockets = rigH.sockets.sockets.length;
+  tab.socket.json({ goAway: { timeLeft: '50s' } });
+  await tick();
+  tab.socket.json({ serverContent: { turnComplete: true } });
+  for (let step = 0; step < 50 && rigH.sockets.sockets.length === sockets; step += 1) await tick();
+  assert.equal(rigH.sockets.sockets.length, sockets + 1, 'the handover opened the next connection');
+  await rigH.clock.advance(100);
+  const lane = panel.last('state').state.lanes.tab;
+  assert.deepEqual([lane.phase, lane.reconnectReason], ['reconnecting', 'handover']);
+  assert.equal(overlay.frames.some((frame) => frame.type === 'status'), false, 'nothing on the page while it hands over');
+  const replacement = rigH.sockets.sockets.at(-1);
+  replacement.open();
+  replacement.json({ setupComplete: {} });
+  await tick();
+  await rigH.clock.advance(100);
+  assert.deepEqual([panel.last('state').state.lanes.tab.phase, panel.last('state').state.lanes.tab.reconnectReason], ['running', null]);
+  assert.equal(overlay.frames.some((frame) => frame.type === 'status'), false, 'nor when it is back');
+  replacement.json({ error: { code: 503 } });   // UNAVAILABLE: a lost connection
+  for (let step = 0; step < 20 && !overlay.frames.some((frame) => frame.type === 'status'); step += 1) await tick();
+  assert.deepEqual(overlay.last('status'), { v: 1, type: 'status', lane: 'tab', phase: 'reconnecting' });
+});
+
+test('overlay (2026-09-30): a handover whose next setup fails becomes a lost connection while still reconnecting, and the page hears it', async () => {
+  const rigH = await createHostRig();
+  const panel = rigH.openPanel();
+  const tab = await up(rigH, 'tab');
+  const overlay = rigH.openOverlay(5);
+  await rigH.settle();
+  await rigH.keepAlive([tab], 61000);
+  const sockets = rigH.sockets.sockets.length;
+  tab.socket.json({ goAway: { timeLeft: '50s' } });
+  await tick();
+  tab.socket.json({ serverContent: { turnComplete: true } });
+  for (let step = 0; step < 50 && rigH.sockets.sockets.length === sockets; step += 1) await tick();
+  await rigH.clock.advance(100);
+  assert.equal(panel.last('state').state.lanes.tab.reconnectReason, 'handover');
+  assert.equal(overlay.frames.some((frame) => frame.type === 'status'), false);
+  const next = rigH.sockets.sockets.at(-1);
+  next.open();
+  next.finishClose(1011);   // refused before setupComplete: an ordinary failure, the budgeted path
+  for (let step = 0; step < 20 && !overlay.frames.some((frame) => frame.type === 'status'); step += 1) await tick();
+  await rigH.clock.advance(100);
+  assert.deepEqual([panel.last('state').state.lanes.tab.phase, panel.last('state').state.lanes.tab.reconnectReason], ['reconnecting', null]);
+  assert.deepEqual(overlay.last('status'), { v: 1, type: 'status', lane: 'tab', phase: 'reconnecting' });
+});
+
 test('overlay: a lane that ends in error sends status stopped, then clear, and bye only after statusLingerMs', async () => {
   const rigH = await createHostRig();
   const panel = rigH.openPanel();

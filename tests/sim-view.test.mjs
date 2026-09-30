@@ -967,3 +967,23 @@ test('language pair keeps source, swap and target order and key action follows i
   assert.equal(f.get('target').parentNode.hidden, false);
   f.view.destroy();
 });
+
+// 2026-09-30 goAway handover: the planned ~10-minute connection change reads
+// exactly like a key swap — a plain "reconnecting", no count, no failure —
+// and a connection that is only retiring still reads as running.
+test('a planned handover reads as a calm reconnecting, with no count and no failure', () => {
+  const f = setup();
+  f.get('start').dispatch('click');
+  f.direct.patch({ reconnectReason: null, retries: 2 });
+  assert.equal(f.get('status').textContent, dictionaries.en['sim.status.running'], 'retiring is invisible');
+  f.direct.state.transition('reconnecting'); f.direct.patch({ reconnectReason: 'handover' });
+  assert.equal(f.get('status').textContent, dictionaries.en['sim.status.reconnecting']);
+  assert.equal(f.get('status').getAttribute('data-reconnect'), 'handover');
+  assert.equal(f.get('notice').getAttribute('data-failure'), 'none');
+  f.direct.patch({ reconnectReason: null });
+  assert.equal(f.get('status').textContent, dictionaries.en['sim.status.replacing'].replace('{count}', '2'), 'a budgeted replacement still shows its count');
+  assert.equal(f.get('status').getAttribute('data-reconnect'), 'none');
+  f.direct.patch({ reconnectReason: 'key' });
+  assert.equal(f.get('status').getAttribute('data-reconnect'), 'key');
+  f.view.destroy();
+});

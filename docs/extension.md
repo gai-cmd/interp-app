@@ -766,6 +766,7 @@ messages, 4.2); hot settings (volume, mute, captions on/off) travel as storage e
   "phase": "off",                     // 'off'|'starting'|'running'|'reconnecting'|'stopping'|'error'
   "engineStatus": null,               // null | 'idle'|'preparing'|'connecting'|'running'|'reconnecting'|'stopping'|'stopped'|'failed'
   "retries": 0,                       // int 0..3 (automatic session replacements)
+  "reconnectReason": null,            // null | 'key'|'handover' (2026-09-30): only while phase is 'reconnecting'; a spare key or the planned ~10-min handover, not a lost connection
   "output": null,                     // null | 'muted'|'ready'|'blocked'|'delayed'|'catching-up'|'unavailable'
   "model": null,                      // null | string <= 64
   "route": null,                      // null | 'translation'|'flash'
@@ -795,7 +796,7 @@ Input: the frozen `engine.snapshot()` of `app/engine/sim.js` (`status`, `output`
 | `idle`, `stopped` (after a requested stop), none | `off` | `errorCode` cleared unless `hostError` is set |
 | `preparing`, `connecting` | `starting` | the host-level "acquiring the tab stream" step also reports `starting` (`engineStatus: null`) |
 | `running` | `running` | |
-| `reconnecting` | `reconnecting` | UI shows `ext.status.reconnecting` with `{count: retries}` (5.11; the web app's `sim.status.replacing` is engine jargon) |
+| `reconnecting` | `reconnecting` | UI shows `ext.status.reconnecting` with `{count: retries}` (5.11; the web app's `sim.status.replacing` is engine jargon). 2026-09-30: `reconnectReason` = `snapshot.reconnectReason` when it is `key` or `handover` (else null); the UI then shows the plain `sim.status.reconnecting`, no count |
 | `stopping` | `stopping` | |
 | `failed` | `error` | `errorCode = snapshot.errorCode`; `quota`/`keyFailure` computed from the code |
 | `stopped` while `stopRequested === false` | `error` with `errorCode:'BROWSER_INTERRUPTED'` | the sim engine reports a capture interruption (tab track ended, `mute`, hidden document, or the 2 s no-frames watchdog after frames had flowed) as a normal stop with no code; the host recognizes it because it did not ask for the stop |
@@ -1222,7 +1223,9 @@ Start/stop concurrency rules (review issue "no stop is honored while a start is 
   `host/overlay-result {ok:false}` naming this lane; else `unknown`.
 - `status` frames (4.5): the host sends `status {lane, phase:'reconnecting'}` to the ports the lane feeds when the lane phase
   becomes `reconnecting`, `status {lane, phase:'running'}` when it is back, and `status {lane, phase:'stopped'}` before the
-  `clear` of a lane that ended in error or without being asked to.
+  `clear` of a lane that ended in error or without being asked to. 2026-09-30: only a lost connection
+  (`reconnectReason: null`) is announced; a key swap or the planned handover sends no `status`, and a calm reconnect that
+  turns into a lost one while still reconnecting sends `reconnecting` then.
 - When a lane's captions setting turns off, or the lane ends, the host sends `clear {lane}` to the ports it was
   feeding; a port that no lane needs any more gets `bye` and is closed by the host (after `LIMITS.statusLingerMs` when
   the lane ended in error).
@@ -1339,6 +1342,7 @@ right for an extension, `ext.*` where a review found it wrong):
 | `phase:'starting'`, `engineStatus:'connecting'` | `sim.status.connecting` |
 | `phase:'running'` | `sim.status.running` |
 | `phase:'reconnecting'` | `ext.status.reconnecting` with `{count: retries}` ("connection lost, reconnecting (n/3), captions may pause": the web app's `sim.status.replacing` is engine jargon with no hint that it is automatic) |
+| `phase:'reconnecting'` with `reconnectReason` `key` or `handover` (2026-09-30) | `sim.status.reconnecting`, no count; the pill stays `running` with the same text unless another lane lost its connection |
 | `phase:'stopping'` | `sim.status.stopping` |
 | `phase:'error'`, code `TAB_ENDED` / `TAB_GONE` | `sim.status.stopped` (not an alarm) plus the notice below |
 | `phase:'error'`, any other code | `ext.status.failed` ("interpretation failed"; `sim.status.failed` says "Listening failed", a listen-mode word) plus the notice below |

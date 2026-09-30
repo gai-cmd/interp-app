@@ -4,8 +4,8 @@
 // (4.6.4): everything the panel may see is copied field by field with a bound, so no session id, generation,
 // metric, raw caption, discovered model, tab URL or key can appear in a state. No global is touched.
 import {
-  ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN, LANE_PHASES, MODEL_MAX_CHARS, OUTPUT_STATES, OVERLAY_STATES, ROUTES,
-  TARGET_LANGUAGES, deepFreeze, isMachineCode,
+  ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN, LANE_PHASES, MODEL_MAX_CHARS, OUTPUT_STATES, OVERLAY_STATES,
+  RECONNECT_REASONS, ROUTES, TARGET_LANGUAGES, deepFreeze, isMachineCode,
 } from './constants.js';
 import { LANES, PROTOCOL_VERSION, validateLaneState } from './protocol.js';
 
@@ -79,6 +79,8 @@ export function laneStateFromSnapshot({ lane, snapshot = null, facts = {}, level
     phase,
     engineStatus: status,
     retries: session ? clampInt(snap.retries, 0, 3) : 0,
+    // 2026-09-30: a key swap or the planned connection handover, while reconnecting only; null is a lost connection.
+    reconnectReason: phase === 'reconnecting' && RECONNECT_REASONS.includes(snap?.reconnectReason) ? snap.reconnectReason : null,
     output: live && OUTPUT_STATES.includes(snap?.output) ? snap.output : null,
     model: session && typeof snap.model === 'string' && snap.model !== '' ? snap.model.slice(0, MODEL_MAX_CHARS) : null,
     route: session && ROUTES.includes(snap.route) ? snap.route : null,

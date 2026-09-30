@@ -7,7 +7,7 @@
  * Changes: Browser events, ordered bounded decoding, abort/deadlines, confirmed
  * shutdown, safe errors; no ws/Buffer, logging, overlap, or hidden retries.
  */
-import { ProviderError, assertActive, normalizeError } from '../contract.js';
+import { ProviderError, assertActive, isResumeHandle, normalizeError } from '../contract.js';
 import { normalizeGeminiError, normalizeGeminiLiveClose } from './errors.js';
 
 // Local transport contract until P1-12/13 supply capability setup/registration.
@@ -16,13 +16,23 @@ export const LIVE_LIMITS = Object.freeze({ setupTimeoutMs: 10000, closeTimeoutMs
   decodeTimeoutMs: 10000, maxMessageBytes: 1048576, maxQueueBytes: 2097152,
   maxQueueMessages: 128, maxSendBytes: 1048576, maxAudioBufferedBytes: 12288 });
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const count = (value) => Number.isSafeInteger(value) && value >= 0;
+// usageMetadata field -> event field. Per-report semantics (one turn or the
+// running total) are not documented; the numbers are passed on as reported.
+const USAGE_FIELDS = Object.freeze([['promptTokenCount', 'promptTokens'], ['responseTokenCount', 'responseTokens'],
+  ['totalTokenCount', 'totalTokens'], ['cachedContentTokenCount', 'cachedTokens']]);
 
 /**
  * open({setup}, context) -> {send(message), close(), closed}.
  * Trusted capability adapters own setup/models, text turns and PCM conversion.
  * send accepts one clientContent or realtimeInput envelope, only after setup.
  * Events: ready, content {content: serverContent}, goAway {timeLeftMs},
- * error {error: ProviderError}, closed. Context IDs are attached to all events.
+ * resumption {handle: string | null}, usage {promptTokens?, responseTokens?,
+ * totalTokens?, cachedTokens?}, error {error: ProviderError}, closed.
+ * Context IDs are attached to all events.
+ * goAway (2026-09-30) is advisory: sends and output keep working until the
+ * consumer closes, and only the advertised deadline (timeLeft) stops the
+ * socket, with UNAVAILABLE. Malformed resumption/usage metadata is ignored.
  * No raw socket, authentication URL, close reason or provider error is exposed.
  * Route opens through createSessionManager; this is one transport attempt.
  * close() has a deadline; closed resolves ONLY on confirmed physical closure.
@@ -117,7 +127,9 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
     function abort() { stop(new ProviderError('ABORTED')); }
     const session = Object.freeze({ closed,
       send(message) {
-        if (!active() || !ready || retiring) throw new ProviderError('SESSION_CLOSED');
+        // A retiring socket still takes input (2026-09-30): the engine keeps
+        // speaking to it until a turn boundary, then hands over.
+        if (!active() || !ready) throw new ProviderError('SESSION_CLOSED');
         if (!object(message) || Object.keys(message).length !== 1
           || !['clientContent', 'realtimeInput'].some((key) => object(message[key]))) throw new ProviderError('INVALID_REQUEST');
         const text = encode(message);
@@ -151,25 +163,47 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
       if (Object.hasOwn(message, 'setupComplete')) {
         if (!object(message.setupComplete) || !setupSent) throw new ProviderError('INVALID_RESULT');
         if (!ready) { ready = true; clearTimeout(setupTimer); resolveOpen(session); emit({ type: 'ready' }); }
-        return;
-      }
-      if (message.goAway) {
+      } else if (message.goAway) {
         if (!ready) { stop(new ProviderError('UNAVAILABLE')); return; }
-        if (retiring) return;
-        retiring = true;
-        const duration = message.goAway.timeLeft;
-        const ms = typeof duration === 'string' && /^\d+(\.\d{1,9})?s$/.test(duration)
-          ? Number(duration.slice(0, -1)) * 1000 : setupTimeoutMs;
-        const timeLeftMs = Math.min(Number.isFinite(ms) ? ms : setupTimeoutMs, 2147483647);
-        goAwayTimer = setTimeout(() => stop(new ProviderError('UNAVAILABLE')), timeLeftMs);
-        emit({ type: 'goAway', timeLeftMs });
-        return;
-      }
-      if (message.serverContent) {
+        if (!retiring) {
+          retiring = true;
+          const duration = message.goAway.timeLeft;
+          const ms = typeof duration === 'string' && /^\d+(\.\d{1,9})?s$/.test(duration)
+            ? Number(duration.slice(0, -1)) * 1000 : setupTimeoutMs;
+          const timeLeftMs = Math.min(Number.isFinite(ms) ? ms : setupTimeoutMs, 2147483647);
+          // Backstop only: the provider ends the connection as ABORTED at this
+          // point anyway, so a consumer that has not handed over by then sees
+          // UNAVAILABLE rather than a socket that silently stops answering.
+          goAwayTimer = setTimeout(() => stop(new ProviderError('UNAVAILABLE')), timeLeftMs);
+          emit({ type: 'goAway', timeLeftMs });
+        }
+      } else if (message.serverContent) {
         if (!ready || !object(message.serverContent)) throw new ProviderError('INVALID_RESULT');
         emit({ type: 'content', content: message.serverContent });
+      } else if (Object.hasOwn(message, 'sessionResumptionUpdate') && ready && active()) {
+        resumption(message.sessionResumptionUpdate);
       }
-      // Usage/resumption metadata and unknown future control fields are ignored.
+      // usageMetadata may ride on any server message, after that message's own
+      // content. Unknown future control fields are ignored.
+      if (Object.hasOwn(message, 'usageMetadata') && ready && active()) usage(message.usageMetadata);
+    }
+    // A malformed update is ignored, never fatal: resumption is an optimisation.
+    // The handle is kept only while the provider says it is resumable.
+    function resumption(update) {
+      if (!object(update) || (update.resumable !== undefined && typeof update.resumable !== 'boolean')
+        || (update.newHandle !== undefined && typeof update.newHandle !== 'string')) return;
+      emit({ type: 'resumption',
+        handle: update.resumable === true && isResumeHandle(update.newHandle) ? update.newHandle : null });
+    }
+    function usage(metadata) {
+      if (!object(metadata)) return;
+      const report = {};
+      for (const [from, to] of USAGE_FIELDS) {
+        if (metadata[from] === undefined) continue;
+        if (!count(metadata[from])) return;
+        report[to] = metadata[from];
+      }
+      if (Object.keys(report).length) emit({ type: 'usage', ...report });
     }
     async function drain() {
       if (processing) return;

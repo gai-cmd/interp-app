@@ -1,4 +1,4 @@
-import { CAPABILITIES, STREAM_EVENT_FIELDS, ProviderError, assertActive, normalizeError } from './contract.js';
+import { CAPABILITIES, STREAM_EVENT_FIELDS, ProviderError, assertActive, isResumeHandle, normalizeError } from './contract.js';
 
 // Race cancellation without retaining AbortSignal.reason (it may contain secrets).
 // A late session is still closed even when its open promise ignored cancellation.
@@ -108,6 +108,10 @@ export function createRouter({ registry, getCredentialRef, hub, policy, usage = 
       if (pair !== undefined && !(Array.isArray(pair) && pair.length === 2 && pair.every((lang) => typeof lang === 'string'))) {
         throw new ProviderError('INVALID_REQUEST');
       }
+      // 2026-09-30 session resumption (live only): an opaque provider handle the engine got from an earlier
+      // connection of the same operation. Any other capability never sees it; null means "none".
+      const resumeHandle = capability === 'live' && request.resumeHandle !== null ? request.resumeHandle : undefined;
+      if (resumeHandle !== undefined && !isResumeHandle(resumeHandle)) throw new ProviderError('INVALID_REQUEST');
       if (!context.signal || typeof context.signal.addEventListener !== 'function'
         || !Number.isSafeInteger(context.generation) || context.generation < 0
         || typeof context.turnId !== 'string' || typeof context.sessionId !== 'string') throw new ProviderError('INVALID_REQUEST');
@@ -118,6 +122,7 @@ export function createRouter({ registry, getCredentialRef, hub, policy, usage = 
         ...Object.fromEntries(['sourceLanguage', 'targetLanguage', 'language', 'voice', 'model']
           .filter((key) => request[key] !== undefined).map((key) => [key, request[key]])),
         ...(pair === undefined ? {} : { languages: Object.freeze([...pair]) }),
+        ...(resumeHandle === undefined ? {} : { resumeHandle }),
         input: Object.freeze(Object.fromEntries(['format', 'text', 'audio']
           .filter((key) => request.input[key] !== undefined).map((key) => [key, request.input[key]]))),
       });

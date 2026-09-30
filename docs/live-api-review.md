@@ -1,5 +1,6 @@
 # Gemini Live API 동시통역 활용 검토
 
+- 구현 상태 (2026-09-30): P1 중 goAway 교체를 예산·대기 없이 즉시(60초 미만 연결 제외), `timeLeft` 동안 출력 수신(입력도 계속, 턴 경계에서 교체), `usageMetadata` 기록, `sessionResumption` + `contextWindowCompression`(trigger 12000 / target 6000, 지시문 경로만)을 구현했어요. '일시 오류 때 모델을 바꾸지 않기'는 아직이에요(핸들을 실은 setup이 거부된 경우만 같은 모델로 다시 열어요). 3.8-live·native-audio가 두 setup 필드를 받아들이는지는 실제 키로 확인하기 전이에요(미검증). 자세한 규칙은 `docs/design-p2.md` §9에 있어요.
 - 작성일: 2026-09-30
 - 대상 저장소: `/Users/gai/work/interp-app`. 읽기만 했고 수정하지 않았어요.
 - 방법: 문서를 읽고 코드를 판독했어요. 어떤 키로도 API를 호출하지 않았어요. 그래서 "실제로 받아들여지는지"는 모두 실측이 필요해요.

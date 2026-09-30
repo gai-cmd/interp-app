@@ -6,7 +6,7 @@
 // message is never echoed, so a `key` in a bad `host/lane-start` cannot leak through an error.
 import {
   CAPTION_ROLES, CAPTION_STATUSES, ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES,
-  MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
+  MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, RECONNECT_REASONS, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
   VOICE_GENDERS, deepFreeze, isLanguagePair, isMachineCode, isPlainObject, isValidStyle,
 } from './constants.js';
 
@@ -265,7 +265,9 @@ const bounded = (value) => value === null || text(value, 1, MODEL_MAX_CHARS);
 export function validateLaneState(value, lane) {
   if (!isPlainObject(value) || value.lane !== lane || !isLane(lane)) return null;
   const ok = LANE_PHASES.includes(value.phase) && nullable(value.engineStatus, ENGINE_STATUSES)
-    && int(value.retries, 0, 3) && nullable(value.output, OUTPUT_STATES) && bounded(value.model)
+    && int(value.retries, 0, 3) && nullable(value.reconnectReason, RECONNECT_REASONS)
+    && (value.reconnectReason === null || value.phase === 'reconnecting')
+    && nullable(value.output, OUTPUT_STATES) && bounded(value.model)
     && nullable(value.route, ROUTES) && typeof value.fallback === 'boolean' && nullable(value.targetLanguage, TARGET_LANGUAGES)
     && (value.errorCode === null || isMachineCode(value.errorCode)) && typeof value.quota === 'boolean'
     && typeof value.keyFailure === 'boolean' && int(value.level, 0, 100) && (value.tabId === null || int(value.tabId))
@@ -273,7 +275,7 @@ export function validateLaneState(value, lane) {
     && int(value.epoch);
   if (!ok) return null;
   return deepFreeze({ lane, phase: value.phase, engineStatus: value.engineStatus, retries: value.retries,
-    output: value.output, model: value.model, route: value.route, fallback: value.fallback,
+    reconnectReason: value.reconnectReason, output: value.output, model: value.model, route: value.route, fallback: value.fallback,
     targetLanguage: value.targetLanguage, errorCode: value.errorCode, quota: value.quota, keyFailure: value.keyFailure,
     level: value.level, tabId: value.tabId, captions: value.captions, overlay: value.overlay, gap: value.gap,
     epoch: value.epoch });

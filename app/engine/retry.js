@@ -134,18 +134,25 @@ export function createRetryExecutor({ call, context, handBack = [], ...timing })
 export function createLiveRetryPolicy({ now = Date.now, ...timing } = {}) {
   let retries = 0;
   let stableSince = null;
+  // A connection that ran stable for 60 s or more renews the retry count.
+  function settle() {
+    if (stableSince !== null && now() - stableSince >= 60000) retries = 0;
+    stableSince = null;
+  }
   return Object.freeze({
     get retries() { return retries; },
     opened() { stableSince = null; },
     // Called on confirmed useful operation, not merely WebSocket open.
     activity() { if (stableSince === null) stableSince = now(); },
     restart() { retries = 0; stableSince = null; },
+    // 2026-09-30: the same rule for a reopen that does not wait (a planned
+    // goAway handover), so the stable time it ends is not thrown away.
+    settle,
     async wait(error, { signal, closed = false } = {}) {
       assertActive(signal);
       error = normalizeError(error);
       if (!closed || (!transient.has(error.code) && error.code !== 'SESSION_LIMIT')) throw error;
-      if (stableSince !== null && now() - stableSince >= 60000) retries = 0;
-      stableSince = null;
+      settle();
       if (retries >= 3) throw new ProviderError('BUDGET_EXHAUSTED');
       retries++;
       await waitForRetry(retryDelay(retries, error, timing.random), { ...timing, signal });

@@ -89,7 +89,8 @@ export function readVoiceGender(storage) {
  * blocked" once the pool is spent; both offer the settings action, since
  * one's own key is the immediate remedy. Since 2026-09-30 a spare key usually
  * takes over inside the running session (snapshot.reconnectReason 'key'),
- * which reads as a plain "reconnecting" and never as a failure.
+ * which reads as a plain "reconnecting" and never as a failure; so does the
+ * planned connection handover after a goAway (reconnectReason 'handover').
  * onHome() (owner, 2026-09-07) is what the always-visible home button of the
  * captions-only frame calls. This view only reports the press; the shell owns
  * what "main screen" means (leave captions-only, close every sheet, select the
@@ -636,10 +637,13 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     // Automatic replacement shows its count: "replacing session · n".
     // 2026-09-30: a swap to a spare site key reads as a plain "reconnecting" —
     // no count, no key number, no failure — because interpreting goes on.
+    // The planned ~10-minute handover (goAway) reads the same way; a
+    // connection that is merely retiring still reads as running.
     const retries = Number.isInteger(snapshot.retries) && snapshot.retries > 0 ? snapshot.retries : 0;
-    const keySwap = !hub && snapshot.status === 'reconnecting' && snapshot.reconnectReason === 'key';
-    status.setAttribute('data-reconnect', keySwap ? 'key' : 'none');
-    setText(status, keySwap ? i18n.t('sim.status.reconnecting')
+    const calm = !hub && snapshot.status === 'reconnecting' && ['key', 'handover'].includes(snapshot.reconnectReason)
+      ? snapshot.reconnectReason : null;
+    status.setAttribute('data-reconnect', calm ?? 'none');
+    setText(status, calm ? i18n.t('sim.status.reconnecting')
       : !hub && snapshot.status === 'reconnecting' ? i18n.t('sim.status.replacing', { count: retries })
         : i18n.t(`sim.status.${snapshot.status}`));
     route.hidden = hub;

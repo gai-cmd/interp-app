@@ -42,6 +42,10 @@ const KNOWN_KEYS = new Set([
 ]);
 
 const isActive = (phase) => ACTIVE.includes(phase);
+// 2026-09-30: a spare key taking over, or the planned ~10-minute connection handover, reconnects while interpreting goes
+// on. It reads as a plain "reconnecting", like the web app: no count (it spends none of the 3) and never "connection
+// lost". hostLane.reconnectReason is null for every other reconnect.
+const calm = (draft) => draft.phase === 'reconnecting' && typeof draft.hostLane?.reconnectReason === 'string';
 // A translation-only model cannot interpret in two directions, so the engine runs a two-way lane on the first
 // instruction-driven model instead (app/engine/sim.js). The host reports the model it really runs, so what a start would
 // use now is this one; comparing the raw setting would show "applies next" for the whole run. The panel may import only
@@ -84,7 +88,8 @@ function statusOf(draft) {
     case 'awaiting': return { key: 'ext.status.awaitingArm', params: {} };
     case 'starting': return { key: hostLane?.engineStatus === 'connecting' ? 'sim.status.connecting' : 'sim.status.preparing', params: {} };
     case 'running': return { key: 'sim.status.running', params: {} };
-    case 'reconnecting': return { key: 'ext.status.reconnecting', params: { count: Math.max(1, hostLane?.retries ?? 1) } };
+    case 'reconnecting': return calm(draft) ? { key: 'sim.status.reconnecting', params: {} }
+      : { key: 'ext.status.reconnecting', params: { count: Math.max(1, hostLane?.retries ?? 1) } };
     case 'stopping': return { key: 'sim.status.stopping', params: {} };
     case 'error': return NOT_AN_ALARM.includes(errorCode)
       ? { key: 'sim.status.stopped', params: {} } : { key: 'ext.status.failed', params: {} };
@@ -103,7 +108,7 @@ function pillOf(drafts) {
   }
   // One interpretation fails while the other runs: the pill must not contradict the running lane.
   if (errors.length > 0) return { state: 'warning', key: 'ext.status.partial', params: {} };
-  const reconnecting = drafts.filter((draft) => draft.phase === 'reconnecting');
+  const reconnecting = drafts.filter((draft) => draft.phase === 'reconnecting' && !calm(draft));
   if (reconnecting.length > 0) {
     const count = Math.max(1, ...reconnecting.map((draft) => draft.hostLane?.retries ?? 1));
     return { state: 'warning', key: 'ext.status.reconnecting', params: { count } };
@@ -117,6 +122,8 @@ function pillOf(drafts) {
     const early = starting.some((draft) => !draft.hostLane?.engineStatus || draft.hostLane.engineStatus === 'preparing');
     return { state: 'starting', key: early ? 'sim.status.preparing' : 'sim.status.connecting', params: {} };
   }
+  // A calm reconnect keeps the running pill: interpreting goes on.
+  if (drafts.some(calm)) return { state: 'running', key: 'sim.status.reconnecting', params: {} };
   if (drafts.some((draft) => draft.phase === 'running')) return { state: 'running', key: 'sim.status.running', params: {} };
   return { state: 'idle', key: 'sim.status.idle', params: {} };
 }

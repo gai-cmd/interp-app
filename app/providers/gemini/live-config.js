@@ -8,7 +8,7 @@
  * voice) is applied through speechConfig.voiceConfig on both routes, and the
  * flash prompt gains one rule: interpret human speech only.
  */
-import { ProviderError } from '../contract.js';
+import { ProviderError, isResumeHandle } from '../contract.js';
 import { VOICE_NAMES } from './voice.js';
 
 // 2026-09-24 (owner): the stable general Live model is the default; the
@@ -38,6 +38,28 @@ export const LIVE_VAD = Object.freeze({ disabled: false, silenceDurationMs: 400,
   endOfSpeechSensitivity: 'END_SENSITIVITY_LOW' });
 export const SIM_LIMITS = Object.freeze({ inputSampleRate: 16000, outputSampleRate: 24000,
   maxInputBytes: 1024, maxContentBytes: 1048576, maxAudioBytes: 786432, maxTranscriptChars: 16000 });
+// 2026-09-30 (owner approval): session resumption and context window
+// compression on the instruction-driven routes, with a LOW trigger. Live
+// bills every turn for the whole context accumulated so far
+// (docs/live-api-review.md [D20]), so the default trigger (80% of a ~128k
+// window) could make each turn cost tens of thousands of tokens. Today every
+// ~10-minute connection starts empty and grows to about 15k input-audio
+// tokens (25 tokens/s x 600 s), about half that on average. A 12k trigger
+// with a 6k target keeps the context between 6k and 12k tokens, so the
+// average per-turn context stays about the same, while the last few minutes
+// (names, terms, the two-way direction) now survive the connection change.
+// Without compression an audio session ends at 15 minutes; with it, and with
+// resumption joining connections into one session, it does not.
+// Unverified: the exact per-turn tokens (output audio also accumulates) until
+// usageMetadata has been measured, and whether ANY Live model accepts the two
+// fields. The translate model's page is silent, and a 1007 there would end
+// every session, so that route sends neither. The gemini-3.8-live and
+// native-audio pages are silent too (checked 2026-09-30); the session
+// management guide shows the fields only in model-agnostic examples. A refusal
+// there would send every session start down the fallback chain, so a real-key
+// smoke test (owner approval first) must confirm it before release.
+export const LIVE_COMPRESSION_TRIGGER_TOKENS = 12000;
+export const LIVE_COMPRESSION_TARGET_TOKENS = 6000;
 const names = Object.freeze({ ko: 'Korean', en: 'English', ja: 'Japanese' });
 
 // Voice persona, first scope (owner 2026-09-06): gender only. Role personas,
@@ -197,9 +219,14 @@ export function normalizeLanguagePair(pair) {
  *
  * One session speaks with one voice: the Live setup carries a single
  * prebuiltVoiceConfig, so both directions share it.
+ *
+ * The instruction-driven setups (one-way and two-way) also carry context
+ * window compression and sessionResumption: `{ handle: resumeHandle }` when
+ * the engine resumes an earlier connection of the same operation, `{}` for a
+ * new session. The translation setup carries neither and ignores resumeHandle.
  */
 export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, sourceLanguage = null,
-  languages = null, voice, gender } = {}) {
+  languages = null, voice, gender, resumeHandle = null } = {}) {
   if (!LIVE_MODELS.includes(model)) throw new ProviderError('MODEL_UNSUPPORTED');
   // A named source is a hint, never an exclusive language filter.
   if (sourceLanguage != null && sourceLanguage !== 'auto' && !Object.hasOwn(names, sourceLanguage)) {
@@ -219,6 +246,16 @@ export function buildLiveSetup({ model = DEFAULT_LIVE_MODEL, targetLanguage, sou
   const setup = { model: `models/${model}`, generationConfig,
     inputAudioTranscription: {}, outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: { ...LIVE_VAD } } };
+  if (LIVE_MODEL_CONFIG[model].setup !== 'translation') {
+    if (resumeHandle !== null && resumeHandle !== undefined && !isResumeHandle(resumeHandle)) {
+      throw new ProviderError('INVALID_REQUEST');
+    }
+    // Field names: https://ai.google.dev/api/live (ContextWindowCompressionConfig,
+    // SessionResumptionConfig). An empty sessionResumption asks for handles.
+    setup.contextWindowCompression = { triggerTokens: LIVE_COMPRESSION_TRIGGER_TOKENS,
+      slidingWindow: { targetTokens: LIVE_COMPRESSION_TARGET_TOKENS } };
+    setup.sessionResumption = resumeHandle ? { handle: resumeHandle } : {};
+  }
   if (pair !== null) {
     // Two-way: the direction is decided per utterance by the language heard.
     // Everything else (never answering, starting early, keeping register,

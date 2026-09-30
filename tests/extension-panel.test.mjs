@@ -96,6 +96,22 @@ test('rule 1: lane phase comes from the host, pending overrides an idle host, aw
   assert.equal(local.lanes.tab.notice.key, 'ext.error.TAB_CAPTURE_BUSY');
 });
 
+test('2026-09-30: a key swap or the planned handover reads as a plain "reconnecting" with no count, in the lane and in the pill', () => {
+  for (const reason of ['key', 'handover']) {
+    const vm = vmOf({ host: hostUi({ tab: { phase: 'reconnecting', engineStatus: 'reconnecting', retries: 2, reconnectReason: reason } }) });
+    assert.deepEqual(vm.lanes.tab.status, { key: 'sim.status.reconnecting', params: {} }, reason);
+    assert.deepEqual(vm.pill, { state: 'running', key: 'sim.status.reconnecting', params: {} }, reason);
+  }
+  // A lost connection in the other lane still sets the pill, with its count.
+  const mixed = vmOf({ settings: settingsWith(bothLanes), host: hostUi({
+    tab: { phase: 'reconnecting', engineStatus: 'reconnecting', reconnectReason: 'handover' },
+    mic: { phase: 'reconnecting', engineStatus: 'reconnecting', retries: 1 } }) });
+  assert.deepEqual(mixed.pill, { state: 'warning', key: 'ext.status.reconnecting', params: { count: 1 } });
+  assert.deepEqual(mixed.lanes.mic.status, { key: 'ext.status.reconnecting', params: { count: 1 } });
+  assert.deepEqual(mixed.lanes.tab.status, { key: 'sim.status.reconnecting', params: {} });
+  for (const language of ['en', 'ko', 'ja']) assert.equal(REF[language].has('sim.status.reconnecting'), true, language);
+});
+
 test('rule 2: primary button mode, key and disabled state', () => {
   const idle = vmOf();
   assert.deepEqual(idle.primary, { mode: 'start', key: 'common.start', disabled: false });

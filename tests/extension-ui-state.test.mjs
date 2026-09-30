@@ -18,7 +18,8 @@ function isDeepFrozen(value) {
   if (value === null || typeof value !== 'object') return true;
   return Object.isFrozen(value) && Object.values(value).every(isDeepFrozen);
 }
-const LANE_KEYS = ['lane', 'phase', 'engineStatus', 'retries', 'output', 'model', 'route', 'fallback', 'targetLanguage', 'errorCode', 'quota',
+// 2026-09-30: reconnectReason joined the documented fields (a key swap or the planned handover is not a lost connection).
+const LANE_KEYS = ['lane', 'phase', 'engineStatus', 'retries', 'reconnectReason', 'output', 'model', 'route', 'fallback', 'targetLanguage', 'errorCode', 'quota',
   'keyFailure', 'level', 'tabId', 'captions', 'overlay', 'gap', 'epoch'];
 
 // ---------------------------------------------------------------------------------------------
@@ -114,17 +115,33 @@ const validated = (state) => { assert.deepEqual(validateLaneState(state, state.l
 
 test('laneStateFromSnapshot: a running lane copies exactly the documented fields', () => {
   const state = validated(laneOf());
-  assert.deepEqual(state, { lane: 'tab', phase: 'running', engineStatus: 'running', retries: 0, output: 'ready', model: 'gemini-3.8-live', route: 'flash',
+  assert.deepEqual(state, { lane: 'tab', phase: 'running', engineStatus: 'running', retries: 0, reconnectReason: null, output: 'ready', model: 'gemini-3.8-live', route: 'flash',
     fallback: false, targetLanguage: 'ko', errorCode: null, quota: false, keyFailure: false, level: 40, tabId: 12, captions: true, overlay: 'attached',
     gap: null, epoch: 2 });
   assert.deepEqual(Object.keys(state), LANE_KEYS);
   assert.ok(isDeepFrozen(state));
   const idle = validated(createIdleLaneState('mic'));
-  assert.deepEqual(idle, { lane: 'mic', phase: 'off', engineStatus: null, retries: 0, output: null, model: null, route: null, fallback: false, targetLanguage: null,
+  assert.deepEqual(idle, { lane: 'mic', phase: 'off', engineStatus: null, retries: 0, reconnectReason: null, output: null, model: null, route: null, fallback: false, targetLanguage: null,
     errorCode: null, quota: false, keyFailure: false, level: 0, tabId: null, captions: false, overlay: 'unknown', gap: null, epoch: 0 });
   assert.throws(() => laneStateFromSnapshot({ lane: 'both' }), (error) => error.code === 'INVALID_REQUEST');
   assert.throws(() => laneStateFromSnapshot({}), (error) => error.code === 'INVALID_REQUEST');
   assert.throws(() => laneStateFromSnapshot(), (error) => error.code === 'INVALID_REQUEST');
+});
+
+test('laneStateFromSnapshot (2026-09-30): reconnectReason is copied only while reconnecting, and only for a key swap or the planned handover', () => {
+  for (const reason of ['key', 'handover']) {
+    const state = validated(laneOf({ snapshot: snap({ status: 'reconnecting', reconnectReason: reason, retries: 1 }) }));
+    assert.deepEqual([state.phase, state.reconnectReason, state.retries], ['reconnecting', reason, 1]);
+    assert.equal(validated(laneOf({ snapshot: snap({ status: 'running', reconnectReason: reason }) })).reconnectReason, null, 'never outside reconnecting');
+  }
+  for (const junk of [null, undefined, 'lost', 'KEY', 1, {}]) {
+    assert.equal(validated(laneOf({ snapshot: snap({ status: 'reconnecting', reconnectReason: junk }) })).reconnectReason, null, String(junk));
+  }
+  const reconnecting = laneOf({ snapshot: snap({ status: 'reconnecting', reconnectReason: 'handover' }) });
+  assert.equal(validateLaneState({ ...reconnecting, reconnectReason: 'lost' }, 'tab'), null);
+  assert.equal(validateLaneState({ ...reconnecting, phase: 'running' }, 'tab'), null, 'a reason only while reconnecting');
+  const { reconnectReason: _dropped, ...missing } = reconnecting;
+  assert.equal(validateLaneState(missing, 'tab'), null, 'the field is required');
 });
 
 test('laneStateFromSnapshot: the engine status table of 4.6.2', () => {
@@ -259,6 +276,7 @@ test('laneStateFromSnapshot never throws and always yields a state the frame val
   const codes = [...ERROR_CODES, 'TAB_ENDED', 'lower', ...junk];
   for (let i = 0; i < 800; i += 1) {
     const snapshot = next() < 0.15 ? pick(junk) : { status: pick(statuses), output: pick([...OUTPUT_STATES, ...junk]), errorCode: pick(codes), retries: pick([0, 1, 2, 3, 9, ...junk]),
+      reconnectReason: pick(['key', 'handover', null, 'lost', ...junk]),
       model: pick(['gemini-3.8-live', 'm'.repeat(100), ...junk]), route: pick(['translation', 'flash', ...junk]), fallback: pick([true, false, ...junk]),
       captions: pick([null, { gaps: { input: pick([true, false, ...junk]), audio: pick([true, false]), reception: pick([true, false]) } }, ...junk]) };
     const f = next() < 0.1 ? pick(junk) : { tabId: pick([0, 5, ...junk]), captions: pick([true, false, ...junk]), overlay: pick(['unknown', 'attached', 'unavailable', ...junk]),
