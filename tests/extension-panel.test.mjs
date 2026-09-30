@@ -11,6 +11,7 @@ import { PORT_NAMES, STORAGE_KEYS, makeFrame, validateFrame } from '../extension
 import { createDefaultSettings, normalizeSettings } from '../extension/lib/settings.js';
 import { buildUiState, createIdleLaneState } from '../extension/lib/ui-state.js';
 import { PANEL_ELEMENT_IDS, createPanelController } from '../extension/panel/controller.js';
+import { UPDATE_MANIFEST_URL, UPDATE_SITE_URL } from '../extension/lib/update-check.js';
 import { createHostLink } from '../extension/panel/host-link.js';
 import { PAIR_MODEL, TRANSLATION_ONLY_MODEL, buildViewModel } from '../extension/panel/view-model.js';
 import { DEFAULT_LIVE_MODEL, LIVE_MODELS, TRANSLATE_LIVE_MODEL, liveRoute } from '../app/providers/gemini/live-config.js';
@@ -588,6 +589,7 @@ async function harness(t, options = {}) {
   const {
     settings, key = true, micPermission = 'granted', permissionsMode = null, languages = ['en-US'], hostUp = false, armed = false,
     lastStop = null, shortcut = 'Alt+Shift+Y', loadI18n = defaultLoad, tabUrl = 'https://example.com/a', begin = true,
+    fetch = null, manifestVersion = null,
   } = options;
   let handler = options.handler ?? (() => ({ ok: true }));
   const browser = createFakeBrowser({ shortcut });
@@ -629,16 +631,24 @@ async function harness(t, options = {}) {
   if (hostUp) await stub.chrome.storage.session.set({ [KEYS.host]: hostRecord(true) });
   if (lastStop) await stub.chrome.storage.session.set({ [KEYS.lastStop]: lastStop });
 
+  // §16: the fake runtime has no manifest or reload of its own; a test that needs them passes a version.
+  const reloads = [];
+  const opened = [];
+  if (manifestVersion !== null) panel.chrome.runtime.getManifest = () => ({ version: manifestVersion });
+  panel.chrome.runtime.reload = () => { reloads.push(browser.clock.now()); };
+  const rawCreate = panel.chrome.tabs.create;
+  panel.chrome.tabs.create = async (properties) => { opened.push(properties?.url); return rawCreate(properties); };
+
   const i18n = { current: createFallbackI18n() };
   const controller = createPanelController({
     document, adapter: createChromeAdapter(panel.chrome), i18n, loadI18n,
     timers: { setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout, now: browser.clock.now },
-    navigator,
+    navigator, fetch,
   });
   t.after(() => controller.dispose());
 
   const h = {
-    browser, document, controller, requests, ports, localSets, audio, i18n, stub, panel,
+    browser, document, controller, requests, ports, localSets, audio, i18n, stub, panel, reloads, opened,
     setHandler(next) { handler = next; },
     failWrites(value) { fail.writes = value; },
     el: (id) => document.getElementById(id),
@@ -2067,4 +2077,82 @@ test('every rendered string is an i18n result: no literal English leaks into any
     assert.equal(h.attr('usage-note', 'data-emphasis'), 'true');
     assert.equal(h.text('usage-note'), `${ref.t('ext.usage.twoSessions')} ${ref.t('ext.usage.quotaHint')}`, language);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// §16 (owner, 2026-09-30): the display-language switch in the header and the update banner.
+
+test('display-language switch: the pressed button follows the shown language, a click stores it and re-translates the panel', async (t) => {
+  const h = await harness(t, { languages: ['en-US'] });
+  const pressed = () => ['ko', 'ja', 'en'].filter((code) => h.attr(`ui-lang-${code}`, 'aria-pressed') === 'true');
+  assert.deepEqual(pressed(), ['en']);
+  assert.deepEqual(['ko', 'ja', 'en'].map((code) => h.text(`ui-lang-${code}`)), ['한국어', '日本語', 'English'], 'each language named in itself');
+  assert.equal(h.text('panel-title'), 'Live Interpreter');
+  assert.equal(h.stored().uiLanguage, 'auto');
+
+  await h.click('ui-lang-ja');
+  assert.equal(h.stored().uiLanguage, 'ja');
+  assert.deepEqual(pressed(), ['ja']);
+  assert.equal(h.document.documentElement.getAttribute('lang'), 'ja');
+  assert.equal(h.text('btn-options'), REF.ja.t('ext.options.title'));
+  assert.equal(h.text('panel-title'), 'Live Interpreter', 'the product name stays English');
+
+  await h.click('ui-lang-ko');
+  assert.equal(h.stored().uiLanguage, 'ko');
+  assert.deepEqual(pressed(), ['ko']);
+  assert.equal(h.text('btn-options'), REF.ko.t('ext.options.title'));
+  assert.equal(h.attr('ui-lang', 'aria-label'), REF.ko.t('ext.uiLanguage.label'));
+});
+
+const jsonFetch = (body, { ok = true } = {}) => {
+  const calls = [];
+  const fetcher = async (url, init) => { calls.push({ url: String(url), init }); return { ok, json: async () => body }; };
+  return { fetcher, calls };
+};
+
+test('update banner: a newer published version shows it with both versions; Get opens the site; Reload reloads the extension', async (t) => {
+  const { fetcher, calls } = jsonFetch({ version: '0.3.0' });
+  const h = await harness(t, { fetch: fetcher, manifestVersion: '0.2.0' });
+  assert.deepEqual(calls.map((call) => call.url), [UPDATE_MANIFEST_URL], 'one request per panel open, to the site file only');
+  assert.equal(calls[0].init.credentials, 'omit');
+  assert.equal(calls[0].init.cache, 'no-store');
+  assert.equal(h.el('update-note').hidden, false);
+  assert.equal(h.text('update-text'), T('ext.update.available', { version: '0.3.0', current: '0.2.0' }));
+  assert.equal(h.el('btn-update-reload').hidden, false);
+
+  await h.click('btn-update-get');
+  assert.deepEqual(h.opened, [UPDATE_SITE_URL]);
+  await h.click('btn-update-reload');
+  assert.equal(h.reloads.length, 1);
+});
+
+test('update banner: same, older or unreadable versions, a failed request and a missing fetch all show nothing', async (t) => {
+  const cases = [
+    ['same version', jsonFetch({ version: '0.2.0' }).fetcher],
+    ['older version', jsonFetch({ version: '0.1.9' }).fetcher],
+    ['not a version', jsonFetch({ version: 'latest' }).fetcher],
+    ['not an object', jsonFetch(['0.3.0']).fetcher],
+    ['HTTP error', jsonFetch({ version: '9.0.0' }, { ok: false }).fetcher],
+    ['network error', async () => { throw new TypeError('Failed to fetch'); }],
+    ['no fetch', null],
+  ];
+  for (const [name, fetcher] of cases) {
+    const h = await harness(t, { fetch: fetcher, manifestVersion: '0.2.0' });
+    assert.equal(h.el('update-note').hidden, true, name);
+    assert.equal(h.text('update-text'), '', name);
+  }
+  const noManifest = jsonFetch({ version: '0.3.0' });
+  const h = await harness(t, { fetch: noManifest.fetcher });
+  assert.equal(noManifest.calls.length, 0, 'without its own version the panel does not ask');
+  assert.equal(h.el('update-note').hidden, true);
+});
+
+test('update banner: Reload waits while a lane runs (a reload would end it) and comes back when nothing runs', async (t) => {
+  const { fetcher } = jsonFetch({ version: '0.3.0' });
+  const h = await harness(t, { fetch: fetcher, manifestVersion: '0.2.0', hostUp: true });
+  await h.postState({ tab: running('tab') });
+  assert.equal(h.el('update-note').hidden, false, 'the news stays visible');
+  assert.equal(h.el('btn-update-reload').hidden, true);
+  await h.postState({});
+  assert.equal(h.el('btn-update-reload').hidden, false);
 });

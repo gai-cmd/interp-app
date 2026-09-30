@@ -1,5 +1,12 @@
 {
   "ext.name": "Live Interpreter",
+  "ext.uiLanguage.label": "Display language",
+  "ext.uiLanguage.ko": "한국어",
+  "ext.uiLanguage.ja": "日本語",
+  "ext.uiLanguage.en": "English",
+  "ext.update.available": "Version {version} is available (you have {current}). Replace the LiveInterpreter folder with the downloaded one, then press Reload.",
+  "ext.update.get": "Get the new version",
+  "ext.update.reload": "Reload",
   "ext.description": "Interpret tab audio and your microphone live with Gemini Live, with captions on the page.",
   "ext.action.title": "Open the interpreter panel",
   "ext.command.open": "Open the interpreter panel on this tab",

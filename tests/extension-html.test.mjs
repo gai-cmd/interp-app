@@ -228,8 +228,9 @@ test('panel: the lane status lines are plain text (not live, never hidden): the 
 test('panel: hidden is used only on non-live elements, and every one of them is listed', () => {
   const hidden = elementsOf('panel').filter((element) => element.hidden).map((element) => element.id).sort();
   // The two-way rows (the partner row and the model note of each lane) are plain elements that start hidden: two-way is off.
+  // The update banner (§16) is a plain row too: it appears only while the download site publishes a newer version.
   assert.deepEqual(hidden, ['btn-key-options', 'btn-mic-allow', 'close-note', 'mic-level', 'mic-partner-row', 'mic-preview', 'mic-route',
-    'mic-two-way-note', 'tab-level', 'tab-partner-row', 'tab-preview', 'tab-route', 'tab-tabline', 'tab-two-way-note'].sort());
+    'mic-two-way-note', 'tab-level', 'tab-partner-row', 'tab-preview', 'tab-route', 'tab-tabline', 'tab-two-way-note', 'update-note'].sort());
   for (const id of [...STATUS_REGIONS, ...ALERT_REGIONS]) assert.equal(byId('panel', id).hidden, false);
 });
 
@@ -472,10 +473,10 @@ test('permission: ids, keys and the persistent status region', () => {
 
 const placeholdersOf = (value) => [...new Set([...value.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)].map((match) => match[1]))].sort().join(',');
 
-test('dictionaries: 122 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
+test('dictionaries: 129 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
   const keys = Object.keys(dictionaries.en.ext);
-  assert.equal(keys.length, 122, '117 + the five ext.twoWay.* keys of the two-way mode');
-  assert.equal(new Set(keys).size, 122);
+  assert.equal(keys.length, 129, '117 + the five ext.twoWay.* keys of the two-way mode + the seven §16 keys (display-language switch, update banner)');
+  assert.equal(new Set(keys).size, 129);
   for (const language of LANGUAGES) {
     const dictionary = dictionaries[language].ext;
     assert.deepEqual(Object.keys(dictionary).sort(), [...keys].sort(), `${language} has the same keys as en`);
@@ -491,6 +492,7 @@ test('dictionaries: 122 ext.* keys with identical key sets and placeholders in k
   }
   assert.deepEqual(Object.fromEntries(keys.filter((key) => placeholdersOf(dictionaries.en.ext[key])).map((key) => [key, placeholdersOf(dictionaries.en.ext[key])])), {
     'ext.lane.statusLine': 'lane,status', 'ext.volume.value': 'percent', 'ext.tab.target': 'title', 'ext.status.reconnecting': 'count', 'ext.arm.shortcut': 'shortcut',
+    'ext.update.available': 'current,version',
   });
   for (const key of keys.filter((name) => name.startsWith('ext.error.'))) assert.match(key, /^ext\.error\.[A-Z][A-Z0-9_]+$/, 'error keys are ext.error.<CODE>');
 });
@@ -509,9 +511,12 @@ test('dictionaries: the wording promises of 9.2 hold (limits, estimate marker, m
       ['ext.twoWay.hint', 'ext.twoWay.label', 'ext.twoWay.modelNote', 'ext.twoWay.partner', 'ext.twoWay.targetLabel'], `${language} offers the two-way mode`);
     assert.doesNotMatch(Object.values(dictionary).join('\n'), /<[a-z][^>]*>|&[a-z]+;/i, 'no markup in a dictionary value');
   }
-  assert.equal(dictionaries.en.ext['ext.name'], 'Live Interpreter');
-  assert.equal(dictionaries.ko.ext['ext.name'], '실시간 통역');
-  assert.equal(dictionaries.ja.ext['ext.name'], 'リアルタイム通訳');
+  // §16 (owner, 2026-09-30): the product name is English in every language.
+  for (const language of LANGUAGES) assert.equal(dictionaries[language].ext['ext.name'], 'Live Interpreter');
+  // The display-language buttons name each language in itself, whatever language the panel shows.
+  for (const language of LANGUAGES) {
+    assert.deepEqual(['ko', 'ja', 'en'].map((code) => dictionaries[language].ext[`ext.uiLanguage.${code}`]), ['한국어', '日本語', 'English']);
+  }
 });
 
 test('dictionaries: the strings of the review fixes carry the agreed wording in ko, en and ja', () => {

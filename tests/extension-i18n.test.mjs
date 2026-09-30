@@ -120,7 +120,9 @@ test('the _locales limits hold in every language and each file really is in its 
     assert.ok(length(messages.extName.message) <= 45, `${language} extName <= 45 characters`);
   }
   const hangul = /[가-힣]/, japanese = /[぀-ヿ一-鿿]/, cjk = /[぀-ヿ㄰-㆏一-鿿가-힣]/;
-  for (const name of MESSAGE_NAMES) {
+  // extName is the English product name in every language (§16, owner 2026-09-30); every other message is translated.
+  for (const language of SUPPORTED_LANGUAGES) assert.equal(locales[language].messages.extName.message, 'Live Interpreter');
+  for (const name of MESSAGE_NAMES.filter((message) => message !== 'extName')) {
     assert.ok(hangul.test(locales.ko.messages[name].message), `ko.${name} is Korean`);
     assert.ok(japanese.test(locales.ja.messages[name].message) && !hangul.test(locales.ja.messages[name].message), `ja.${name} is Japanese`);
     assert.ok(!cjk.test(locales.en.messages[name].message), `en.${name} is English`);

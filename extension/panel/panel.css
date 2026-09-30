@@ -25,6 +25,15 @@
 }
 .panel-head h1 { font-size: 1.125rem; }
 
+/* Display-language switch (§16): three equal buttons; the pressed one is filled AND bold (state is never colour alone). */
+.lang-switch { display: flex; gap: var(--space-2); }
+.lang-btn { flex: 1 1 0; min-height: var(--touch); padding-inline: var(--space-2); }
+.lang-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
+
+/* Update banner (§16): the text, then its two buttons on their own wrapping row. */
+#update-note { flex-wrap: wrap; }
+#update-note .update-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); flex-basis: 100%; }
+
 /* Empty live regions (8.2.1): still rendered, so they stay in the accessibility tree, but they take no room.
    #key-missing holds a span and a button, so it is never :empty itself; its text span decides. */
 .notice:empty, .text-sub:empty { margin: 0; padding: 0; border: 0; min-height: 0; }
@@ -153,5 +162,6 @@ meter { display: block; width: 100%; height: 0.75rem; }
   #btn-mute[data-muted="true"] { outline: 2px solid CanvasText; outline-offset: 2px; }
   #btn-options[data-attention="true"], #btn-mic-permission[data-attention="true"], #btn-mic-allow[data-attention="true"],
   #tab-arm-note[data-attention="true"] { outline-color: Highlight; }
+  .lang-btn[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: 2px; }
   .caption-preview > [data-status="partial"], .caption-preview > [data-status="interrupted"] { border-inline-start-color: CanvasText; }
 }
