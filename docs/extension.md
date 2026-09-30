@@ -3765,6 +3765,19 @@ Then hand section 13 to the owner. Nothing in this gate touches a browser or aud
 
 ---------------------------------------------------------------------------------------------------
 
+## 16. Owner changes of 2026-09-30: English name, display-language switch, update check, keyed distribution (v0.2.0)
+
+The owner reversed four points of the first delivery. Each is listed with what it overrides.
+
+| # | Change | Overrides | Where |
+|---|--------|-----------|-------|
+| 1 | The product name is **Live Interpreter** in every language (`extName` in `_locales/*`, `ext.name` in `extension/i18n/*`, and every string that names the toolbar icon). The other messages stay translated. | §9 wording (ko "실시간 통역", ja "リアルタイム通訳") | `extension-i18n`, `extension-html` tests pin it |
+| 2 | The panel header gets a **display-language switch** (한국어 / 日本語 / English, each named in itself). A click writes `settings.uiLanguage` (the options page keeps "auto"); `aria-pressed` marks the language shown. | §8.2 markup contract (new ids `ui-lang`, `ui-lang-ko/ja/en`) | `extension-panel` tests |
+| 3 | **Update check.** Chrome never updates a folder-loaded extension on Windows or macOS, and the owner chose the free route over the Web Store fee. Once per panel open, `lib/update-check.js` GETs `https://kc-live-interpreter.vercel.app/latest.json` (no key, no cookie, no body, `redirect: 'error'`). A strictly newer version shows a plain (non-live) banner with **Get the new version** (opens the download page) and **Reload** (`runtime.reload()`, hidden while a lane runs). Every failure is silent. | §1.3 non-goals "no auto-update, no server component" (this is a notice, not an auto-update); R11 URL registry (the two update URLs are registered like documentation links and may be written only in `lib/update-check.js`) | `extension-update-check`, `extension-panel`, `extension-static` tests |
+| 4 | **Keyed distribution.** The zip members download is built with `--builtin-key-file` (owner decision: members need no key). Anyone holding the zip can read the key; the same free keys are already public in the web app. The zip is never committed: `scripts/package-extension.mjs` builds it into `dist/` and the site is uploaded with the Vercel CLI. | §10.6 "a keyed build is never something to hand to other people" | `extension-package` tests |
+
+Distribution: `npm run package:extension` builds `dist/extension-package/LiveInterpreter` (keyed) and the deploy root `dist/extension-site/`: the guide page (`extension-site/`, ko/ja/en × Windows/Mac), `latest.json`, `live-interpreter.zip` (the `LiveInterpreter` folder, six PDF manuals and `README.txt`) and `vercel.json`. Deploy: `cd dist/extension-site && vercel deploy --prod` to the Vercel project `kc-live-interpreter` (owner approval first). The page is `noindex`. To release a new version, bump `extension/manifest.json`, run the package script and deploy; every installed copy shows the banner the next time its panel opens.
+
 ## Appendix A: weakest points of this design (read before implementing)
 
 1. The whole tab-capture path (A1, K1, K7) is source-reading, not observation. The design keeps the arming step explicit and the fallbacks cheap, but the first real click may reveal a different grant behavior.

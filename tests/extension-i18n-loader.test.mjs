@@ -46,7 +46,8 @@ test('loadExtensionI18n merges the app and extension dictionaries and requests a
   assert.ok(i18n.has('ext.lane.tab.title'));
   assert.ok(i18n.has('sim.status.idle'));
   assert.equal(i18n.setLanguage('en'), 'en');
-  assert.notEqual(i18n.t('ext.name'), ko['ext.name']);
+  // ext.name is English in every language (§16), so the switch is checked on a key that is translated.
+  assert.notEqual(i18n.t('ext.lane.tab.title'), ko['ext.lane.tab.title']);
 });
 
 test('language negotiation: language beats languages, an invalid language falls back to languages, then English', async () => {
@@ -189,10 +190,10 @@ test('the two-way keys resolve through the loader in ko, en and ja, are ext.* ke
   assert.equal(ja.t('ext.twoWay.hint'), TWO_WAY['ext.twoWay.hint'].ja, 'the other keys stay in Japanese');
 });
 
-test('all 122 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
+test('all 129 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
   const keysOf = async (language) => Object.keys(await readJson(new URL(`../extension/i18n/${language}.json`, import.meta.url)));
   const reference = (await keysOf('en')).sort();
-  assert.equal(reference.length, 122, '117 + the five two-way keys');
+  assert.equal(reference.length, 129, '117 + the five two-way keys + the seven §16 keys');
   for (const language of LANGUAGES) {
     assert.deepEqual((await keysOf(language)).sort(), reference, `${language} has the key set of en`);
     const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });

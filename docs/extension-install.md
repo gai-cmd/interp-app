@@ -1,48 +1,43 @@
-# 실시간 통역 Chrome 확장 — 설치와 사용 / Chrome 拡張 — インストールと使い方
+# Live Interpreter Chrome 확장 — 설치와 업데이트 / インストールと更新 / Install and update
 
-Chrome 사이드패널에서 **지금 보고 있는 탭의 소리**(회의, 영상)와 **내 마이크**를 Gemini Live로 동시통역하고, 페이지 위에 자막을 띄웁니다. 두 언어를 서로 통역하는 **양방 통역**도 됩니다. 웹스토어에는 올리지 않았고, 폴더를 직접 불러오는 방식(압축해제된 확장)으로 씁니다.
+**멤버에게는 이 주소만 보내면 됩니다 / メンバーにはこのアドレスだけ送れば十分です / Just send members this link:**
+https://kc-live-interpreter.vercel.app
 
-Chrome のサイドパネルで、**いま見ているタブの音声**（会議・動画）と**自分のマイク**を Gemini Live で同時通訳し、ページ上に字幕を出します。2つの言語を相互に通訳する**双方向通訳**にも対応しています。ウェブストアには公開していないため、フォルダを直接読み込む方式（パッケージ化されていない拡張機能）で使います。
+그 페이지에 zip 내려받기 버튼, Windows·Mac 설치 순서, 사용법, 업데이트 방법, 문제 해결이 한국어·日本語·English로 있고, 같은 내용의 PDF 설명서 6종(Windows/Mac × KO/JA/EN)도 있습니다. zip 안에도 PDF 설명서와 README.txt가 들어 있습니다.
 
-> 상태 / 状態: 2026-09-29 구현, 자동 테스트 통과. **실제 Chrome·실제 음성으로는 아직 검증 전**입니다. 문제가 있으면 개발자에게 알려 주세요.
-> 2026-09-29 実装・自動テスト済み。**実際の Chrome・実際の音声での検証はまだ**です。不具合があれば開発者に連絡してください。
+そのページに zip のダウンロードボタン、Windows・Mac のインストール手順、使い方、更新方法、トラブル対処が 한국어・日本語・English であり、同じ内容の PDF マニュアル 6 種（Windows/Mac × KO/JA/EN）もあります。zip の中にも PDF マニュアルと README.txt が入っています。
 
-## 준비물 / 必要なもの
+The page has the zip download, Windows and Mac install steps, usage, updating and troubleshooting in Korean, Japanese and English, plus the same content as six PDF manuals (Windows/Mac × KO/JA/EN). The zip also contains the PDFs and a README.txt.
 
-- Chrome 116 이상 / Chrome 116 以上
-- 본인 Gemini API 키 (https://aistudio.google.com/apikey) / 自分の Gemini API キー
-- 확장 폴더: 개발자가 빌드해 전달한 `extension` 폴더, 또는 이 저장소에서 `npm run build:extension` 으로 만든 `dist/extension`
-  拡張フォルダ: 開発者がビルドして渡した `extension` フォルダ、またはこのリポジトリで `npm run build:extension` を実行してできる `dist/extension`
+> 웹스토어에는 올리지 않았습니다. 폴더를 직접 불러오는 방식(압축해제된 확장)이라 Chrome이 자동으로 업데이트하지 않고, 확장이 새 버전을 알려 주면 사람이 덮어씁니다.
+> ウェブストアには公開していません。フォルダを直接読み込む方式のため Chrome は自動更新せず、拡張機能が新しいバージョンを知らせたら手動で上書きします。
+> Not on the Chrome Web Store. It is loaded as an unpacked folder, so Chrome does not update it; the extension announces a new version and the member replaces the folder.
 
-## 설치 / インストール
+## 요약 / 要約 / Summary
 
-1. Chrome 주소창에 `chrome://extensions` 입력 → 오른쪽 위 **개발자 모드** 켜기
-   アドレスバーに `chrome://extensions` → 右上の**デベロッパー モード**をオン
-2. **압축해제된 확장 프로그램을 로드합니다** → 확장 폴더 선택
-   **パッケージ化されていない拡張機能を読み込む** → 拡張フォルダを選択
-3. 퍼즐 아이콘 메뉴에서 **실시간 통역**을 핀으로 고정
-   パズルのアイコンから**リアルタイム通訳**をピン留め
-4. 확장 아이콘을 오른쪽 클릭 → **옵션** → Gemini 키 입력 후 저장
-   拡張アイコンを右クリック → **オプション** → Gemini キーを入力して保存
+| | 한국어 | 日本語 | English |
+|---|---|---|---|
+| 설치 | zip 받기 → 압축 풀기 → `live-interpreter` 폴더를 문서 폴더로 → `chrome://extensions` → **개발자 모드** → **압축해제된 확장 프로그램 로드** → `LiveInterpreter` 폴더를 **한 번 클릭**해 선택 | zip を保存 → 展開 → `live-interpreter` フォルダをドキュメント（Mac は書類）へ → `chrome://extensions` → **デベロッパー モード** → **パッケージ化されていない拡張機能を読み込む** → `LiveInterpreter` フォルダを**1回クリック**して選択 | Save the zip → extract → move `live-interpreter` to Documents → `chrome://extensions` → **Developer mode** → **Load unpacked** → click the `LiveInterpreter` folder **once** |
+| 흔한 실수 | 그 안의 `extension` 폴더를 고르면 “매니페스트 파일이 없거나 읽을 수 없습니다” | 中の `extension` フォルダを選ぶとマニフェストのエラー | Picking the inner `extension` folder gives “Manifest file is missing or unreadable” |
+| 키 | 기본 키 포함(입력 불필요). 옵션에서 개인 키를 저장하면 그 키가 먼저 쓰임 | 既定のキー入り（入力不要）。オプションで個人キーを保存するとそちらが優先 | Default key included (nothing to enter). A personal key saved in Options is used first |
+| 업데이트 | 패널에 새 버전 안내 → **새 버전 받기** → 같은 자리에 `LiveInterpreter` 폴더 교체 → **다시 불러오기** | パネルにお知らせ → **新しいバージョンを入手** → 同じ場所の `LiveInterpreter` を置き換え → **再読み込み** | Panel notice → **Get the new version** → replace `LiveInterpreter` in the same place → **Reload** |
 
-## 사용 / 使い方
+## 알아 둘 점 / 注意 / Notes
 
-- **탭 소리 통역**: 통역할 탭에서 **툴바 아이콘을 먼저 클릭**(Chrome이 그 탭의 소리 캡처를 허락하는 유일한 방법) → 사이드패널에서 **시작**
-  **タブ音声の通訳**: 通訳したいタブで**ツールバーのアイコンを先にクリック**（Chrome がそのタブの音声取得を許可する唯一の方法）→ サイドパネルで**開始**
-- **마이크 통역**: 처음 한 번 마이크 권한 버튼으로 허용 → **시작**. 통역 음성은 기본으로 꺼져 있어 자막만 나옵니다(스피커로 들으면 마이크가 다시 받아 되울림이 생길 수 있어 헤드폰 권장).
-  **マイクの通訳**: 初回だけマイク許可ボタンで許可 → **開始**。通訳音声は既定でオフ（字幕のみ）。スピーカーで流すとマイクが拾って反響するためヘッドホン推奨。
-- **양방 통역**: 레인마다 **양방 통역** 체크 → **상대 언어** 선택. 들리는 언어에 따라 방향이 정해집니다.
-  **双方向通訳**: レーンごとに**双方向通訳**にチェック → **相手の言語**を選択。聞こえた言語で方向が決まります。
-- 사이드패널을 닫으면 통역도 멈춥니다. / サイドパネルを閉じると通訳も止まります。
+- 기본 키는 여러 사람이 함께 쓰는 무료 키입니다. zip을 가진 사람은 누구나 키를 꺼낼 수 있고(웹앱에도 같은 키가 공개돼 있음), Google이 입력과 결과를 서비스 개선에 쓰고 사람이 검토할 수 있습니다. 기밀 통화·회의에는 쓰지 말고, 필요하면 결제 계정이 연결된 개인 키를 옵션에 넣으세요.
+  既定のキーは共有の無料キーです。zip を持つ人は誰でもキーを取り出せ（ウェブアプリでも同じキーが公開済み）、Google が入力と結果をサービス改善に使い、人が確認する場合があります。機密の通話・会議には使わず、必要なら請求先アカウントの個人キーをオプションに入力してください。
+  The default key is a shared free key. Anyone with the zip can extract it (the web app already exposes the same keys), and Google may use inputs and outputs to improve its services with human review. Do not use it for confidential calls; enter a billing-enabled personal key in Options if needed.
+- 휴대폰에서는 웹앱을 쓰세요 / スマートフォンはウェブアプリ / On phones use the web app: https://interp-app.vercel.app
 
-## 알아 둘 점 / 注意
+## 새 버전 내보내기 (개발자) / 新バージョンの公開（開発者） / Publishing a new version (developer)
 
-- 음성은 Google Gemini로 전송됩니다. 결제 계정이 없는 무료 키로 쓰면 Google이 입력과 결과를 서비스 개선에 쓰고 사람이 검토할 수 있으니, 중요한 통화·회의에는 쓰지 마세요.
-  音声は Google Gemini に送信されます。請求先のない無料キーでは、Google が入力と結果をサービス改善に使い、人が確認する場合があります。重要な通話・会議には使わないでください。
-- 탭 소리와 마이크를 함께 켜면 세션이 두 개라 사용량이 약 두 배입니다(측정값 아님).
-  タブ音声とマイクを同時にオンにするとセッションが2つになり、使用量は約2倍です（実測値ではありません）。
-- chrome:// 페이지, 웹스토어, PDF 뷰어에서는 탭 소리를 캡처하거나 자막을 띄울 수 없습니다.
-  chrome:// ページ、ウェブストア、PDF ビューアではタブ音声の取得や字幕表示ができません。
+1. `extension/manifest.json`의 `version`을 올립니다. 확장은 사이트의 `latest.json`과 자기 버전을 비교해 새 버전 안내를 띄웁니다.
+2. `npm run package:extension` (= `node scripts/package-extension.mjs [--builtin-key-file <path>] [--chrome <path>] [--released YYYY-MM-DD]`)
+   - 기본 키 파일 `~/.config/interp-app/builtin-key`로 **키를 넣은 빌드**를 `dist/extension-package/LiveInterpreter`에 만들고, 안내 페이지를 헤드리스 Chrome으로 인쇄해 PDF 6종을 만든 뒤, `dist/extension-site/`(배포 루트: 페이지, `latest.json`, `live-interpreter.zip`, `manuals/`, `vercel.json`)를 채웁니다.
+   - 끝에 `PACKAGE_OK version=… keys=… zip=… pdfs=6`이 나와야 합니다. 키 파일이 없거나 비어 있으면 실패합니다(이 배포는 키 포함이 정책).
+3. 확인 후 **승인을 받고** `dist/extension-site`에서 `vercel deploy --prod`(프로젝트 `kc-live-interpreter`)로 올립니다. 키가 든 zip이므로 **git에는 절대 커밋하지 않습니다**(`dist/`는 gitignore). CLI로 직접 올립니다.
 
-웹앱(폰·PC 브라우저) / ウェブアプリ（スマホ・PC）: https://interp-app.vercel.app
-개발 문서 / 開発ドキュメント: [docs/extension.md](extension.md) (§13 수동 확인 목록 / 手動確認リスト)
+소스: 페이지와 설명서 내용은 `extension-site/content.js` 한 곳에 있습니다(한·일·영 × Windows·Mac). 테스트: `tests/extension-package.test.mjs`.
+Sources: the page and manual text live in `extension-site/content.js` (ko/ja/en × Windows/Mac). Tests: `tests/extension-package.test.mjs`.
+
+개발 문서 / 開発ドキュメント / Developer docs: [docs/extension.md](extension.md) (§13 수동 확인 목록 / 手動確認リスト / manual checks)

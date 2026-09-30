@@ -7,7 +7,7 @@
 // member names copied from that namespace, `true` is an event or property copied by name, and an object nests.
 
 export const ADAPTER_SURFACE = Object.freeze({
-  runtime: Object.freeze(['id', 'getURL', 'sendMessage', 'connect', 'openOptionsPage', 'getContexts',
+  runtime: Object.freeze(['id', 'getURL', 'getManifest', 'reload', 'sendMessage', 'connect', 'openOptionsPage', 'getContexts',
     'onMessage', 'onConnect', 'onInstalled', 'onStartup']),
   storage: Object.freeze({
     local: Object.freeze(['get', 'set', 'remove', 'setAccessLevel']),

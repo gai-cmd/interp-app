@@ -17,6 +17,7 @@ const controller = createPanelController({
     now: () => Date.now(),
   },
   navigator: globalThis.navigator,
+  fetch: (url, init) => globalThis.fetch(url, init),
 });
 
 controller.start().catch(() => {});

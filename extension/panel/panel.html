@@ -15,6 +15,20 @@
       <p id="status-pill" class="badge" role="status" aria-live="polite" data-state="idle"></p>
     </header>
 
+    <div id="ui-lang" class="lang-switch" role="group" data-i18n-label="ext.uiLanguage.label"><!-- §16: the display language; aria-pressed marks the one shown -->
+      <button id="ui-lang-ko" type="button" class="btn lang-btn" lang="ko" aria-pressed="false" data-i18n="ext.uiLanguage.ko"></button>
+      <button id="ui-lang-ja" type="button" class="btn lang-btn" lang="ja" aria-pressed="false" data-i18n="ext.uiLanguage.ja"></button>
+      <button id="ui-lang-en" type="button" class="btn lang-btn" lang="en" aria-pressed="false" data-i18n="ext.uiLanguage.en"></button>
+    </div>
+
+    <div id="update-note" class="notice" hidden><!-- §16, not live: shown while the download site publishes a newer version -->
+      <span id="update-text"></span>
+      <span class="update-actions">
+        <button id="btn-update-get" type="button" class="btn" data-i18n="ext.update.get"></button>
+        <button id="btn-update-reload" type="button" class="btn" data-i18n="ext.update.reload"></button>
+      </span>
+    </div>
+
     <div id="key-missing" class="notice" role="status"><!-- live: ext.key.missing while no key is stored; explains why Start is disabled -->
       <span id="key-missing-text"></span>
       <button id="btn-key-options" type="button" class="btn" hidden data-i18n="ext.key.enter"></button>

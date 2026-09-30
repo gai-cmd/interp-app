@@ -14,6 +14,7 @@ import { LIMITS, STORAGE_KEYS, makeMessage } from '../lib/protocol.js';
 import {
   createDefaultSettings, hasKey, normalizeSettings, readSettings, setLaneTargetLanguage, updateSettings, writeSettings,
 } from '../lib/settings.js';
+import { UPDATE_SITE_URL, checkForUpdate } from '../lib/update-check.js';
 import { createHostLink } from './host-link.js';
 import { LANE_TITLE_KEY, buildViewModel } from './view-model.js';
 
@@ -27,6 +28,7 @@ export const PANEL_ELEMENT_IDS = Object.freeze([
   'mic-route-note', 'mic-output', 'mic-gap', 'mic-level', 'mic-notice', 'mic-preview',
   'tab-target-label', 'tab-two-way', 'tab-partner-row', 'tab-partner', 'tab-two-way-note',
   'mic-target-label', 'mic-two-way', 'mic-partner-row', 'mic-partner', 'mic-two-way-note',
+  'ui-lang-ko', 'ui-lang-ja', 'ui-lang-en', 'update-note', 'update-text', 'btn-update-get', 'btn-update-reload',
 ]);
 
 const LANES = Object.freeze(['tab', 'mic']);
@@ -34,6 +36,8 @@ const ACTIVE = Object.freeze(['starting', 'running', 'reconnecting']);
 // The partner select is rebuilt (its options are the languages other than the lane's first one), so its options are
 // made here and take their binder key from this table (keys are literals, never built from the language code).
 const LANGUAGE_KEY = Object.freeze({ ko: 'language.ko', en: 'language.en', ja: 'language.ja' });
+// The display-language switch in the header (§16): one button per language, pressed = the language the panel shows.
+const UI_LANGUAGE_BUTTONS = Object.freeze(['ko', 'ja', 'en']);
 const CAPTURABLE_SCHEMES = Object.freeze(['http:', 'https:', 'file:']);
 const PERMISSION_STATES = Object.freeze(['granted', 'denied', 'prompt']);
 const FRESH_STOP_MS = 60_000;          // a lastStop record older than this is history, not news
@@ -52,12 +56,13 @@ const defaultSettingsApi = Object.freeze({ readSettings, updateSettings, writeSe
 
 /**
  * createPanelController({ document, adapter, i18n: { current }, loadI18n, settingsApi, createHostLink, timers,
- * navigator }) -> Readonly<{ start(), dispose(), viewModel() }>. `i18n` is a mutable holder so the language can be
- * replaced (load finished, load retried) without rebuilding the controller.
+ * navigator, fetch }) -> Readonly<{ start(), dispose(), viewModel() }>. `i18n` is a mutable holder so the language can be
+ * replaced (load finished, load retried) without rebuilding the controller. `fetch` is used only for the update check
+ * (§16); without it the panel simply never shows the update banner.
  */
 export function createPanelController({
   document, adapter, i18n, loadI18n, settingsApi = defaultSettingsApi, createHostLink: makeHostLink = createHostLink,
-  timers = {}, navigator = {},
+  timers = {}, navigator = {}, fetch: fetcher = null,
 } = {}) {
   const setTimeout = timers.setTimeout ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
   const clearTimeout = timers.clearTimeout ?? ((id) => globalThis.clearTimeout(id));
@@ -79,6 +84,8 @@ export function createPanelController({
     runWith: { tab: null, mic: null },
     stopReason: null, ownStopAt: -Infinity, startRun: 0, capturedTabId: null, capturedTitle: null,
     appliedLanguage: null,
+    // §16: the running version (from the manifest) and a newer published one, or null when there is none to offer.
+    currentVersion: null, update: null,
   };
   let disposed = false;
   let latest = null;
@@ -261,6 +268,14 @@ export function createPanelController({
     setAttr('btn-mute', 'data-muted', String(vm.mute.muted));
     setAttr('btn-mute', 'aria-label', t(vm.mute.labelKey));
     setAttr('btn-mute', 'title', t(vm.mute.labelKey));
+
+    const shown = i18n.current.language;
+    for (const code of UI_LANGUAGE_BUTTONS) setAttr(`ui-lang-${code}`, 'aria-pressed', String(shown === code));
+    // Not a live region (a plain row may be hidden, 8.2.1): a new version is news, not an alert.
+    setHidden('update-note', S.update === null);
+    setText('update-text', S.update === null ? '' : t('ext.update.available', { version: S.update.version, current: S.currentVersion }));
+    // Reloading the extension ends every running lane, so the button waits until nothing runs.
+    setHidden('btn-update-reload', S.update === null || S.lastActive);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -579,6 +594,18 @@ export function createPanelController({
   }
 
   // ---------------------------------------------------------------------------------------------
+  // The update check (§16): once per panel open, silent on any failure.
+  async function refreshUpdate() {
+    const version = attempt(() => adapter.runtime.getManifest?.().version);
+    S.currentVersion = typeof version === 'string' ? version : null;
+    if (S.currentVersion === null || typeof fetcher !== 'function') return;
+    const result = await checkForUpdate({ fetch: fetcher, currentVersion: S.currentVersion });
+    if (disposed) return;
+    S.update = result.available ? Object.freeze({ version: result.version }) : null;
+    render();
+  }
+
+  // ---------------------------------------------------------------------------------------------
   function bind(id, type, handler) {
     const el = els.get(id);
     if (!el) return;
@@ -650,6 +677,11 @@ export function createPanelController({
     const openOptions = () => adapter.runtime.openOptionsPage();
     bind('btn-options', 'click', openOptions);
     bind('btn-key-options', 'click', openOptions);
+    for (const code of UI_LANGUAGE_BUTTONS) {
+      bind(`ui-lang-${code}`, 'click', () => writeField((settings) => { settings.uiLanguage = code; }));
+    }
+    bind('btn-update-get', 'click', () => adapter.tabs.create({ url: UPDATE_SITE_URL }));
+    bind('btn-update-reload', 'click', () => { if (!S.lastActive) adapter.runtime.reload(); });
 
     subscribe(adapter.storage.onChanged, onStorageChanged);
     subscribe(adapter.tabs?.onActivated, onTabActivated);
@@ -666,6 +698,7 @@ export function createPanelController({
     void watchMicPermission();
     onHostRecord(hostRecord);
     render();
+    void refreshUpdate();
   }
 
   function dispose() {

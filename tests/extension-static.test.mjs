@@ -47,7 +47,7 @@ const EXPECTED_FILES = Object.freeze([
   ['A', 'extension/lib/builtin-key.js'], ['C', 'extension/lib/links.js'], ['B', 'extension/lib/constants.js'],
   ['B', 'extension/lib/protocol.js'], ['B', 'extension/lib/settings.js'], ['B', 'extension/lib/ui-state.js'],
   ['B', 'extension/lib/caption-frames.js'], ['C', 'extension/lib/chrome-adapter.js'], ['C', 'extension/lib/i18n.js'],
-  ['C', 'extension/lib/dom-i18n.js'],
+  ['C', 'extension/lib/dom-i18n.js'], ['C', 'extension/lib/update-check.js'],
   ['C', 'extension/background/service-worker.js'], ['C', 'extension/background/sw-core.js'], ['C', 'extension/background/arming.js'],
   ['B', 'extension/engine/host.html'], ['B', 'extension/engine/host.js'], ['B', 'extension/engine/lane-host.js'],
   ['B', 'extension/engine/lane-engine.js'], ['B', 'extension/engine/tab-lane.js'], ['B', 'extension/engine/mic-lane.js'],
@@ -84,6 +84,7 @@ const ENTRY_FILES = Object.freeze([
 const OVERLAY = 'extension/overlay/overlay.js';
 const CHROME_ADAPTER = 'extension/lib/chrome-adapter.js';
 const LINKS = 'extension/lib/links.js';
+const UPDATE_CHECK = 'extension/lib/update-check.js';
 const BUILTIN_KEY = 'extension/lib/builtin-key.js';
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const TEXT_FILE = /\.(?:js|mjs|html|css|json)$/;
@@ -843,10 +844,15 @@ const loadRegistry = () => {
     const scenarios = await readFile(join(repoRoot, 'tests/fixtures/scenarios.mjs'), 'utf8');
     const secretMark = /export const SECRET_MARK = '([^']+)'/.exec(scenarios)?.[1];
     if (!secretMark) throw new Error('SECRET_MARK is not declared in tests/fixtures/scenarios.mjs');
+    // §16: the download site the update check reads. Its two URLs are read from the module's TEXT (importing it here would
+    // put it in the module cache before the purity probe) and, like the documentation links, may be written only there.
+    const updateText = await readFile(join(repoRoot, UPDATE_CHECK), 'utf8');
+    const updateUrls = [...updateText.matchAll(/export const UPDATE_[A-Z]+_URL = '(https:\/\/[^']+)';/g)].map((match) => match[1]);
+    if (updateUrls.length !== 2) throw new Error(`${UPDATE_CHECK} must declare UPDATE_SITE_URL and UPDATE_MANIFEST_URL`);
     return Object.freeze({
-      allowedOrigins: new Set([...config.ENDPOINT_ORIGINS, ...config.DOCUMENTATION_ORIGINS]),
-      documentationUrls: new Set(Object.values(config.DOCUMENTATION_LINKS)),
-      documentationFiles: new Set([LINKS]),
+      allowedOrigins: new Set([...config.ENDPOINT_ORIGINS, ...config.DOCUMENTATION_ORIGINS, ...updateUrls.map((url) => new URL(url).origin)]),
+      documentationUrls: new Set([...Object.values(config.DOCUMENTATION_LINKS), ...updateUrls]),
+      documentationFiles: new Set([LINKS, UPDATE_CHECK]),
       secretPatterns: release.SECRET_PATTERNS,
       secretMark,
     });
@@ -1254,7 +1260,7 @@ test('scanner R13 and layout: unsafe names, symlinks, foreign file types, stray 
   assert.equal(new Set(EXPECTED_FILES.map(([, path]) => path)).size, EXPECTED_FILES.length);
   assert.ok(EXPECTED_FILES.every(([group, path]) => 'ABCD'.includes(group) && path.startsWith('extension/')));
   assert.ok(ENTRY_FILES.every((path) => EXPECTED_FILES.some(([, expected]) => expected === path)), 'every R10 entry is on the §3.1 list');
-  assert.equal(EXPECTED_FILES.length, 46);
+  assert.equal(EXPECTED_FILES.length, 47, '46 + lib/update-check.js (§16)');
 });
 
 test('scanner R3: a classic script is one parseable IIFE without import, export or require, for overlay.js and for every manifest content script', async (t) => {

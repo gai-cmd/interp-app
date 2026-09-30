@@ -1,0 +1,190 @@
+/* Live Interpreter download and guide page. Light, print-friendly; the same stylesheet prints the PDF manuals. */
+:root {
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --text: #18202b;
+  --sub: #566172;
+  --line: #dde3eb;
+  --accent: #23548a;
+  --accent-strong: #1a4372;
+  --accent-soft: #e6eef8;
+  --chip: #f0f3f7;
+  --chip-line: #c5cfdb;
+  --folder: #d99a1c;
+  --radius: 14px;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  overflow-wrap: break-word;
+}
+/* Korean: break between words, never inside one; the anywhere fallback only stops a long token from overflowing. */
+html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
+/* Japanese has no spaces between words: keep-all would turn a sentence into one unbreakable run. */
+html:lang(ja) body {
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, sans-serif;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  line-break: strict;
+}
+
+a { color: var(--accent); }
+a:hover { color: var(--accent-strong); }
+
+.page { max-width: 920px; margin: 0 auto; padding: 24px 16px 48px; }
+
+/* --- header ---------------------------------------------------------------------------------------------------- */
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.brand img { width: 52px; height: 52px; border-radius: 12px; flex: none; }
+.brand h1 { margin: 0; font-size: 1.7rem; line-height: 1.2; letter-spacing: -0.01em; }
+.brand .tagline { margin: 4px 0 0; color: var(--sub); font-size: 0.95rem; line-height: 1.5; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 10px; }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 3px; }
+.seg button {
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  border: 0;
+  background: transparent;
+  color: var(--sub);
+  padding: 8px 14px;
+  min-height: 36px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* --- download card --------------------------------------------------------------------------------------------- */
+.hero { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+.hero p { margin: 10px 0 0; }
+.download {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 1.1rem;
+  line-height: 1.3;
+  padding: 14px 24px;
+  border-radius: 12px;
+}
+.download:hover { background: var(--accent-strong); color: #fff; }
+.download .icon { width: 22px; height: 22px; fill: currentColor; flex: none; }
+.version { color: var(--text); font-weight: 600; }
+.note { color: var(--sub); font-size: 0.95rem; }
+.hero-links { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 0.95rem; }
+
+/* --- sections -------------------------------------------------------------------------------------------------- */
+section.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 24px; margin-top: 16px; }
+section.card h2, .foot h2 { margin: 0 0 6px; font-size: 1.25rem; line-height: 1.4; }
+section.card p { margin: 8px 0 0; }
+section.card .intro { color: var(--sub); }
+
+ol.steps { list-style: none; counter-reset: step; padding: 0; margin: 12px 0 0; display: grid; gap: 12px; }
+ol.steps > li { counter-increment: step; position: relative; padding-left: 42px; min-height: 28px; }
+ol.steps > li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0.1em;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.9rem;
+  line-height: 28px;
+  text-align: center;
+}
+.step-note { display: block; margin-top: 8px; padding: 8px 12px; background: var(--chip); border-radius: 8px; color: var(--sub); font-size: 0.95rem; }
+
+ul.bullets { margin: 12px 0 0; padding-left: 1.25em; display: grid; gap: 8px; }
+.faq { margin: 8px 0 0; }
+.faq dt { font-weight: 700; margin-top: 14px; }
+.faq dd { margin: 4px 0 0; }
+
+/* --- Chrome-like chips (inline so long labels can wrap instead of overflowing a narrow screen) ------------------- */
+.chip {
+  display: inline;
+  padding: 1px 9px;
+  border: 1px solid var(--chip-line);
+  background: var(--card);
+  color: var(--accent-strong);
+  font-weight: 600;
+  font-size: 0.92em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.chip-btn { border-radius: 999px; }
+.chip-toggle, .chip-folder { border-radius: 6px; }
+.chip-folder { color: var(--text); }
+.chip-folder .icon { width: 1.05em; height: 1.05em; fill: var(--folder); vertical-align: -0.15em; margin-right: 4px; }
+.switch { display: inline-block; position: relative; width: 26px; height: 14px; margin-left: 6px; border-radius: 999px; background: var(--accent); vertical-align: -1px; }
+.switch::after { content: ""; position: absolute; top: 2px; right: 2px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+.chip-icon { display: inline-block; width: 1.65em; height: 1.65em; padding: 0.3em; border-radius: 50%; background: var(--chip); color: var(--text); vertical-align: -0.45em; line-height: 0; }
+.chip-icon .icon { width: 100%; height: 100%; fill: currentColor; }
+.chip-ext { width: 1.35em; height: 1.35em; vertical-align: -0.3em; border-radius: 4px; }
+kbd {
+  display: inline-block;
+  font: 600 0.82em/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 1px 7px;
+  border: 1px solid var(--chip-line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--card);
+  white-space: nowrap;
+}
+kbd + kbd { margin-left: 3px; }
+code {
+  font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--chip);
+  padding: 1px 6px;
+  border-radius: 6px;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* --- footer ---------------------------------------------------------------------------------------------------- */
+.foot { margin-top: 24px; padding: 4px 4px 0; }
+.foot h2 { font-size: 1rem; }
+.manuals { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.95rem; }
+
+.print-only { display: none; }
+
+/* --- print (the PDF manuals) ----------------------------------------------------------------------------------- */
+@page { size: A4; margin: 14mm 13mm 15mm; }
+@media print {
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { background: #fff; font-size: 10.5pt; line-height: 1.65; }
+  .page { max-width: none; padding: 0; }
+  .controls, .download, .hero-links, .manuals, .foot h2 { display: none !important; }
+  .print-only { display: block !important; }
+  .brand .manual-title { margin: 4px 0 0; font-weight: 700; font-size: 11.5pt; color: var(--accent-strong); }
+  .top { margin-bottom: 12px; }
+  .hero { padding: 12px 16px; }
+  .hero .version { margin-top: 0; }
+  .source { color: var(--sub); }
+  section.card { padding: 12px 16px; margin-top: 10px; }
+  section.card h2 { font-size: 13pt; break-after: avoid; }
+  ol.steps { gap: 8px; }
+  ol.steps > li, .faq dt, .faq dd, ul.bullets > li { break-inside: avoid; }
+  .faq dt { break-after: avoid; }
+  a { color: var(--text); text-decoration: none; }
+}
