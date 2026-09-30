@@ -88,9 +88,11 @@ export function withDeadline(operation, { signal, timeoutMs = 30000,
  * Models/settings change only through a caller-supplied, registered-policy resolver.
  * Resolver receives sanitized errors; it must return a request, or null to stop.
  * No voice text execution or automatic provider/key changes are accepted here.
+ * handBack (2026-09-30, optional) lists codes the caller settles itself — a
+ * site-key swap — so they are thrown at once, without the wait or fallback.
  */
-export function createRetryExecutor({ call, context, ...timing }) {
-  if (typeof call !== 'function' || !context?.signal) throw new ProviderError('INVALID_REQUEST');
+export function createRetryExecutor({ call, context, handBack = [], ...timing }) {
+  if (typeof call !== 'function' || !context?.signal || !Array.isArray(handBack)) throw new ProviderError('INVALID_REQUEST');
   const budget = createBudget();
   const base = { ...context, budget };
   const models = new Set();
@@ -115,7 +117,7 @@ export function createRetryExecutor({ call, context, ...timing }) {
             const error = normalizeError(raw);
             assertActive(base.signal);
             // A preflight failure must not spin without consuming an attempt.
-            if (budget.used === before || !budget.remaining) throw error;
+            if (budget.used === before || !budget.remaining || handBack.includes(error.code)) throw error;
             const replacement = fallback.has(error.code) ? resolveFallback?.(error, next) : null;
             if (!replacement && !transient.has(error.code)) throw error;
             if (transient.has(error.code)) await waitForRetry(retryDelay(budget.used, error, timing.random), { ...timing, signal: base.signal });

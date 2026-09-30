@@ -290,7 +290,19 @@ export function createVoiceEngine({ router, deviceTTS = null, getAudioContext, s
       return run;
     },
     cancel() { return cancelActive(); },
+    // Also retires the kept session (2026-09-30): restart follows a key event,
+    // and the kept socket was authenticated with the key in use when it
+    // opened. After a built-in pool rotation nothing else closes it, so every
+    // later line went to the spent key's socket. An idle kept session closes
+    // now (only while it still holds the shared slot, so a simultaneous
+    // session there is never touched); a line in progress keeps its session,
+    // and openSession replaces the lease at the next line.
     restart() {
+      leaseSignature = null;
+      if (lease && active === null && manager.isCurrent(lease.generation)) {
+        lease = null;
+        manager.close().catch(() => {});
+      }
       policy.restart();
       suspended = null; lastLiveError = null;
       const pending = cooldown;

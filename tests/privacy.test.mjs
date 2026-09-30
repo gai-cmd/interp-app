@@ -538,8 +538,12 @@ test('P3-34 the policy export carries no key, and the generator is the only plac
 });
 
 // Owner (2026-09-07): free-tier site keys are used in turns. A 429 on the
-// active one moves the pool on and the screen says so; the last one leaves it spent.
-test('built-in key pool: a 429 on the site key moves to the spare key, the badge and the screen say so, and the last key leaves the pool spent', async t => {
+// active one moves the pool on; the last one leaves it spent.
+// 2026-09-30 (owner: "무료키가 교체될때 타임러그를 최대한 줄여서"): this used to
+// pin "429 -> failed -> the app restarts on the spare key". The spare key now
+// takes over inside the running session — no failure, no second microphone,
+// no press — so the assertions about the intermediate failure were reversed.
+test('built-in key pool: a 429 on the site key continues on the spare key in the same session, and the last key leaves the pool spent', async t => {
   const captured = captureConsole(); t.after(captured.restore);
   const keys = [`${secrets.personal}-POOL-ONE`, `${secrets.personal}-POOL-TWO`];
   const b = await boot({ builtinKey: () => keys });
@@ -547,46 +551,54 @@ test('built-in key pool: a 429 on the site key moves to the spare key, the badge
   const keysStore = b.app.config.keyStore;
   const badge = () => b.app.shell.elements.modeBadge.textContent;
   const notice = () => byClass(b.root, 'sim-notice');
+  const status = () => byClass(b.root, 'sim-status');
+  const snapshot = () => b.app.listenEngines.direct.snapshot();
   assert.equal(badge(), b.app.i18n.t('mode.builtin'), 'the badge never says which site key is in use');
-  const failWith429 = async (expectedKey) => {
-    const sockets = b.sockets.length;
-    b.el('sim-start').dispatch('click');
-    await until(() => b.audio.nodes.at(-1)?.port.onmessage);
-    b.microphone.feed(new Float32Array(4096).fill(0.1));
-    await until(() => b.sockets.length === sockets + 1);
-    const ws = b.sockets[sockets];
-    assert.equal(b.socketURLs[sockets], `${LIVE_ENDPOINT}?key=${encodeURIComponent(expectedKey)}`);
-    live.ready(ws);
-    await until(() => b.app.listenEngines.direct.snapshot().status === 'running');
-    ws.json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: `${expectedKey} ${SECRET_MARK}` } });
-    await until(() => b.app.listenEngines.direct.snapshot().status === 'failed');
-    await until(() => !b.app.listenEngines.direct.snapshot().busy);
-  };
-  await failWith429(keys[0]);
-  assert.deepEqual([keysStore.getMetadata('gemini', 'personal').builtinIndex, keysStore.getMetadata('gemini', 'personal').builtinExhausted], [1, false], 'the pool moved on');
-  assert.equal(badge(), b.app.i18n.t('mode.builtin'));
-  assert.equal(notice().getAttribute('data-failure'), 'builtin-rotated');
-  assert.equal(notice().textContent, b.app.i18n.t('sim.error.builtinRotated'));
-  // Silent rotation: the app restarts the session itself on the spare key — no press.
-  const before = b.sockets.length;
-  b.clock.advance(1);
+  b.el('sim-start').dispatch('click');
   await until(() => b.audio.nodes.at(-1)?.port.onmessage);
   b.microphone.feed(new Float32Array(4096).fill(0.1));
-  await until(() => b.sockets.length === before + 1);
-  assert.equal(b.socketURLs[before], `${LIVE_ENDPOINT}?key=${encodeURIComponent(keys[1])}`, 'the automatic restart uses the spare key');
-  live.ready(b.sockets[before]);
-  await until(() => b.app.listenEngines.direct.snapshot().status === 'running');
-  b.sockets[before].json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: `${keys[1]} ${SECRET_MARK}` } });
-  await until(() => b.app.listenEngines.direct.snapshot().status === 'failed');
-  await until(() => !b.app.listenEngines.direct.snapshot().busy);
+  await until(() => b.sockets.length === 1);
+  assert.equal(b.socketURLs[0], `${LIVE_ENDPOINT}?key=${encodeURIComponent(keys[0])}`);
+  live.ready(b.sockets[0]);
+  await until(() => snapshot().status === 'running');
+  const streams = b.microphone.streams.length, nodes = b.audio.nodes.length;
+  const statuses = [];
+  const off = b.app.listenEngines.direct.subscribe((value) => statuses.push(value.status));
+  t.after(off);
+  b.sockets[0].json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: `${keys[0]} ${SECRET_MARK}` } });
+  await until(() => snapshot().status === 'reconnecting');
+  assert.equal(snapshot().reconnectReason, 'key');
+  assert.equal(status().textContent, b.app.i18n.t('sim.status.reconnecting'), 'a calm status, no count');
+  assert.equal(notice().getAttribute('data-failure'), 'none', 'no failure is shown');
+  // Speech during the swap is held for the next session.
+  b.microphone.feed(new Float32Array(4096).fill(0.1));
+  await until(() => b.sockets.length === 2);
+  assert.equal(b.socketURLs[1], `${LIVE_ENDPOINT}?key=${encodeURIComponent(keys[1])}`, 'the spare key, with no press');
+  live.ready(b.sockets[1]);
+  await until(() => snapshot().status === 'running');
   b.clock.advance(1);
-  assert.equal(b.sockets.length, before + 1, 'a spent pool restarts nothing');
+  await until(() => b.sockets[1].sent.some((message) => message.realtimeInput?.audio));
+  assert.equal(statuses.includes('failed'), false, 'the operation never failed');
+  assert.deepEqual([b.microphone.streams.length, b.audio.nodes.length], [streams, nodes], 'the microphone was never reopened');
+  assert.deepEqual([keysStore.getMetadata('gemini', 'personal').builtinIndex, keysStore.getMetadata('gemini', 'personal').builtinExhausted], [1, false], 'the pool moved on');
+  assert.equal(snapshot().metrics.keySwaps, 1);
+  assert.equal(badge(), b.app.i18n.t('mode.builtin'));
+  // The last key spent: the operation ends as before and the screen says the site key is blocked.
+  b.sockets[1].json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: `${keys[1]} ${SECRET_MARK}` } });
+  await until(() => snapshot().status === 'failed');
+  await until(() => !snapshot().busy);
+  b.clock.advance(1);
+  assert.equal(b.sockets.length, 2, 'a spent pool restarts nothing');
   assert.equal(keysStore.getMetadata('gemini', 'personal').builtinExhausted, true);
   assert.equal(notice().getAttribute('data-failure'), 'builtin-quota');
   assert.equal(notice().textContent, b.app.i18n.t('sim.error.builtinQuota'));
   assert.equal(badge(), b.app.i18n.t('mode.builtin'));
   assert.equal(leaks({ observed: observable(b), logs: captured.calls }), false);
   assert.equal(leaks([...b.storage]), false, 'no pool key is ever stored');
+  // What is stored is the cooldown record: two 8-hex fingerprints and times.
+  const record = JSON.parse(b.storage.get('interp-app.builtin-cooldown.v1'));
+  assert.equal(Object.keys(record).length, 2);
+  assert.ok(Object.keys(record).every((print) => /^[0-9a-f]{8}$/.test(print)));
 });
 
 test('P3-44 first visit starts Live from the UI with a protected site default and no persistence permission', async t => {

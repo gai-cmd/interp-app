@@ -300,6 +300,7 @@
   "diagnostics.inputQueueMax": "入力キューの最大フレーム数",
   "diagnostics.inputSampleRate": "入力サンプルレート（Hz）",
   "diagnostics.interrupted": "未完の字幕数",
+  "diagnostics.keySwaps": "サイトキーを切り替えて続けた回数",
   "diagnostics.lastError": "直近のエラー識別子：{code}（原文やキーは記録しません）",
   "diagnostics.live": "同時通訳を確認",
   "diagnostics.liveScope": "Liveテストは選択したプロバイダー・モデル・キーの種類で行う短い接続テストです。音声テストやハブの受信結果とは別です。",

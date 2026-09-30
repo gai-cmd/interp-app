@@ -2,7 +2,7 @@
 // one sequential flow PTT/text -> combined translate -> captions -> voice ->
 // idle, with cancellation. Policy only; no legacy handlers are ported.
 import { isPolicyError, PolicyError } from '../policy/errors.js';
-import { ProviderError, normalizeError as normalizeProviderError } from '../providers/contract.js';
+import { ProviderError, QUOTA_ERROR_CODES, normalizeError as normalizeProviderError } from '../providers/contract.js';
 import { createRetryExecutor } from './retry.js';
 import { createVoiceEngine } from './voice.js';
 import { createState, TURN_PHASE } from '../state.js';
@@ -38,11 +38,18 @@ const silence = Object.freeze({ sourceText: '', translatedText: '', detectedLang
  * replay(turnId, { output: 'device' }). Key store events abort work, close the
  * Live socket and, when shared use ends, clear the in-memory conversation.
  * Records stay OFF (§14.1). close() ends everything; the engine is then dead.
+ * swapCredential(error) -> Promise<boolean> is optional (2026-09-30): when a
+ * turn's translation fails with a 429-family code on the site's built-in key
+ * and the hook reports that a spare key took over, the same turn is sent again
+ * once, silently, with the input it already has (text or recorded audio).
+ * A 'key-rotated' key-store event is such a swap, not a key change: it ends
+ * no work and leaves the shared Live slot alone.
  */
 export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS = null, getAudioContext, isBusy = () => false,
-  sessionId = globalThis.crypto.randomUUID(), setTimeout = globalThis.setTimeout,
+  swapCredential = null, sessionId = globalThis.crypto.randomUUID(), setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout, now = () => Date.now(), random = Math.random } = {}) {
-  if (typeof isBusy !== 'function' || typeof config?.router?.call !== 'function' || typeof config.keyStore?.subscribe !== 'function'
+  if ((swapCredential !== null && typeof swapCredential !== 'function')
+    || typeof isBusy !== 'function' || typeof config?.router?.call !== 'function' || typeof config.keyStore?.subscribe !== 'function'
     || typeof config.resolveFallback !== 'function' || typeof capture?.start !== 'function'
     || (voiceEngine !== undefined && typeof voiceEngine?.speak !== 'function')
     || (voiceEngine === undefined && typeof getAudioContext !== 'function')) {
@@ -84,6 +91,27 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
   function syncSelection() {
     if (!store.closed) store.setKeySelection(selection());
   }
+  // Only the site's built-in pool with a key to spare right now is worth
+  // asking; the hook itself stays the authority (it never swaps a person's
+  // own key). builtinSpare counts cooldowns: with every other key still
+  // cooling down (review, 2026-09-30) there is nothing to swap to, and the
+  // executor's own server wait on the key in use applies exactly as before.
+  function builtinSwappable(address) {
+    if (typeof swapCredential !== 'function' || address?.keySource !== 'personal') return false;
+    try {
+      const meta = config.keyStore.getMetadata(address.providerId, address.keySource);
+      return meta?.builtin === true && meta.builtinSpare === true;
+    } catch { return false; }
+  }
+  // Never outlives the turn: a cancel while the hook decides settles at once.
+  async function swapKey(error, signal) {
+    if (!QUOTA_ERROR_CODES.includes(error.code) || signal.aborted) return false;
+    let onAbort;
+    const aborted = new Promise((resolve) => { onAbort = () => resolve(false); signal.addEventListener('abort', onAbort, { once: true }); });
+    try { return (await Promise.race([swapCredential(error), aborted])) === true && !signal.aborted; }
+    catch { return false; }
+    finally { signal.removeEventListener('abort', onAbort); }
+  }
 
   function launch(turnId, work) {
     const controller = new AbortController();
@@ -120,18 +148,33 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
     const address = credential();
     if (!address) { store.failTurn(turnId, { errorCode: 'CREDENTIAL_REQUIRED' }); return; }
     const route = { providerId: address.providerId, keySource: address.keySource, transport: store.snapshot().transport };
-    const executor = createRetryExecutor({ call: config.router.call, ...timing, timeoutMs: SEQ_POLICY.translateTimeoutMs,
-      context: { ...route, turnId, sessionId: store.snapshot().sessionId, generation: turn.generation, signal: turn.signal } });
     const request = { input, targetLanguage: current.targetLanguage,
       ...(current.sourceLanguage === 'auto' ? {} : { sourceLanguage: current.sourceLanguage }) };
     let result;
-    try {
-      result = await executor.run('translate', request, { resolveFallback: config.resolveFallback(route.providerId) });
-    } catch (raw) {
-      const error = normalizeError(raw);
-      if (stale(turn) || error.code === 'ABORTED') { store.cancelTurn(turnId); return; }
-      store.failTurn(turnId, { errorCode: error.code });
-      return;
+    // One swap per turn at most; the retry gets a fresh executor (and budget)
+    // because the router resolves a new credential reference for it.
+    for (let swapped = false; ;) {
+      // On a site key that could be swapped, a 429 comes straight back instead
+      // of first waiting out the executor's backoff on the spent key.
+      const swappable = !swapped && builtinSwappable(address);
+      const executor = createRetryExecutor({ call: config.router.call, ...timing, timeoutMs: SEQ_POLICY.translateTimeoutMs,
+        handBack: swappable ? [...QUOTA_ERROR_CODES] : [],
+        context: { ...route, turnId, sessionId: store.snapshot().sessionId, generation: turn.generation, signal: turn.signal } });
+      try {
+        result = await executor.run('translate', request, { resolveFallback: config.resolveFallback(route.providerId) });
+        break;
+      } catch (raw) {
+        const error = normalizeError(raw);
+        if (stale(turn) || error.code === 'ABORTED') { store.cancelTurn(turnId); return; }
+        if (swappable && await swapKey(error, turn.signal)) {
+          swapped = true;
+          if (stale(turn)) { store.cancelTurn(turnId); return; }
+          continue;
+        }
+        if (stale(turn)) { store.cancelTurn(turnId); return; }
+        store.failTurn(turnId, { errorCode: error.code });
+        return;
+      }
     }
     // A late REST result after cancel or a key/language change is discarded.
     if (stale(turn)) { store.cancelTurn(turnId); return; }
@@ -160,6 +203,12 @@ export function createSeqEngine({ config, capture, voiceEngine, state, deviceTTS
 
   function onKeyEvent(event) {
     if (closed) return;
+    // A built-in pool rotation (2026-09-30) replaces a spent site key, it does
+    // not revoke it: a turn in progress may be the one retrying on the new key,
+    // and the shared Live slot may hold the simultaneous session that is
+    // swapping in place — neither is ended here. Voice gets a fresh cool-down
+    // and retires its own kept session, which the spent key authenticated.
+    if (event.type === 'key-rotated') { syncSelection(); voice.restart?.(); return; }
     const aborted = active !== null;
     abortActive();
     const sharedEnded = event.type === 'shared-use-ended' || event.type === 'store-closed'

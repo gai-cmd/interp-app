@@ -6,10 +6,15 @@ import { streamAudio } from './stream-audio.mjs';
 import { createSocketFixture, deferred, tick } from './live.mjs';
 export { deferred, tick };
 
-export function simFixture({ autoClose = true, permission, blocked = false } = {}) {
-  const audio = streamAudio(), sockets = createSocketFixture({ autoClose });
+// builtin (2026-09-30): a list of synthetic keys registered as the site's
+// built-in pool instead of the personal key; engine: extra createSimEngine
+// options (e.g. swapCredential). urls records every socket URL opened.
+export function simFixture({ autoClose = true, permission, blocked = false, builtin = null, engine: engineOptions = {} } = {}) {
+  const urls = [];
+  const audio = streamAudio(), sockets = createSocketFixture({ autoClose, inspectURL: (url) => urls.push(String(url)) });
   const config = createAppConfig({ WebSocket: sockets.WebSocket, fetch: async () => { throw Error('unexpected REST'); } });
-  config.keyStore.setPersonal('gemini', 'synthetic-sim-credential');
+  if (builtin) config.keyStore.setBuiltin('gemini', builtin);
+  else config.keyStore.setPersonal('gemini', 'synthetic-sim-credential');
   config.keyStore.select('gemini', 'personal');
   const manager = createSessionManager({ timeoutMs: 50 });
   const track = Object.assign(new EventTarget(), { readyState: 'live', muted: false,
@@ -32,7 +37,7 @@ export function simFixture({ autoClose = true, permission, blocked = false } = {
   const calls = [];
   const engine = createSimEngine({ router: { call(...args) { calls.push(args[0]); return config.router.call(...args); } },
     sessionManager: manager, platform, getAudioContext: () => audio.context,
-    resolveFallback: config.resolveFallback('gemini', 'live'), ...audio.options, random: () => 0.5 });
+    resolveFallback: config.resolveFallback('gemini', 'live'), ...audio.options, random: () => 0.5, ...engineOptions });
   const frame = (value = 0.25) => node.port.onmessage?.({ data: new Float32Array(1024).fill(value) });
   const start = (request = {}, context = {}) => engine.start({ targetLanguage: 'ko', ...request },
     { providerId: 'gemini', keySource: 'personal', sessionId: 'sim-test', ...context });
@@ -44,7 +49,7 @@ export function simFixture({ autoClose = true, permission, blocked = false } = {
     const handle = start(request); await tick(); frame(); await tick(); await open(); await handle.ready; return handle;
   }
   return { engine, manager, config, audio, track, stream, platform, node, frame, start, open, running,
-    calls, sockets: sockets.sockets, micCalls: () => micCalls,
+    calls, sockets: sockets.sockets, urls, micCalls: () => micCalls,
     async close() {
       const closing = engine.close();
       for (const s of sockets.sockets) s.finishClose();

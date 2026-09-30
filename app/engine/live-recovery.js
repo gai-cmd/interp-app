@@ -11,18 +11,22 @@ const fallbackable = new Set(['MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'UNAV
  * Router alone consumes budget. After physical close, wait() authorizes one open.
  * opened() means setup/hello completed; activity() starts the stable interval.
  * Use the operation signal, never the old lease's aborted cleanup signal.
+ * keySwapped() (2026-09-30) authorizes one open at once, after physical close,
+ * because a spare site key took over from one whose quota was spent: no
+ * backoff and no charge — the key pool bounds these opens, not this budget.
  */
 export function createLiveRecovery({ now = () => performance.now(), ...timing } = {}) {
   const policy = createLiveRetryPolicy({ now, ...timing });
   let attempts = createBudget({ limit: 4 });
-  let stableSince = null, address, permitted = true, busy = false;
+  let stableSince = null, address, permitted = true, busy = false, swapped = false;
   const budget = Object.freeze({
     get used() { return attempts.used; },
     get remaining() { return attempts.remaining; },
     consume(context = {}) {
       assertActive(context.signal);
       if (busy || !permitted) throw new ProviderError('BUDGET_EXHAUSTED');
-      attempts.consume(context);
+      if (swapped) swapped = false;
+      else attempts.consume(context);
       address = { providerId: context.providerId, keySource: context.keySource };
       permitted = false;
       stableSince = null;
@@ -41,7 +45,11 @@ export function createLiveRecovery({ now = () => performance.now(), ...timing } 
     restart() {
       if (busy) throw new ProviderError('INVALID_REQUEST');
       attempts = createBudget({ limit: 4 });
-      address = undefined; permitted = true; stableSince = null; policy.restart();
+      address = undefined; permitted = true; swapped = false; stableSince = null; policy.restart();
+    },
+    keySwapped() {
+      if (busy || permitted || !attempts.used) throw new ProviderError('INVALID_REQUEST');
+      permitted = true; swapped = true; stableSince = null;
     },
     async wait(raw, { signal, closed = false, goAway = false, request, resolveFallback } = {}) {
       assertActive(signal);

@@ -282,7 +282,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       else await end();
       if (closed || epoch !== lifecycleGeneration) throw new ProviderError('ABORTED');
     };
-    function start(request) {
+    // options.restart (2026-09-30): the app restarting an operation the person
+    // started, with no gesture of its own; capture accepts sticky activation.
+    function start(request, options = {}) {
       try { policyRuntime.assertAction(kind === 'sim' ? ACTIONS.simDirect : ACTIONS.hubJoin); }
       catch (error) { announceBlock(error); throw error; }
       if (closed || doc.hidden || cleanupFailed || transitions || engine.snapshot().busy
@@ -322,7 +324,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
             }
           }
           handle = raw.start(request, { ...selection, signal: owned.signal,
-            sessionId: `listen-${owned.generation}` });
+            sessionId: `listen-${owned.generation}`, ...(options?.restart === true ? { restart: true } : {}) });
         } else handle = raw.join(request, { signal: owned.signal });
         Promise.resolve(handle.done).finally(() => owned.close()).catch(() => {});
         return handle;
@@ -381,8 +383,9 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
         startupNotices.push(`error.${redact(error).code}`);
       }
     }
-    // Register the memory-only fallback without accessing browser storage.
-    // Existing personal and shared credentials retain priority.
+    // Register the memory-only fallback; the keys never reach browser storage
+    // (2026-09-30: only the pool's cooldown record — fingerprints and times —
+    // is read there). Existing personal and shared credentials retain priority.
     const builtin = typeof builtinKey === 'function' ? builtinKey(PROVIDER_ID) : null;
     if (builtin) {
       try { config.keyStore.setBuiltin(PROVIDER_ID, builtin); }
@@ -451,7 +454,35 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     capture = createCapture({ platform,
       onLevel: (level) => shell?.seqView.onLevel(level), onWarning: (warning) => shell?.seqView.onWarning(warning) });
     voiceEngine = createVoiceEngine({ router: config.router, deviceTTS, getAudioContext, sessionManager: config.sessionManager, ...timing });
-    engine = createSeqEngine({ config, capture, voiceEngine, ...timing,
+    // 2026-09-30 (owner: "무료키가 교체될때 타임러그를 최대한 줄여서 자연스럽게
+    // 사용하게"): both engines ask this after a 429-family failure, and the
+    // site's built-in pool moves to its next key while the work goes on — the
+    // simultaneous session reconnects at once, a sequential turn is sent again
+    // once. Only the built-in key is ever swapped: a key the person entered and
+    // a shared event key answer false, exactly as a spent pool does. The
+    // rotation emits 'key-rotated', which the key-store subscriber below does
+    // not treat as a reason to stop work.
+    const swapBuiltinKey = async (error) => {
+      if (closed || !QUOTA_CODES.includes(error?.code)) return false;
+      const selection = attempt(() => config.keyStore.getSelection());
+      if (selection?.keySource !== 'personal') return false;
+      if (attempt(() => config.keyStore.getMetadata(selection.providerId, 'personal'))?.builtin !== true) return false;
+      const next = attempt(() => config.keyStore.rotateBuiltin(selection.providerId, { code: error.code })) ?? null;
+      attempt(() => shell?.render());
+      return next !== null;
+    };
+    // The same question asked without rotating, at the moment a session
+    // closes (review, 2026-09-30): only a built-in key with a spare that is not
+    // cooling down may show the calm "reconnecting" of a swap; a key the
+    // person entered, a shared key or a spent pool show today's failure path.
+    const canSwapBuiltinKey = (error) => {
+      if (closed || !QUOTA_CODES.includes(error?.code)) return false;
+      const selection = attempt(() => config.keyStore.getSelection());
+      if (selection?.keySource !== 'personal') return false;
+      const meta = attempt(() => config.keyStore.getMetadata(selection.providerId, 'personal'));
+      return meta?.builtin === true && meta.builtinSpare === true;
+    };
+    engine = createSeqEngine({ config, capture, voiceEngine, ...timing, swapCredential: swapBuiltinKey,
       isBusy: () => listeningBusy() || diagnostics?.snapshot().running != null || pwa?.snapshot().applying === true });
     store = engine.state;
     notify = (key) => { if (!store.closed) attempt(() => store.setNotice(resolveKey(i18n, key))); };
@@ -461,7 +492,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
       replay: gated(ACTIONS.seqReplay, engine.replay) });
 
     simEngine = createSimEngine({ router: config.router, sessionManager: config.sessionManager,
-      platform, getAudioContext, ...timing,
+      platform, getAudioContext, ...timing, swapCredential: swapBuiltinKey, canSwapCredential: canSwapBuiltinKey,
       resolveFallback: (...args) => config.resolveFallback(PROVIDER_ID, 'live')?.(...args),
       onLevel: level => shell?.simView?.onLevel(level) });
     // Owner (2026-09-07): the site's free-tier keys are used in turns. A quota
@@ -469,14 +500,21 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     // and tells the person to reopen; the last key's failure leaves the pool
     // spent, which the simultaneous screen then reports as blocked. One
     // rotation per failure event, never on a key the person entered.
-    let rotatedFor = null;
+    // 2026-09-30: swapBuiltinKey above now handles these inside the running
+    // work; this is the fallback for a failure it did not cover. A failure it
+    // answered "no spare" to finds the pool already spent here, so nothing
+    // rotates twice. Markers are remembered per failure (a turn's attempt, a
+    // listening generation): one marker slot let an old failed turn rotate
+    // the pool again as soon as another failure had overwritten it.
+    const rotatedFor = new Set();
     const rotateOnQuota = (code, marker) => {
-      if (!QUOTA_CODES.includes(code) || marker === rotatedFor) return;
-      rotatedFor = marker;
+      if (!QUOTA_CODES.includes(code) || rotatedFor.has(marker)) return;
+      rotatedFor.add(marker);
+      if (rotatedFor.size > 64) rotatedFor.delete(rotatedFor.values().next().value);
       const selection = attempt(() => config.keyStore.getSelection());
       if (selection?.keySource !== 'personal') return;
       if (attempt(() => config.keyStore.getMetadata(selection.providerId, 'personal'))?.builtin !== true) return;
-      const next = attempt(() => config.keyStore.rotateBuiltin(selection.providerId)) ?? null;
+      const next = attempt(() => config.keyStore.rotateBuiltin(selection.providerId, { code })) ?? null;
       attempt(() => shell?.render());
       attempt(() => shell?.simView?.refresh());
       if (!next) return;
@@ -491,7 +529,7 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     }));
     removers.push(engine.state.subscribe((current) => {
       for (const turn of current.turns ?? []) {
-        if (turn.phase === TURN_PHASE.ERROR && turn.errorCode) rotateOnQuota(turn.errorCode, `seq:${turn.turnId}`);
+        if (turn.phase === TURN_PHASE.ERROR && turn.errorCode) rotateOnQuota(turn.errorCode, `seq:${turn.turnId}:${turn.attempts}`);
       }
     }));
     // P2-13 requires speak/cancel even on browsers without speech synthesis.
@@ -658,7 +696,11 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     if (storage) shell.simView?.setStorage(storage);
     // P3-11: the simultaneous screen offers event participation and shows the control state.
     shell.simView?.setHubControl(eventLink);
-    removers.push(config.keyStore.subscribe(() => {
+    removers.push(config.keyStore.subscribe((event) => {
+      // 2026-09-30: a built-in pool rotation keeps the work running on the
+      // next key (swapBuiltinKey); only the screen follows it. Any other key
+      // event still ends work, as before.
+      if (event?.type === 'key-rotated') { attempt(() => shell?.render()); syncEvent(); return; }
       if (busy()) stopWork().catch(() => notify('error.SESSION_CLOSED'));
       else lifecycleGeneration++;
       // The joined shared-key event follows the shared metadata (eventId once
@@ -736,7 +778,10 @@ async function bootApp({ window: win, root: givenRoot, signal: bootSignal, hubs 
     settingsView.elements.billingControls.append(billingView.element);
     billingView.setProvider(settingsView.providerId);
     removers.push(shell.onLanguageChange(() => billingView.refresh()));
-    removers.push(config.keyStore.subscribe((event) => billingView.noteKeyChange(event?.generation ?? null)));
+    // A swap among the site's own keys is not "your key changed" (2026-09-30).
+    removers.push(config.keyStore.subscribe((event) => {
+      if (event?.type !== 'key-rotated') billingView.noteKeyChange(event?.generation ?? null);
+    }));
 
     // P3-24: the microphone permission and device controls, in the audio section.
     audioSettings = createAudioSettings({ permission: micPermission, i18n, document: doc,

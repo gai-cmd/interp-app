@@ -379,7 +379,10 @@ test('built-in key pool: rotateBuiltin moves to the next key, invalidates the ol
   const events = [];
   store.subscribe((event) => events.push(event.type));
   assert.deepEqual(store.rotateBuiltin('alpha'), { index: 1, count: 3 });
-  assert.deepEqual(events, ['key-changed']);
+  // 2026-09-30: was 'key-changed'. A rotation now has its own event type so the
+  // app can keep interpreting on the next key instead of stopping (owner:
+  // shorten the lag of a free-key swap); the reference check below is unchanged.
+  assert.deepEqual(events, ['key-rotated']);
   assert.throws(() => store.resolveCredential(first.reference, address()), { code: 'CREDENTIAL_MISMATCH' }, 'the spent key cannot be resolved through an old reference');
   assert.equal(store.resolveCredential(store.getCredentialRef(address()).reference, address()), keys[1]);
   assert.deepEqual(store.rotateBuiltin('alpha'), { index: 2, count: 3 });

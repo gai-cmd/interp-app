@@ -54,7 +54,8 @@ function validateContent(content) {
  * createGeminiLive({ live, clock? }).open({ input: { format: 'pcm16' },
  * targetLanguage: 'ko'|'en'|'ja', model? }, routerContext).
  * live MUST be the same client instance used by voice; use the session manager.
- * sendAudio accepts 1..512 samples as Uint8Array PCM16 LE mono 16kHz.
+ * sendAudio accepts 1..512 samples as Uint8Array PCM16 LE mono 16kHz and
+ * resolves with the bytes still in the socket's send buffer (a number only).
  * finishInput ends input once, keeps receiving, and never locally completes a turn.
  * closed is the transport's physical-closure promise, not a cleanup deadline.
  */
@@ -166,7 +167,7 @@ export function createGeminiLive({ live, clock } = {}) {
       if (stopped || inputEnded) throw new ProviderError('SESSION_CLOSED');
     }
     function send(message) {
-      try { transport.send(message); }
+      try { return transport.send(message); }
       catch (error) { fail(error); throw normalizeError(error); }
     }
     return Object.freeze({ closed: transport.closed,
@@ -175,7 +176,9 @@ export function createGeminiLive({ live, clock } = {}) {
         if (!(pcm instanceof Uint8Array) || !pcm.byteLength || pcm.byteLength % 2
           || pcm.byteLength > SIM_LIMITS.maxInputBytes) throw new ProviderError('INVALID_REQUEST');
         const data = btoa(String.fromCharCode(...pcm));
-        send({ realtimeInput: { audio: { data, mimeType: 'audio/pcm;rate=16000' } } });
+        // Resolves with the transport's buffered byte count (2026-09-30, see
+        // uplink-queue backlog pacing); callers that do not pace ignore it.
+        return send({ realtimeInput: { audio: { data, mimeType: 'audio/pcm;rate=16000' } } });
       },
       async finishInput() {
         assertActive(context.signal);

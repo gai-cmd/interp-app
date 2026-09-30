@@ -21,10 +21,16 @@ const stopTracks = stream => { for (const track of stream.getTracks()) attempt((
  * stop/cancel discard the incomplete tail and resampler filter history; done
  * resolves without audio storage. No flush or zero-padded final frame is sent.
  * Silence is valid input. Missing worklet messages for two seconds stop capture.
+ * activation 'sticky' (2026-09-30) is only for an app-initiated restart of an
+ * operation the person started with a gesture — after a site-key rotation the
+ * transient activation (browser-defined, a few seconds) has usually lapsed, so
+ * the page's sticky activation (platform.hasBeenActive) is accepted there.
+ * Every other start stays strict. Whether a browser then also resumes the new
+ * capture AudioContext without a gesture is its own policy (unverified here).
  */
 export function createStreamCapture({ platform = createPlatform(), onLevel, onFrame } = {}) {
   let active;
-  function start({ signal, turnId, sessionId, generation } = {}) {
+  function start({ signal, turnId, sessionId, generation, activation = 'transient' } = {}) {
     if (active) throw new Error('INVALID_REQUEST');
     let resolve;
     const done = new Promise(r => { resolve = r; });
@@ -84,7 +90,9 @@ export function createStreamCapture({ platform = createPlatform(), onLevel, onFr
     }
     async function open() {
       try {
-        if (!platform.isSecureContext || !platform.isUserActive()) {
+        const activated = activation === 'sticky' && typeof platform.hasBeenActive === 'function'
+          ? platform.hasBeenActive() === true : platform.isUserActive();
+        if (!platform.isSecureContext || !activated) {
           finish('error', 'MICROPHONE_UNAVAILABLE'); return;
         }
         // Resume before the first await to preserve transient user activation.

@@ -300,6 +300,7 @@
   "diagnostics.inputQueueMax": "Maximum input queue frames",
   "diagnostics.inputSampleRate": "Input sample rate (Hz)",
   "diagnostics.interrupted": "Interrupted captions",
+  "diagnostics.keySwaps": "Continued on another site key",
   "diagnostics.lastError": "Last error identifier: {code} (no raw messages or keys recorded)",
   "diagnostics.live": "Test simultaneous interpretation",
   "diagnostics.liveScope": "The Live test is a short connection test for the selected provider, model, and key source. Voice tests and hub reception are separate results.",

@@ -19,6 +19,10 @@ export const ERROR_CODES = Object.freeze([
   'SESSION_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429', 'UNAVAILABLE', 'NETWORK_ERROR',
   'MODEL_UNSUPPORTED', 'SETTINGS_UNSUPPORTED', 'SAFETY_BLOCKED', 'TIMEOUT',
 ]);
+// The 429 family: the quota behind one key is spent, per minute, per day or
+// for an unknown reason. 2026-09-30: engines hand exactly these to an injected
+// swapCredential() so the site's built-in keys can be swapped without a stop.
+export const QUOTA_ERROR_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']);
 
 // Codes are machine identifiers, never UI text. P1-04/P1-15 own translations.
 // Never retain a raw error, cause, credential, request, or caller-supplied message.

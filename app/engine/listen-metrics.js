@@ -7,10 +7,13 @@ export const METRIC_NAMES = Object.freeze([
   'inputQueueMax', 'droppedInputMs', 'firstPartialMs', 'firstFinalMs', 'revisions',
   'duplicates', 'interrupted', 'possibleGaps', 'firstAudioReceivedMs', 'firstAudioScheduledMs',
   'queueP50Ms', 'queueP95Ms', 'queueMaxMs', 'delayedMs', 'droppedAudioMs',
-  'ttsFirstRequestMs', 'ttsFirstStartMs', 'ttsWaitMs', 'skippedSentences', 'speechFailures', 'repliesSkipped'
+  'ttsFirstRequestMs', 'ttsFirstStartMs', 'ttsWaitMs', 'skippedSentences', 'speechFailures', 'repliesSkipped',
+  // 2026-09-30: sessions continued on a spare site key after a quota close.
+  'keySwaps'
 ]);
 const counters = new Set(['reconnects', 'closeFailures', 'sentFrames', 'droppedInputMs', 'revisions',
-  'duplicates', 'interrupted', 'possibleGaps', 'droppedAudioMs', 'skippedSentences', 'speechFailures', 'repliesSkipped']);
+  'duplicates', 'interrupted', 'possibleGaps', 'droppedAudioMs', 'skippedSentences', 'speechFailures', 'repliesSkipped',
+  'keySwaps']);
 const signed = new Set(['speechEndToFirstAudioMs']);
 const firsts = new Set(['setupMs', 'firstPartialMs', 'firstFinalMs', 'firstAudioReceivedMs',
   'firstAudioScheduledMs', 'ttsFirstRequestMs', 'ttsFirstStartMs']);

@@ -300,6 +300,7 @@
   "diagnostics.inputQueueMax": "입력 큐 최대 프레임 수",
   "diagnostics.inputSampleRate": "입력 샘플레이트(Hz)",
   "diagnostics.interrupted": "중단된 자막 수",
+  "diagnostics.keySwaps": "사이트 키를 바꿔 이어 간 횟수",
   "diagnostics.lastError": "최근 오류 식별자: {code} (원문·키는 기록하지 않아요)",
   "diagnostics.live": "동시통역 검사",
   "diagnostics.liveScope": "Live 검사는 선택한 제공자·모델·키 출처의 짧은 연결 검사예요. 목소리 검사나 허브 수신 결과와 별개예요.",

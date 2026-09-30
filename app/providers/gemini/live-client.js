@@ -128,6 +128,9 @@ export function createGeminiLiveClient({ WebSocket: Socket = globalThis.WebSocke
         }
         try { ws.send(text); }
         catch { stop(new ProviderError('NETWORK_ERROR')); throw new ProviderError('NETWORK_ERROR'); }
+        // 2026-09-30: the bytes still waiting to leave, a count and nothing
+        // else, so a caller sending held audio can keep clear of the guard.
+        return Number.isFinite(ws.bufferedAmount) ? ws.bufferedAmount : undefined;
       },
       close() {
         if (physicallyClosed) return closed;

@@ -16,7 +16,7 @@
 // supported / unsupported / stopped / lost, the control revision and the
 // venue's notice text. Joining never starts the microphone, a key or speech.
 import { SUPPORTED_LANGUAGES } from '../i18n/index.js';
-import { normalizeError } from '../providers/contract.js';
+import { QUOTA_ERROR_CODES, normalizeError } from '../providers/contract.js';
 import { LIVE_VOICE_GENDERS, LIVE_GENDER_VOICES, DEFAULT_LIVE_VOICE_GENDER, liveVoicePreference } from '../providers/gemini/live-config.js';
 import { createBinder, SOURCE_OPTIONS } from './seq-view.js';
 import { createCaptionBoard, DEFAULT_DISPLAY } from './caption-board.js';
@@ -34,7 +34,7 @@ export const KEY_FAILURE_CODES = Object.freeze(['CREDENTIAL_REQUIRED', 'CREDENTI
 // Owner (2026-09-07): the 429 family. On the site's built-in (free-tier) key
 // these mean the shared quota is used up, and the way out is to wait or to
 // enter one's own key — so they get their own message and the settings action.
-export const QUOTA_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT', 'TOKEN_LIMIT', 'UNKNOWN_429']);
+export const QUOTA_CODES = QUOTA_ERROR_CODES;
 export const BUILTIN_QUOTA_KEY = 'sim.error.builtinQuota';
 export const BUILTIN_ROTATED_KEY = 'sim.error.builtinRotated';
 const codePattern = /^[A-Z][A-Z0-9_]{0,39}$/;
@@ -87,7 +87,9 @@ export function readVoiceGender(storage) {
  * A quota failure on it reads "switching to another site key" while a spare
  * took over (the app then restarts the session itself), and "the site key is
  * blocked" once the pool is spent; both offer the settings action, since
- * one's own key is the immediate remedy.
+ * one's own key is the immediate remedy. Since 2026-09-30 a spare key usually
+ * takes over inside the running session (snapshot.reconnectReason 'key'),
+ * which reads as a plain "reconnecting" and never as a failure.
  * onHome() (owner, 2026-09-07) is what the always-visible home button of the
  * captions-only frame calls. This view only reports the press; the shell owns
  * what "main screen" means (leave captions-only, close every sheet, select the
@@ -350,20 +352,22 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
   }
 
   const canStart = () => !pending && !snapshot.busy && ['idle', 'stopped', 'failed'].includes(snapshot.status);
-  function startSession() {
+  // restart: the app, not a press, starts this one (see restart() below).
+  function startSession({ restart = false } = {}) {
     if (!canStart()) return;
     failure = null;
     setText(notice, '');
     // Speaker playback re-enters the microphone and can read as conversation; stress headphones once.
     if (mode === 'direct' && !headphonesHinted) { headphonesHinted = true; setText(notice, i18n.t('sim.headphonesStart')); }
     const pair = twoWayPair2();
+    const options = restart ? [{ restart: true }] : [];
     call(() => mode === 'hub' ? current().join({ hubId: venueSelect.value, roomCode: room.value, language: target })
-      : (startDirect ?? (request => current().start(request)))({
+      : (startDirect ?? ((request, ...rest) => current().start(request, ...rest)))({
         targetLanguage: target,
         // A session opened from the captions-only frame starts silent.
         ...(board.captionOnly ? { muted: true } : {}),
         ...(spoken === 'auto' ? {} : { sourceLanguage: spoken }),
-        ...(pair === null ? {} : { languages: pair }) }));
+        ...(pair === null ? {} : { languages: pair }) }, ...options));
   }
   const stopSession = () => call(end);
   // Manual "reopen session": physical close of the current direct session,
@@ -630,9 +634,14 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
     reopen.hidden = fsReopen.hidden = hub || !busy;
     reopen.disabled = fsReopen.disabled = pending;
     // Automatic replacement shows its count: "replacing session · n".
+    // 2026-09-30: a swap to a spare site key reads as a plain "reconnecting" —
+    // no count, no key number, no failure — because interpreting goes on.
     const retries = Number.isInteger(snapshot.retries) && snapshot.retries > 0 ? snapshot.retries : 0;
-    setText(status, !hub && snapshot.status === 'reconnecting' ? i18n.t('sim.status.replacing', { count: retries })
-      : i18n.t(`sim.status.${snapshot.status}`));
+    const keySwap = !hub && snapshot.status === 'reconnecting' && snapshot.reconnectReason === 'key';
+    status.setAttribute('data-reconnect', keySwap ? 'key' : 'none');
+    setText(status, keySwap ? i18n.t('sim.status.reconnecting')
+      : !hub && snapshot.status === 'reconnecting' ? i18n.t('sim.status.replacing', { count: retries })
+        : i18n.t(`sim.status.${snapshot.status}`));
     route.hidden = hub;
     const routeKey = snapshot.fallback === true ? 'sim.route.fallback' : snapshot.route === 'flash' ? 'sim.route.flash' : 'sim.route.translation';
     setText(route, hub ? '' : `${i18n.t(routeKey)} · ${typeof snapshot.model === 'string' ? snapshot.model : ''}`);
@@ -668,7 +677,7 @@ export function createSimView({ root, i18n, engines, engine, hubs = [], startDir
      * or stop — what the primary button does then. The app calls it after a
      * silent site-key rotation so interpreting resumes without a press.
      */
-    restart() { if (!disposed && mode === 'direct' && !pending && !running()) startSession(); },
+    restart() { if (!disposed && mode === 'direct' && !pending && !running()) startSession({ restart: true }); },
     /** Leaves the captions-only frame if it is on; the shell's home path uses this. */
     exitCaptionOnly() { if (!disposed && board.captionOnly) board.setCaptionOnly(false); return board.captionOnly; },
     refresh() { if (!disposed) { bind.refresh(); board.refresh(); renderCaptionControls(); render(); } },

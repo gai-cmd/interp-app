@@ -6,7 +6,7 @@
  * serial physical closure, generation guards, no IPC, extra voice or raw errors.
  */
 import { isPolicyError, PolicyError, POLICY_ERROR_CODES } from '../policy/errors.js';
-import { ProviderError, assertActive, normalizeError } from '../providers/contract.js';
+import { ProviderError, QUOTA_ERROR_CODES, assertActive, normalizeError } from '../providers/contract.js';
 import { createListenMetrics } from './listen-metrics.js';
 import { LIVE_MODELS, DEFAULT_LIVE_MODEL, sanitizeLiveModel, liveRoute, detectReply,
   normalizeLanguagePair } from '../providers/gemini/live-config.js';
@@ -16,7 +16,7 @@ import { createLiveRecovery } from './live-recovery.js';
 import { createListenState } from './listen-state.js';
 import { createCaptionStore } from './caption-store.js';
 import { createStreamCapture } from '../audio/stream-capture.js';
-import { createUplinkQueue } from '../audio/uplink-queue.js';
+import { createUplinkQueue, UPLINK_LIMITS } from '../audio/uplink-queue.js';
 import { createStreamPlayer } from '../audio/stream-player.js';
 
 const deferred = () => {
@@ -35,6 +35,15 @@ export const NO_REPLACEMENT_CODES = Object.freeze(['RATE_LIMITED', 'DAILY_LIMIT'
   'INVALID_KEY', 'PERMISSION_DENIED', 'IP_DENIED', 'CREDENTIAL_REQUIRED', 'CREDENTIAL_MISMATCH', 'CREDENTIAL_FORBIDDEN',
   'SAFETY_BLOCKED']);
 const noReplacement = new Set([...NO_REPLACEMENT_CODES, ...POLICY_ERROR_CODES]);
+// 2026-09-30 (owner: "무료키가 교체될때 타임러그를 최대한 줄여서 자연스럽게"):
+// the one exception to the rule above. When an injected swapCredential(error)
+// says a spare site key took over from one whose quota was spent, the SAME
+// operation reconnects at once — same request and model, same capture, player
+// and caption store, no backoff and no replacement budget. The key pool bounds
+// this (the hook answers false once it is spent, which ends the operation as
+// before); MAX_KEY_SWAPS is only a guard against a hook that never says no.
+const quotaCodes = new Set(QUOTA_ERROR_CODES);
+export const MAX_KEY_SWAPS = 8;
 const MAX_SKIPPED = 100;
 // 24 kHz PCM16 mono: 48 bytes per millisecond.
 const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
@@ -53,12 +62,28 @@ const audioMs = audio => Math.round((audio?.byteLength ?? 0) / 48);
  * failed (snapshot.fallback). On the flash route, a translation segment that
  * looks like a reply discards the rest of that turn's audio and captions
  * (snapshot.skippedSegments, metrics.repliesSkipped).
+ * swapCredential(error) -> Promise<boolean> is optional (2026-09-30): after a
+ * connection closed with a 429-family code it is asked, once per close,
+ * whether another credential for the same route took over. Only the app's
+ * built-in key pool answers true. While it decides and the next session sets
+ * up, the player keeps playing what already arrived, microphone input is held
+ * (at most UPLINK_LIMITS.backlogFrames) and sent first on the new session, and
+ * snapshot.reconnectReason is 'key'; metrics.keySwaps counts the swaps.
+ * canSwapCredential(error) -> boolean (optional, synchronous) is asked at the
+ * close itself: only when it says a swap is possible does the engine enter
+ * that calm state; otherwise the close is handled exactly as without a hook
+ * (review, 2026-09-30: a person's own key must never read as a key swap).
+ * Without it, every quota close is treated as possibly swappable.
+ * context.restart === true marks an app-initiated restart of an operation the
+ * person started earlier: capture then accepts sticky user activation.
  */
 export function createSimEngine({ router, sessionManager = createSessionManager(),
-  getAudioContext, platform, resolveFallback, onLevel,
+  getAudioContext, platform, resolveFallback, onLevel, swapCredential = null, canSwapCredential = null,
   now = () => performance.now(), setTimeout = globalThis.setTimeout,
   clearTimeout = globalThis.clearTimeout, random = Math.random } = {}) {
-  if (typeof router?.call !== 'function' || typeof getAudioContext !== 'function') {
+  if (typeof router?.call !== 'function' || typeof getAudioContext !== 'function'
+    || (swapCredential !== null && typeof swapCredential !== 'function')
+    || (canSwapCredential !== null && typeof canSwapCredential !== 'function')) {
     throw new ProviderError('INVALID_REQUEST');
   }
   const state = createListenState(), listeners = new Set();
@@ -81,15 +106,40 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       fallback: active?.fallback ?? lastResult?.fallback ?? false, defaultModel: DEFAULT_LIVE_MODEL,
       skippedSegments: Object.freeze([...skipped]),
       captions: store?.snapshot() ?? null, busy: Boolean(active),
-      retries: active?.recovery.retries ?? lastResult?.retries ?? 0 });
+      retries: active?.recovery.retries ?? lastResult?.retries ?? 0,
+      reconnectReason: active?.reconnectReason ?? null });
   };
   const notify = () => { const value = snapshot(); for (const fn of [...listeners]) attempt(() => fn(value)); };
   state.subscribe(notify);
   const alive = op => active === op && !op.controller.signal.aborted;
-  function silence(op) {
+  // keepPlayer: a key swap lets already-received audio finish and keeps the
+  // held input for the next session; every other path drops both.
+  function silence(op, { keepPlayer = false } = {}) {
     if (op.connection) op.connection.enabled = false;
-    op.uplink?.cancel(); op.player?.cancel();
+    op.uplink?.cancel();
+    if (!keepPlayer) { op.player?.cancel(); op.held = null; }
     store?.interrupt();
+  }
+  function hold(op, pcm) {
+    // Oldest out first: the bridge keeps the most recent 4 s of speech.
+    if (op.held.length >= UPLINK_LIMITS.backlogFrames) { op.held.shift(); store.markGap('input'); }
+    op.held.push(pcm.slice());
+  }
+  // stop() never waits on the injected hook (review, 2026-09-30): the answer
+  // races the operation's abort, which counts as "no swap".
+  async function swapKey(op, error) {
+    const signal = op.controller.signal;
+    if (signal.aborted) return false;
+    let onAbort;
+    const aborted = new Promise(resolve => { onAbort = () => resolve(false); signal.addEventListener('abort', onAbort, { once: true }); });
+    try { return (await Promise.race([swapCredential(error), aborted])) === true && alive(op); }
+    catch { return false; }
+    finally { signal.removeEventListener('abort', onAbort); }
+  }
+  function swappable(op, failure, goAway) {
+    if (goAway || swapCredential === null || !quotaCodes.has(failure.code) || op.keySwaps >= MAX_KEY_SWAPS) return false;
+    if (canSwapCredential === null) return true;
+    try { return canSwapCredential(failure) === true; } catch { return false; }
   }
   function cancel(op, code = null) {
     if (!alive(op)) return;
@@ -113,10 +163,25 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   function fault(op, c, error, goAway = false) {
     if (!alive(op) || op.connection !== c || !c.enabled) return;
     c.enabled = false;
+    const failure = normalizeFailure(error);
+    // A quota close may be answered by a key swap: keep the player and start
+    // holding input now, before the swap is decided, so nothing is lost while
+    // the old socket closes. goAway and transport faults keep design-p2 §9.
+    const keySwap = swappable(op, failure, goAway);
     metrics.resetInput(); metrics.observe('reconnects');
-    op.uplink?.cancel(); op.player?.cancel(); store.interrupt(); store.markGap('reception');
+    // Input this session never sent — the rest of a backlog still catching up
+    // from an earlier swap, or ordinary frames — is held too, ahead of what
+    // arrives next (review, 2026-09-30: consecutive swaps lost it).
+    if (keySwap) op.held = [...(op.held ?? []), ...(op.uplink?.takeUnsent() ?? [])];
+    op.uplink?.cancel();
+    if (keySwap) {
+      const over = op.held.length - UPLINK_LIMITS.backlogFrames;
+      if (over > 0) { op.held.splice(0, over); store.markGap('input'); }
+      op.reconnectReason = 'key';
+    } else { op.player?.cancel(); op.held = null; op.reconnectReason = null; }
+    store.interrupt(); store.markGap('reception');
     state.transition('reconnecting', op.generation);
-    c.fault.resolve({ error: normalizeFailure(error), goAway });
+    c.fault.resolve({ error: failure, goAway });
   }
   function event(op, c, ev) {
     if (!alive(op) || op.connection !== c || !c.enabled || ev.generation !== c.generation) return;
@@ -188,10 +253,15 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
           assertActive(op.controller.signal);
           if (c.enabled) {
             op.recovery.opened(); op.model = sanitizeLiveModel(request.model); metrics.mark('setupMs');
-            op.uplink = createUplinkQueue({ clock, sendAudio: async pcm => { await op.lease.sendAudio(pcm); metrics.observe('sentFrames'); },
+            // Input held across a key swap goes out first (uplink-queue backlog).
+            op.uplink = createUplinkQueue({ clock, backlog: op.held ?? undefined,
+              // The transport's buffered byte count paces the held input.
+              sendAudio: async pcm => { const buffered = await op.lease.sendAudio(pcm); metrics.observe('sentFrames'); return buffered; },
               onDrop: () => { if (alive(op)) store.markGap('input'); },
               onError: err => fault(op, c, err) });
+            op.held = null;
             op.uplink.setReady(true);
+            op.reconnectReason = null;
             state.transition('running', op.generation);
             op.ready.resolve(Object.freeze({ status: 'running', sessionId: op.sessionId }));
           }
@@ -202,13 +272,30 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
           if (!c.enabled) outcome = await c.fault.promise;
           else fault(op, c, outcome.error);
         }
-        silence(op); op.player = null;
+        const swapping = op.reconnectReason === 'key';
+        silence(op, { keepPlayer: swapping });
+        if (!swapping) op.player = null;
         // finishInput only ends input. Only close certifies lease shutdown.
         if (op.ownsSession) { await (op.lease ? op.lease.close() : sessionManager.close()); op.ownsSession = false; }
         op.lease = null;
         assertActive(op.controller.signal);
         // Credential/routing rejection can precede the router's first charge.
         if (!op.recovery.budget.used) throw outcome.error;
+        if (swapping) {
+          if (await swapKey(op, outcome.error)) {
+            assertActive(op.controller.signal);
+            op.recovery.keySwapped();
+            op.keySwaps += 1; metrics.observe('keySwaps');
+            // The spent key's turn never completes; the next session's audio
+            // starts a new turn behind whatever is still playing.
+            op.player?.turnComplete();
+            notify();
+            continue;
+          }
+          // No spare key: the operation ends exactly as it did before swaps.
+          op.reconnectReason = null; op.held = null;
+          op.player?.cancel(); op.player = null;
+        }
         // Quota and key rejections are final for this operation; only the
         // user's explicit reopen starts a new session with a fresh budget.
         if (!outcome.goAway && noReplacement.has(outcome.error.code)) throw outcome.error;
@@ -256,7 +343,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       sessionId: context.sessionId, turnId: context.turnId ?? context.sessionId,
       muted: request.muted === true, recovery: createLiveRecovery(timing), detach: () => {},
       targetLanguage: request.targetLanguage, sourceLanguage: request.sourceLanguage ?? null,
-      languages: pair, fallback: false };
+      languages: pair, fallback: false, keySwaps: 0, reconnectReason: null, held: null };
     metrics = createListenMetrics({ now });
     // A corrupted stored selection never reaches the router: fall back to the
     // translation-only default rather than failing or steering to flash.
@@ -287,10 +374,14 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       }, onFrame: pcm => {
         if (!alive(op)) return;
         op.prepared.resolve();
-        if (op.connection?.enabled && op.uplink) op.uplink.enqueue(pcm);
+        // op.held exists only between a quota close and the next session's
+        // uplink; every other reconnect keeps not accumulating input.
+        if (op.held) hold(op, pcm);
+        else if (op.connection?.enabled && op.uplink) op.uplink.enqueue(pcm);
         else store.markGap('input');
       } }).start({ signal: op.controller.signal, sessionId: op.sessionId,
-        turnId: op.turnId, generation: op.generation });
+        turnId: op.turnId, generation: op.generation,
+        activation: context.restart === true ? 'sticky' : 'transient' });
       op.capture.done.then(result => {
         if (alive(op)) cancel(op, captureCodes.has(result.code) ? result.code
           : result.status === 'error' ? 'MICROPHONE_UNAVAILABLE' : null);

@@ -39,6 +39,9 @@ export function createPlatform(env = globalThis) {
   return Object.freeze({
     isSecureContext: env.isSecureContext === true,
     isUserActive: () => env.navigator?.userActivation?.isActive !== false,
+    // Sticky activation: the page has had a gesture at some point (2026-09-30,
+    // app-initiated restarts only; see stream-capture activation 'sticky').
+    hasBeenActive: () => env.navigator?.userActivation?.hasBeenActive !== false,
     /**
      * Offer a stream — or a promise of one — to the next getUserMedia; null
      * clears a stale offer. A promise is what the caller has at the moment the
