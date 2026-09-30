@@ -128,7 +128,9 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   }
   const state = createListenState(), listeners = new Set();
   const timing = { now, setTimeout, clearTimeout, random };
-  const clock = { now, setTimeout, clearTimeout };
+  // Wrapped: the uplink queue calls clock.setTimeout(...) as a method, which a
+  // browser's native timer refuses ("Illegal invocation") when it is stored bare.
+  const clock = { now, setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (id) => clearTimeout(id) };
   let selectedModel = DEFAULT_LIVE_MODEL, metrics;
   // Models the provider reported for this account beyond the repository list
   // (owner, 2026-09-06). They widen what setModel accepts and what the picker

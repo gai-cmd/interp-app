@@ -51,8 +51,9 @@ export const UPLINK_LIMITS = Object.freeze({ frameBytes: 1024, frameMs: 32,
  * them (the next key swap, where they would otherwise be lost).
  */
 export function createUplinkQueue({ sendAudio, signal, onDrop, onError, backlog,
-  clock = { now: () => performance.now(), setTimeout: globalThis.setTimeout,
-    clearTimeout: globalThis.clearTimeout } } = {}) {
+  // Arrow wrappers: a browser's native timers throw "Illegal invocation" when called as methods of this object.
+  clock = { now: () => performance.now(), setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+    clearTimeout: (id) => globalThis.clearTimeout(id) } } = {}) {
   if (typeof sendAudio !== 'function') throw new ProviderError('INVALID_REQUEST');
   if (backlog !== undefined && backlog !== null && (!Array.isArray(backlog) || backlog.some((pcm) =>
     !(pcm instanceof Uint8Array) || pcm.byteLength !== UPLINK_LIMITS.frameBytes))) throw new ProviderError('INVALID_REQUEST');

@@ -87,8 +87,14 @@ export function createGeminiAdapter({ resolveCredential, fetch, WebSocket, Blob,
   return Object.freeze({
     translate: createGeminiTranslate({ rest }),
     stt: createGeminiStt({ rest }),
-    live: createGeminiLive({ live, clock: { setTimeout: setTimeout ?? globalThis.setTimeout,
-      clearTimeout: clearTimeout ?? globalThis.clearTimeout, now: () => globalThis.performance.now() } }),
+    // Arrow wrappers, never the bare functions (2026-09-30): SegmentAssembler calls clock.setTimeout(...) as a
+    // method, and a browser's native setTimeout throws "Illegal invocation" when `this` is not the window. A caller
+    // that injects no timers (the extension's lane engine) ended every session with INVALID_RESULT at its first
+    // caption; Node accepts the call, so the suite stayed green.
+    live: createGeminiLive({ live, clock: {
+      setTimeout: (fn, ms) => (setTimeout ?? globalThis.setTimeout)(fn, ms),
+      clearTimeout: (id) => (clearTimeout ?? globalThis.clearTimeout)(id),
+      now: () => globalThis.performance.now() } }),
     voice: createGeminiVoice({ live, setTimeout, clearTimeout }),
   });
 }
