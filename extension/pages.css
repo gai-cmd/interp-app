@@ -42,6 +42,9 @@
 
 /* Microphone-permission page: a short single column, the way to ask again is the primary button */
 .permission-page main { max-width: 32rem; padding-block: var(--space-6); }
+/* §17 setup steps (first install): a numbered list with room between the steps */
+.setup-steps { margin: 0; padding-inline-start: 1.5rem; }
+.setup-steps > li + li { margin-top: var(--space-2); }
 
 @media (hover: hover) {
   .field-check:hover { color: var(--accent); }

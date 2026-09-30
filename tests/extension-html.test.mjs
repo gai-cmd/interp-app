@@ -230,7 +230,9 @@ test('panel: hidden is used only on non-live elements, and every one of them is 
   // The two-way rows (the partner row and the model note of each lane) are plain elements that start hidden: two-way is off.
   // The update banner (§16) is a plain row too: it appears only while the download site publishes a newer version.
   assert.deepEqual(hidden, ['btn-key-options', 'btn-mic-allow', 'close-note', 'mic-level', 'mic-partner-row', 'mic-preview', 'mic-route',
-    'mic-two-way-note', 'tab-level', 'tab-partner-row', 'tab-preview', 'tab-route', 'tab-tabline', 'tab-two-way-note', 'update-note'].sort());
+    'mic-two-way-note', 'tab-level', 'tab-partner-row', 'tab-preview', 'tab-route', 'tab-tabline', 'tab-two-way-note', 'update-note',
+    // §17: one lane card at a time; the microphone card starts behind its tab (the controller picks the first lane that is on).
+    'card-mic'].sort());
   for (const id of [...STATUS_REGIONS, ...ALERT_REGIONS]) assert.equal(byId('panel', id).hidden, false);
 });
 
@@ -286,7 +288,11 @@ test('panel: lane cards, selects, slider, meters, previews and the how-to disclo
     const card = byId('panel', `card-${lane}`);
     assert.equal(card.localName, 'section');
     assert.equal(card.getAttribute('data-lane'), lane);
-    assert.equal(card.getAttribute('aria-labelledby'), `${lane}-title`);
+    // §17: each card is the tab panel of its lane tab, labelled by that tab; the checkbox title stays the lane's name.
+    assert.equal(card.getAttribute('role'), 'tabpanel');
+    assert.equal(card.getAttribute('aria-labelledby'), `lane-tab-${lane}`);
+    assert.equal(byId('panel', `lane-tab-${lane}`).getAttribute('aria-controls'), `card-${lane}`);
+    assert.equal(byId('panel', `lane-tab-${lane}`).getAttribute('role'), 'tab');
     assert.equal(byId('panel', `${lane}-title`).getAttribute('data-i18n'), title);
     assert.equal(byId('panel', `${lane}-enabled`).type, 'checkbox');
     assert.equal(byId('panel', `${lane}-captions`).type, 'checkbox');
@@ -473,10 +479,10 @@ test('permission: ids, keys and the persistent status region', () => {
 
 const placeholdersOf = (value) => [...new Set([...value.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)].map((match) => match[1]))].sort().join(',');
 
-test('dictionaries: 129 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
+test('dictionaries: 142 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
   const keys = Object.keys(dictionaries.en.ext);
-  assert.equal(keys.length, 129, '117 + the five ext.twoWay.* keys of the two-way mode + the seven §16 keys (display-language switch, update banner)');
-  assert.equal(new Set(keys).size, 129);
+  assert.equal(keys.length, 142, '117 + the five ext.twoWay.* keys + the seven §16 keys + the thirteen §17 keys (lane tabs, microphone wait, setup page)');
+  assert.equal(new Set(keys).size, 142);
   for (const language of LANGUAGES) {
     const dictionary = dictionaries[language].ext;
     assert.deepEqual(Object.keys(dictionary).sort(), [...keys].sort(), `${language} has the same keys as en`);

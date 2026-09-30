@@ -29,7 +29,7 @@ const dictionaries = { en: await i18nFor('en'), ko: await i18nFor('ko') };
 // fake audio environment's; `wrapNavigator` may replace it (see `allowOnPrompt`).
 async function openPage(t, {
   permission = 'prompt', micError = null, permissionsMode = 'normal', getUserMediaMode = 'normal', language = 'en',
-  wrapNavigator = (audio) => audio.env.navigator, run = true,
+  wrapNavigator = (audio) => audio.env.navigator, run = true, setup = false,
 } = {}) {
   const browser = createFakeBrowser();
   const audio = createFakeAudioEnv({ browser, micPermission: permission });
@@ -42,7 +42,7 @@ async function openPage(t, {
   const i18n = dictionaries[language] ?? await i18nFor(language);
   const controller = createPermissionController({
     document, navigator: wrapNavigator(audio), window, i18n,
-    timers: { setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout },
+    timers: { setTimeout: browser.clock.setTimeout, clearTimeout: browser.clock.clearTimeout }, setup,
   });
   t.after(() => controller.dispose());
   const $ = (id) => document.getElementById(id);
@@ -352,4 +352,29 @@ test('the boot dictionary keeps the page working when the dictionaries did not l
   assert.equal(document.getElementById('perm-status').textContent, `${boot.t('error.unknown')} ${boot.t('error.unknown')}`, 'unknown keys never echo their names');
   await browser.clock.advance(2000);
   assert.equal(closes.length, 1);
+});
+
+test('§17 setup mode (first install): setup title and lead, the three steps, the microphone asked at once, and the tab stays open', async (t) => {
+  const page = await openPage(t, { setup: true, wrapNavigator: allowOnPrompt });
+  await page.started;
+  await page.browser.settle();
+  assert.equal(page.$('perm-title').textContent, page.i18n.t('ext.setup.title'));
+  assert.equal(page.document.title, page.i18n.t('ext.setup.title'));
+  assert.equal(page.$('perm-lead').textContent, page.i18n.t('ext.setup.lead'));
+  assert.equal(page.$('perm-setup').hidden, false);
+  assert.deepEqual([...page.$('perm-setup').children].map((item) => item.textContent),
+    ['ext.setup.step.mic', 'ext.setup.step.pin', 'ext.setup.step.use'].map((key) => page.i18n.t(key)));
+  assert.equal(page.$('perm-status').textContent, page.text('permission.granted', 'ext.setup.micDone'));
+  await page.browser.clock.advance(10_000);
+  assert.deepEqual(page.closes, [], 'the pin and first-use steps are still to be read: no auto-close');
+});
+
+test('§17 the ordinary permission page keeps its wording, hides the setup steps and still closes after a grant', async (t) => {
+  const page = await openPage(t, { wrapNavigator: allowOnPrompt });
+  await page.started;
+  await page.browser.settle();
+  assert.equal(page.$('perm-setup').hidden, true);
+  assert.equal(page.$('perm-title').textContent, page.i18n.t('ext.permission.title'));
+  await page.browser.clock.advance(2_000);
+  assert.equal(page.closes.length, 1);
 });

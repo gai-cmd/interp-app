@@ -1053,19 +1053,29 @@ test('an answer without ok === true is a failure, whatever else it says', async 
   assert.equal(h.text('tab-notice'), T('ext.error.HOST_UNAVAILABLE'));
 });
 
-test('the microphone gate: denied and prompt block the start without a message; granted and unknown proceed', async (t) => {
+test('the microphone gate (§17): prompt opens the permission tab and waits, denied opens it and says so; granted and unknown proceed', async (t) => {
   const mic = settingsWith((s) => { s.lanes.tab.enabled = false; s.lanes.mic.enabled = true; });
-  for (const state of ['denied', 'prompt']) {
-    const h = await harness(t, { settings: mic, micPermission: state });
-    assert.equal(h.text('mic-permission-status'), `${T('permission.title')} · ${T(`permission.${state}`)}`);
-    assert.equal(h.el('btn-mic-allow').hidden, false);
-    await h.click('btn-start');
-    assert.deepEqual(h.types(), [], state);
-    assert.equal(h.text('mic-notice'), T('ext.error.MICROPHONE_DENIED'), state);
-    assert.equal(h.attr('btn-mic-permission', 'data-attention'), 'true', state);
-    assert.equal(h.attr('btn-mic-allow', 'data-attention'), 'true', state);
-    assert.equal(h.attr('mic-notice', 'role'), 'alert');
-  }
+  const blocked = await harness(t, { settings: mic, micPermission: 'denied' });
+  assert.equal(blocked.text('mic-permission-status'), `${T('permission.title')} · ${T('permission.denied')}`);
+  assert.equal(blocked.el('btn-mic-allow').hidden, false);
+  await blocked.click('btn-start');
+  assert.deepEqual(blocked.types(), ['sw/permission-open'], 'no lane-start: the host would only fail the same way');
+  assert.equal(blocked.text('mic-notice'), T('ext.error.MICROPHONE_DENIED'));
+  assert.equal(blocked.attr('btn-mic-permission', 'data-attention'), 'true');
+  assert.equal(blocked.attr('btn-mic-allow', 'data-attention'), 'true');
+  assert.equal(blocked.attr('mic-notice', 'role'), 'alert');
+
+  const asked = await harness(t, { settings: mic, micPermission: 'prompt' });
+  await asked.click('btn-start');
+  assert.deepEqual(asked.types(), ['sw/permission-open'], 'the permission tab opens by itself');
+  assert.equal(asked.text('mic-notice'), '', 'waiting for an answer is not an error');
+  assert.equal(asked.text('mic-permission-status'),
+    `${T('permission.title')} · ${T('permission.prompt')} · ${T('ext.mic.permissionWaiting')}`);
+  assert.equal(asked.text('btn-start'), T('common.stop'), 'the wait can be cancelled');
+  asked.audio.setMicPermission('granted');
+  await asked.flush();
+  assert.deepEqual(asked.types(), ['sw/permission-open', 'sw/lane-start'], 'the grant starts the lane without a second press');
+  assert.equal(asked.text('mic-permission-status'), `${T('permission.title')} · ${T('permission.granted')}`);
   const granted = await harness(t, { settings: mic, micPermission: 'granted' });
   assert.equal(granted.text('mic-permission-status'), `${T('permission.title')} · ${T('permission.granted')}`);
   assert.equal(granted.el('btn-mic-allow').hidden, true);
@@ -1080,7 +1090,7 @@ test('the microphone gate: denied and prompt block the start without a message; 
   }
 });
 
-test('the microphone permission is watched live and an expired one-time grant reads as expired', async (t) => {
+test('the microphone permission is watched live and an expired one-time grant is asked for again (§17)', async (t) => {
   const mic = settingsWith((s) => { s.lanes.tab.enabled = false; s.lanes.mic.enabled = true; });
   const h = await harness(t, { settings: mic, micPermission: 'denied' });
   assert.equal(h.el('btn-mic-allow').hidden, false);
@@ -1093,16 +1103,21 @@ test('the microphone permission is watched live and an expired one-time grant re
   await h.flush();
   assert.equal(h.text('mic-notice'), '', 'prompt alone is not an error');
   await h.click('btn-start');
-  assert.deepEqual(h.types(), []);
-  assert.equal(h.text('mic-notice'), T('ext.error.MICROPHONE_EXPIRED'), 'it was granted earlier in this panel\'s life');
+  assert.deepEqual(h.types(), ['sw/permission-open'], '§17: the expired grant is asked for again');
+  assert.equal(h.text('mic-notice'), '');
+  h.audio.setMicPermission('denied');
+  await h.flush();
+  // Refused this time: a refusal, not an expiry (the expiry wording is for a prompt state, which now opens the tab instead).
+  assert.equal(h.text('mic-notice'), T('ext.error.MICROPHONE_DENIED'));
   assert.equal(h.attr('btn-mic-permission', 'data-attention'), 'true');
+  assert.deepEqual(h.types(), ['sw/permission-open'], 'a refusal starts nothing');
 });
 
 test('a refusal recorded while the microphone permission was missing is gone the moment it is granted (notice, failed pill, attention)', async (t) => {
   const mic = settingsWith((s) => { s.lanes.tab.enabled = false; s.lanes.mic.enabled = true; });
-  const h = await harness(t, { settings: mic, micPermission: 'prompt' });
+  const h = await harness(t, { settings: mic, micPermission: 'denied' });
   await h.click('btn-start');
-  assert.deepEqual(h.types(), [], 'the gate refused without a message');
+  assert.deepEqual(h.types(), ['sw/permission-open'], 'the gate refused: only the permission tab (§17) is asked for');
   assert.equal(h.text('mic-notice'), T('ext.error.MICROPHONE_DENIED'));
   assert.equal(h.text('status-pill'), T('ext.status.failed'));
   assert.equal(h.attr('status-pill', 'data-state'), 'error');
@@ -1121,9 +1136,9 @@ test('a refusal recorded while the microphone permission was missing is gone the
   assert.equal(h.attr('btn-mic-permission', 'data-attention'), null);
   assert.equal(h.attr('btn-mic-allow', 'data-attention'), null);
   assert.equal(h.text('mic-status'), T('ext.lane.statusLine', { lane: T('ext.lane.mic.title'), status: T('sim.status.idle') }));
-  // And the next Start is an ordinary start.
+  // And the next Start is an ordinary start (a blocked microphone never starts by itself: the user presses Start again).
   await h.click('btn-start');
-  assert.deepEqual(h.requests, [{ v: 1, target: 'sw', type: 'sw/lane-start', lane: 'mic' }]);
+  assert.deepEqual(h.requests.at(-1), { v: 1, target: 'sw', type: 'sw/lane-start', lane: 'mic' });
 });
 
 test('granting the permission clears only the panel\'s own refusal: an error the host reported, or another local error, stays', async (t) => {
@@ -2171,4 +2186,88 @@ test('update banner: Reload waits while a lane runs (a reload would end it) and 
   assert.equal(h.el('btn-update-reload').hidden, true);
   await h.postState({});
   assert.equal(h.el('btn-update-reload').hidden, false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// §17 (owner, 2026-09-30): lane tabs, the microphone asked for instead of refused, and a switched-off lane out of the pill.
+
+test('§17 lane tabs: one card at a time, the first lane that is on is shown first, clicks and arrow keys switch, chips say the state', async (t) => {
+  const h = await harness(t);
+  const shown = () => ['tab', 'mic'].filter((lane) => !h.el(`card-${lane}`).hidden);
+  assert.deepEqual(shown(), ['tab']);
+  assert.equal(h.attr('lane-tab-tab', 'aria-selected'), 'true');
+  assert.equal(h.attr('lane-tab-mic', 'aria-selected'), 'false');
+  assert.equal(h.attr('lane-tab-tab', 'tabindex'), '0');
+  assert.equal(h.attr('lane-tab-mic', 'tabindex'), '-1');
+  assert.equal(h.text('lane-tab-tab-state'), T('ext.laneTab.on'));
+  assert.equal(h.text('lane-tab-mic-state'), T('ext.laneTab.off'));
+
+  await h.click('lane-tab-mic');
+  assert.deepEqual(shown(), ['mic']);
+  assert.equal(h.attr('lane-tab-mic', 'aria-selected'), 'true');
+  assert.equal(h.attr('lane-tab-tab', 'tabindex'), '-1');
+  assert.equal(h.stored().lanes.mic.enabled, false, 'choosing a tab only shows its settings: it switches nothing on');
+
+  for (const [key, lane] of [['ArrowRight', 'tab'], ['ArrowLeft', 'mic'], ['Home', 'tab'], ['End', 'mic'], ['ArrowDown', 'tab']]) {
+    h.el('lane-tab-mic').dispatchEvent(new FakeEvent('keydown', { bubbles: true, cancelable: true, key }));
+    await h.flush();
+    assert.deepEqual(shown(), [lane], key);
+  }
+
+  const micOnly = await harness(t, { settings: settingsWith((s) => { s.lanes.tab.enabled = false; s.lanes.mic.enabled = true; }) });
+  assert.deepEqual(['tab', 'mic'].filter((lane) => !micOnly.el(`card-${lane}`).hidden), ['mic'], 'only the microphone is on');
+});
+
+test('§17 lane tabs: a running lane says so on its tab, and a NEW notice on the hidden lane brings its card forward once', async (t) => {
+  const both = settingsWith((s) => { s.lanes.tab.enabled = true; s.lanes.mic.enabled = true; });
+  const h = await harness(t, { settings: both, hostUp: true, armed: true });
+  await h.postState({ tab: running('tab') });
+  assert.equal(h.text('lane-tab-tab-state'), T('ext.laneTab.running'));
+  assert.equal(h.attr('lane-tab-tab', 'data-state'), 'running');
+  assert.equal(h.el('card-tab').hidden, false);
+
+  await h.postState({ tab: running('tab'), mic: failed('MICROPHONE_UNAVAILABLE') });
+  assert.equal(h.el('card-mic').hidden, false, 'the error is on the hidden lane: its card comes forward');
+  assert.equal(h.text('lane-tab-mic-state'), T('ext.laneTab.attention'));
+  assert.equal(h.attr('lane-tab-mic', 'data-state'), 'attention');
+
+  await h.click('lane-tab-tab');
+  await h.postState({ tab: running('tab'), mic: failed('MICROPHONE_UNAVAILABLE') });
+  assert.equal(h.el('card-tab').hidden, false, 'the same notice again does not pull the user away a second time');
+});
+
+test('§17 the pill ignores a switched-off lane: its old refusal is dropped with it', async (t) => {
+  const both = settingsWith((s) => { s.lanes.tab.enabled = true; s.lanes.mic.enabled = true; });
+  const h = await harness(t, { settings: both, micPermission: 'denied' });
+  await h.click('btn-start');   // tab: waits for the icon click; mic: refused (blocked)
+  assert.equal(h.text('status-pill'), T('ext.status.partial'));
+  h.el('mic-enabled').checked = false;
+  await h.fire('mic-enabled');
+  assert.equal(h.stored().lanes.mic.enabled, false);
+  assert.equal(h.text('status-pill'), T('ext.status.awaitingArm'), 'only the lane that is on speaks');
+  assert.equal(h.text('mic-notice'), '');
+});
+
+test('§17 switching the microphone on asks for it at once; a Stop cancels a Start that waits for the permission', async (t) => {
+  const h = await harness(t, { micPermission: 'prompt' });
+  h.el('mic-enabled').checked = true;
+  await h.fire('mic-enabled');
+  assert.deepEqual(h.types(), ['sw/permission-open'], 'the permission tab opens when the lane is switched on');
+
+  const waiting = await harness(t, { settings: settingsWith((s) => { s.lanes.tab.enabled = false; s.lanes.mic.enabled = true; }), micPermission: 'prompt' });
+  await waiting.click('btn-start');
+  assert.equal(waiting.text('btn-start'), T('common.stop'));
+  assert.equal(waiting.text('lane-tab-mic-state'), T('ext.laneTab.waiting'));
+  await waiting.click('btn-start');   // Stop
+  waiting.audio.setMicPermission('granted');
+  await waiting.flush();
+  assert.equal(waiting.types().includes('sw/lane-start'), false, 'a cancelled wait never starts later');
+  assert.equal(waiting.text('mic-permission-status'), `${T('permission.title')} · ${T('permission.granted')}`);
+});
+
+test('§17 lane tabs: a notice that is already there when the panel opens does not pull its lane forward', async (t) => {
+  const both = settingsWith((s) => { s.lanes.tab.enabled = true; s.lanes.mic.enabled = true; });
+  const h = await harness(t, { settings: both, micPermission: 'denied' });
+  assert.equal(h.el('card-tab').hidden, false, 'the panel opens on the first lane that is on');
+  assert.equal(h.text('lane-tab-mic-state'), T('ext.laneTab.attention'), 'the hidden lane still says it needs a look');
 });

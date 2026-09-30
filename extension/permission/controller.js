@@ -6,12 +6,17 @@
 import { applyI18n } from '../lib/dom-i18n.js';
 
 const CLOSE_AFTER_GRANT_MS = 2_000;
-export const PERMISSION_ELEMENT_IDS = Object.freeze(['perm-request', 'perm-close', 'perm-status', 'perm-help']);
+export const PERMISSION_ELEMENT_IDS = Object.freeze(['perm-request', 'perm-close', 'perm-status', 'perm-help', 'perm-title',
+  'perm-lead', 'perm-setup']);
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
-/** createPermissionController({ document, navigator, window, i18n, timers }) -> Readonly<{ start(), dispose() }> */
-export function createPermissionController({ document, navigator, window, i18n, timers = {} } = {}) {
+/**
+ * createPermissionController({ document, navigator, window, i18n, timers, setup }) -> Readonly<{ start(), dispose() }>.
+ * `setup` (§17, the page a first install opens): the title and lead become the setup ones, the three setup steps are
+ * shown, and a grant does NOT close the tab, because the pin and first-use steps are still to be read.
+ */
+export function createPermissionController({ document, navigator, window, i18n, timers = {}, setup = false } = {}) {
   const setTimeout = timers.setTimeout ?? ((fn, ms) => globalThis.setTimeout(fn, ms));
   const clearTimeout = timers.clearTimeout ?? ((id) => globalThis.clearTimeout(id));
   const t = (key) => i18n.t(key);
@@ -38,6 +43,7 @@ export function createPermissionController({ document, navigator, window, i18n, 
 
   function showGranted() {
     setHelp(false);
+    if (setup) { setStatus('permission.granted', 'ext.setup.micDone'); return; }
     setStatus('permission.granted', 'ext.permission.done');
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => { closeTimer = null; attempt(() => window.close()); }, CLOSE_AFTER_GRANT_MS);
@@ -71,6 +77,14 @@ export function createPermissionController({ document, navigator, window, i18n, 
     for (const id of PERMISSION_ELEMENT_IDS) {
       const el = document.getElementById(id);
       if (el) els.set(id, el);
+    }
+    if (setup) {
+      // Before the binder runs, so the title, the heading and the lead come out in the setup wording.
+      els.get('perm-title')?.setAttribute('data-i18n', 'ext.setup.title');
+      document.querySelector('title[data-i18n]')?.setAttribute('data-i18n', 'ext.setup.title');
+      els.get('perm-lead')?.setAttribute('data-i18n', 'ext.setup.lead');
+      const steps = els.get('perm-setup');
+      if (steps) steps.hidden = false;
     }
     applyI18n(document, i18n);
     setHelp(false);

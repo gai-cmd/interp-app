@@ -25,6 +25,8 @@ export const PATHS = Object.freeze({                          // extension-root 
   options: 'extension/options/options.html', host: 'extension/engine/host.html',
   permission: 'extension/permission/mic-permission.html', overlay: 'extension/overlay/overlay.js',
 });
+// §17: the query the service worker appends to PATHS.permission on a first install; the page then shows the setup steps.
+export const SETUP_QUERY = 'setup=1';
 export const LIMITS = Object.freeze({
   maxFrameBytes: 8192,      // JSON.stringify(frame).length, hard cap for state/captions/style frames
   maxRowChars: 400,         // one caption row text, kept from the END (newest words)

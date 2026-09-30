@@ -13,7 +13,7 @@
 import { BUILTIN_KEYS } from '../lib/builtin-key.js';
 import { isMachineCode } from '../lib/constants.js';
 import {
-  LANES, LIMITS, PATHS, STORAGE_KEYS, createMessageRouter, makeMessage,
+  LANES, LIMITS, PATHS, SETUP_QUERY, STORAGE_KEYS, createMessageRouter, makeMessage,
 } from '../lib/protocol.js';
 import {
   hostSettingsOf, laneRequestOf, normalizeSettings, readKey, readSettings, resolveKey,
@@ -365,13 +365,17 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     ]);
   }
 
-  async function onInstalled() {
+  async function onInstalled(details) {
     await settle(async () => {
       await contextMenus.removeAll();   // menus persist across restarts: creating twice would throw "duplicate id"
       contextMenus.create({ id: MENU_ID, title: i18n.getMessage('menuOpen'), contexts: [...MENU_CONTEXTS] });
     });
     await settle(() => session.remove([STORAGE_KEYS.armed, STORAGE_KEYS.host, STORAGE_KEYS.lastStop]));
     await bootstrap();
+    // §17: a FIRST install opens the setup page (the permission page in setup mode): it asks for the microphone at once
+    // and shows the pin and first-use steps, so nobody has to find the microphone button before the first Start.
+    // An update (Reload after a new folder) or a Chrome update never opens it.
+    if (details?.reason === 'install') await settle(() => tabs.create({ url: `${runtime.getURL(PATHS.permission)}?${SETUP_QUERY}` }));
   }
 
   const onStartup = () => bootstrap();

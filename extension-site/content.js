@@ -65,7 +65,7 @@ export const CONTENT = Object.freeze({
             '오른쪽 위의 [toggle:개발자 모드]를 켜세요.',
             '왼쪽 위에 생긴 [btn:압축해제된 확장 프로그램 로드]를 누르세요.',
             '폴더 선택 창에서 `live-interpreter` 폴더를 연 다음, 그 안의 [folder:LiveInterpreter] 폴더를 **한 번만 클릭**해 선택하고 [btn:폴더 선택]을 누르세요. 더블클릭해서 안으로 들어가지 마세요.',
-            '목록에 **Live Interpreter** 카드가 나타나면 설치 끝이에요.',
+            '목록에 **Live Interpreter** 카드가 나타나면 설치 끝이에요. 곧 준비 페이지가 저절로 열려 마이크를 써도 되는지 물어요. **허용**을 누르세요.',
             '주소창 오른쪽의 [puzzle] 퍼즐 조각 아이콘을 누르고, Live Interpreter 옆의 [pin] 핀을 눌러 툴바에 고정하세요.',
           ],
           mac: [
@@ -79,7 +79,7 @@ export const CONTENT = Object.freeze({
               text: '파일 창에서 `live-interpreter` 폴더를 연 다음, 그 안의 [folder:LiveInterpreter] 폴더를 **한 번만 클릭**해 선택하고 [btn:선택]을 누르세요. 더블클릭해서 안으로 들어가지 마세요.',
               note: '폴더를 찾기 어려우면 파일 창에서 [kbd:⌘][kbd:Shift][kbd:G]를 누르고 `~/Documents/live-interpreter`를 붙여 넣은 뒤 Enter를 누르세요.',
             },
-            '목록에 **Live Interpreter** 카드가 나타나면 설치 끝이에요.',
+            '목록에 **Live Interpreter** 카드가 나타나면 설치 끝이에요. 곧 준비 페이지가 저절로 열려 마이크를 써도 되는지 물어요. **허용**을 누르세요.',
             '주소창 오른쪽의 [puzzle] 퍼즐 조각 아이콘을 누르고, Live Interpreter 옆의 [pin] 핀을 눌러 툴바에 고정하세요.',
           ],
         },
@@ -89,8 +89,8 @@ export const CONTENT = Object.freeze({
         title: '처음 쓸 때',
         steps: [
           '통역할 탭(화상회의·영상)에서 툴바의 [ext] Live Interpreter 아이콘을 **먼저** 누르세요. Chrome은 이렇게 해야만 그 탭의 소리를 가져가도록 허락해 줘요. 오른쪽에 사이드패널이 열려요.',
-          '**탭 오디오**를 켜고 **도착 언어**(통역해서 들을 언어)를 고른 다음 [btn:시작]을 누르세요.',
-          '내 말도 통역하려면 **마이크**를 켜세요. 처음 한 번은 [btn:마이크 허용]을 눌러 권한을 허락해야 해요.',
+          '패널의 **탭 오디오** 탭에서 **도착 언어**(통역해서 들을 언어)를 고른 다음 [btn:시작]을 누르세요.',
+          '내 말도 통역하려면 **마이크** 탭에서 마이크를 켜세요. 아직 허용하지 않았다면 허용 창이 저절로 뜨고, 허용하면 바로 시작해요.',
           '두 언어가 오가는 대화라면 **양방 통역**을 켜고 **상대 언어**를 고르세요. 들리는 언어에 따라 통역 방향이 정해져요.',
         ],
         bullets: [
@@ -219,7 +219,7 @@ export const CONTENT = Object.freeze({
             '右上の [toggle:デベロッパー モード] をオンにします。',
             '左上に表示される [btn:パッケージ化されていない拡張機能を読み込む] を押します。',
             'フォルダの選択画面で `live-interpreter` フォルダを開き、その中の [folder:LiveInterpreter] フォルダを**1回だけクリック**して選び、[btn:フォルダーの選択] を押します。ダブルクリックして中に入らないでください。',
-            '一覧に **Live Interpreter** のカードが表示されたらインストール完了です。',
+            '一覧に **Live Interpreter** のカードが表示されたらインストール完了です。続いて準備ページが自動で開き、マイクの使用を確認されます。**許可** を押してください。',
             'アドレスバー右側の [puzzle] パズルのアイコンを押し、Live Interpreter の横の [pin] ピンを押してツールバーに固定します。',
           ],
           mac: [
@@ -233,7 +233,7 @@ export const CONTENT = Object.freeze({
               text: 'ファイルの選択画面で `live-interpreter` フォルダを開き、その中の [folder:LiveInterpreter] フォルダを**1回だけクリック**して選び、[btn:選択] を押します。ダブルクリックして中に入らないでください。',
               note: 'フォルダが見つけにくいときは、選択画面で [kbd:⌘][kbd:Shift][kbd:G] を押し、`~/Documents/live-interpreter` を貼り付けて Enter を押します。',
             },
-            '一覧に **Live Interpreter** のカードが表示されたらインストール完了です。',
+            '一覧に **Live Interpreter** のカードが表示されたらインストール完了です。続いて準備ページが自動で開き、マイクの使用を確認されます。**許可** を押してください。',
             'アドレスバー右側の [puzzle] パズルのアイコンを押し、Live Interpreter の横の [pin] ピンを押してツールバーに固定します。',
           ],
         },
@@ -243,8 +243,8 @@ export const CONTENT = Object.freeze({
         title: 'はじめて使うとき',
         steps: [
           '通訳したいタブ（Web 会議・動画）で、ツールバーの [ext] Live Interpreter アイコンを**先に**押します。Chrome はこの操作をしたときだけ、そのタブの音声の取得を許可します。右側にサイドパネルが開きます。',
-          '**タブの音声** をオンにして **通訳先の言語** を選び、[btn:開始] を押します。',
-          '自分の話も通訳するときは **マイク** をオンにします。最初の1回だけ [btn:マイクを許可] を押して権限を許可してください。',
+          'パネルの **タブの音声** タブで **通訳先の言語** を選び、[btn:開始] を押します。',
+          '自分の話も通訳するときは **マイク** タブでマイクをオンにします。まだ許可していなければ許可画面が自動で開き、許可するとすぐに始まります。',
           '2つの言語が行き交う会話では **双方向通訳** をオンにして **相手の言語** を選びます。聞こえた言語によって通訳の向きが決まります。',
         ],
         bullets: [
@@ -373,7 +373,7 @@ export const CONTENT = Object.freeze({
             'Turn on [toggle:Developer mode] at the top right.',
             'Press [btn:Load unpacked] at the top left.',
             'In the folder dialog, open the `live-interpreter` folder, click the [folder:LiveInterpreter] folder inside it **once** to select it, and press [btn:Select Folder]. Do not double-click into it.',
-            'When a **Live Interpreter** card appears in the list, the install is done.',
+            'When a **Live Interpreter** card appears in the list, the install is done. A setup page then opens by itself and asks to use the microphone: press **Allow**.',
             'Press the [puzzle] puzzle-piece icon to the right of the address bar, then the [pin] pin next to Live Interpreter to keep it on the toolbar.',
           ],
           mac: [
@@ -387,7 +387,7 @@ export const CONTENT = Object.freeze({
               text: 'In the file dialog, open the `live-interpreter` folder, click the [folder:LiveInterpreter] folder inside it **once** to select it, and press [btn:Select]. Do not double-click into it.',
               note: 'If the folder is hard to find, press [kbd:⌘][kbd:Shift][kbd:G] in the dialog, paste `~/Documents/live-interpreter` and press Enter.',
             },
-            'When a **Live Interpreter** card appears in the list, the install is done.',
+            'When a **Live Interpreter** card appears in the list, the install is done. A setup page then opens by itself and asks to use the microphone: press **Allow**.',
             'Press the [puzzle] puzzle-piece icon to the right of the address bar, then the [pin] pin next to Live Interpreter to keep it on the toolbar.',
           ],
         },
@@ -397,8 +397,8 @@ export const CONTENT = Object.freeze({
         title: 'First use',
         steps: [
           'On the tab you want to interpret (a video call or a video), press the [ext] Live Interpreter icon in the toolbar **first**. That is the only way Chrome lets the extension take that tab’s audio. The side panel opens on the right.',
-          'Turn on **Tab audio**, choose a language under **Interpret into**, and press [btn:Start].',
-          'To interpret your own speech too, turn on **Microphone**. The first time, press [btn:Allow microphone] to grant permission.',
+          'In the panel’s **Tab audio** tab, choose a language under **Interpret into**, and press [btn:Start].',
+          'To interpret your own speech too, open the **Microphone** tab and turn it on. If it is not allowed yet, the permission prompt opens by itself and interpreting starts as soon as you allow it.',
           'For a conversation in two languages, turn on **Two-way interpretation** and choose the **Other language**. The direction follows the language it hears.',
         ],
         bullets: [

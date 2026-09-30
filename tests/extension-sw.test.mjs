@@ -1258,3 +1258,17 @@ test('a start whose host answers with a stale hostId still works: the worker tru
   assert.deepEqual(await env.start('mic'), { ok: false, code: 'ALREADY_RUNNING' });
   assert.equal(env.session()[STORAGE_KEYS.host].hostId, 'h-second', 'the flag follows the host that answered');
 });
+
+test('§17: a FIRST install opens the setup page (the permission page in setup mode) once; an update opens nothing', async () => {
+  const env = makeEnv();
+  const pages = async () => (await env.panel.chrome.tabs.query({})).map((tab) => tab.url).filter((url) => url.includes('mic-permission.html'));
+  await env.browser.install('update');
+  await env.browser.settle();
+  assert.deepEqual(await pages(), [], 'Reload after a new folder is an update: no page');
+  await env.browser.install('install');
+  await env.browser.settle();
+  const opened = await pages();
+  assert.equal(opened.length, 1);
+  assert.match(opened[0], /\/extension\/permission\/mic-permission\.html\?setup=1$/);
+  assert.equal(env.browser.listenerErrors.length, 0);
+});

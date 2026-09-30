@@ -3778,6 +3778,19 @@ The owner reversed four points of the first delivery. Each is listed with what i
 
 Distribution: `npm run package:extension` builds `dist/extension-package/LiveInterpreter` (keyed) and the deploy root `dist/extension-site/`: the guide page (`extension-site/`, ko/ja/en × Windows/Mac), `latest.json`, `live-interpreter.zip` (the `LiveInterpreter` folder, six PDF manuals and `README.txt`) and `vercel.json`. Deploy: `cd dist/extension-site && vercel deploy --prod` to the Vercel project `kc-live-interpreter` (owner approval first). The page is `noindex`. To release a new version, bump `extension/manifest.json`, run the package script and deploy; every installed copy shows the banner the next time its panel opens.
 
+## 17. Owner changes of 2026-09-30 (second round): lane tabs, the microphone asked for, a setup page (v0.3.0)
+
+Owner: "the two lanes repeat the same controls; make them tabs" and "anyone should install it and use it at once, without a manual microphone step".
+
+| # | Change | Overrides | Where |
+|---|--------|-----------|-------|
+| 1 | **Lane tabs.** A `tablist` (`#lane-tabs`, WAI-ARIA tabs: arrows, Home, End) shows ONE lane card at a time; each card is a `tabpanel` labelled by its tab. Both lanes can still be on and run together: the tab only chooses which settings are shown. Each tab carries a text chip (on / off / getting ready / interpreting / check this). The panel opens on the first lane that is on. After that only a NEW failure (phase `error`) on the hidden lane brings its card forward; an advisory note on an idle lane stays a chip. | §8.2 markup (cards were stacked and labelled by their checkbox title) | `extension-html`, `extension-panel` tests |
+| 2 | **Pill:** a lane that is switched off no longer counts, so its old refusal cannot make the pill say "partial". Switching a lane off also drops its local error. | §8.2.3 rule 4 | `extension-panel` |
+| 3 | **Microphone asked for, not refused.** With the permission at `prompt`, Start (or switching the microphone lane on) opens the permission tab by itself (`sw/permission-open`) and the lane WAITS (pending: Start reads Stop and cancels it). A grant starts the lane with no second press; a refusal becomes `MICROPHONE_DENIED`. With the permission `denied` the tab still opens, to show how to unblock, and the lane stays an error; the user presses Start again after unblocking. | §8.2.5 microphone gate ("denied and prompt block the start without a message") | `extension-panel` |
+| 4 | **Setup page on first install.** `runtime.onInstalled` with `reason: 'install'` opens `mic-permission.html?setup=1` (`SETUP_QUERY` in `lib/protocol.js`). In setup mode the page shows a setup title and lead plus three steps (microphone, pin the icon, first use), asks for the microphone at once as before, and does NOT close itself after a grant. An update (Reload after a new folder) opens nothing. | §8.4 (the page only opened from the panel) | `extension-sw`, `extension-permission` |
+
+Not possible and therefore not attempted: pinning the toolbar icon programmatically (Chrome has no API for it), and capturing a tab without the toolbar-icon click (Chrome grants tab capture only to an invoked extension; see K1).
+
 ## Appendix A: weakest points of this design (read before implementing)
 
 1. The whole tab-capture path (A1, K1, K7) is source-reading, not observation. The design keeps the arming step explicit and the fallbacks cheap, but the first real click may reveal a different grant behavior.

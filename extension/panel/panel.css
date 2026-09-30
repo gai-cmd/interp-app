@@ -30,6 +30,31 @@
 .lang-btn { flex: 1 1 0; min-height: var(--touch); padding-inline: var(--space-2); }
 .lang-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
 
+/* Lane tabs (§17): two equal tabs over one card. The selected tab is bold with a thick bottom rule AND a filled
+   background (never colour alone); the chip under each title says in words what that lane is doing. */
+.lane-tabs { display: flex; gap: var(--space-2); }
+.lane-tab {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--touch);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.lane-tab[aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); font-weight: 700; }
+.lane-tab-state { font-size: 0.8125rem; font-weight: 400; color: var(--text-muted); }
+.lane-tab[data-state="running"] .lane-tab-state { color: var(--success); font-weight: 700; }
+.lane-tab[data-state="attention"] .lane-tab-state { color: var(--danger); font-weight: 700; }
+.lane-tab:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
 /* Update banner (§16): the text, then its two buttons on their own wrapping row. */
 #update-note { flex-wrap: wrap; }
 #update-note .update-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); flex-basis: 100%; }
@@ -163,5 +188,7 @@ meter { display: block; width: 100%; height: 0.75rem; }
   #btn-options[data-attention="true"], #btn-mic-permission[data-attention="true"], #btn-mic-allow[data-attention="true"],
   #tab-arm-note[data-attention="true"] { outline-color: Highlight; }
   .lang-btn[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: 2px; }
+  .lane-tab { border-color: CanvasText; }
+  .lane-tab[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: 2px; }
   .caption-preview > [data-status="partial"], .caption-preview > [data-status="interrupted"] { border-inline-start-color: CanvasText; }
 }

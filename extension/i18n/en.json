@@ -127,5 +127,18 @@
   "ext.overlay.hide": "Hide captions",
   "ext.overlay.gap": "Some captions may be missing.",
   "ext.overlay.reconnecting": "Reconnecting…",
-  "ext.overlay.stopped": "Interpretation stopped. Check the panel."
+  "ext.overlay.stopped": "Interpretation stopped. Check the panel.",
+  "ext.laneTabs.label": "What to interpret",
+  "ext.laneTab.on": "On",
+  "ext.laneTab.off": "Off",
+  "ext.laneTab.running": "Interpreting",
+  "ext.laneTab.waiting": "Getting ready",
+  "ext.laneTab.attention": "Check this",
+  "ext.mic.permissionWaiting": "The microphone permission tab is open. Allow it and interpreting starts right away.",
+  "ext.setup.title": "Set up Live Interpreter",
+  "ext.setup.lead": "It is installed. Three quick steps and you are ready.",
+  "ext.setup.step.mic": "Microphone: press Allow in the prompt that appears. You only do this once.",
+  "ext.setup.step.pin": "Pin the icon: click the puzzle-piece icon to the right of the address bar, then the pin next to Live Interpreter.",
+  "ext.setup.step.use": "Use it: on the tab you want interpreted (a call or a video), click the Live Interpreter icon in the toolbar, then Start.",
+  "ext.setup.micDone": "The microphone is ready. You can close this tab."
 }

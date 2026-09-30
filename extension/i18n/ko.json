@@ -127,5 +127,18 @@
   "ext.overlay.hide": "자막 숨기기",
   "ext.overlay.gap": "일부 자막이 빠졌을 수 있어요.",
   "ext.overlay.reconnecting": "연결이 끊겨 다시 연결하는 중이에요…",
-  "ext.overlay.stopped": "통역이 멈췄어요. 패널을 확인하세요."
+  "ext.overlay.stopped": "통역이 멈췄어요. 패널을 확인하세요.",
+  "ext.laneTabs.label": "통역할 소리",
+  "ext.laneTab.on": "켜짐",
+  "ext.laneTab.off": "꺼짐",
+  "ext.laneTab.running": "통역 중",
+  "ext.laneTab.waiting": "준비 중",
+  "ext.laneTab.attention": "확인 필요",
+  "ext.mic.permissionWaiting": "마이크 허용 창을 열었어요. 허용하면 바로 시작해요.",
+  "ext.setup.title": "Live Interpreter 준비",
+  "ext.setup.lead": "설치됐어요. 아래 세 가지만 하면 바로 쓸 수 있어요.",
+  "ext.setup.step.mic": "마이크: 곧 뜨는 창에서 ‘허용’을 누르세요. 한 번만 하면 돼요.",
+  "ext.setup.step.pin": "아이콘 고정: 주소창 오른쪽의 퍼즐 조각 아이콘을 누르고 Live Interpreter 옆의 핀을 누르세요.",
+  "ext.setup.step.use": "사용: 통역할 탭(화상회의·영상)에서 툴바의 Live Interpreter 아이콘을 누르고 ‘시작’을 누르세요.",
+  "ext.setup.micDone": "마이크 준비가 끝났어요. 이 탭은 닫아도 돼요."
 }

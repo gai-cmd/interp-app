@@ -190,10 +190,10 @@ test('the two-way keys resolve through the loader in ko, en and ja, are ext.* ke
   assert.equal(ja.t('ext.twoWay.hint'), TWO_WAY['ext.twoWay.hint'].ja, 'the other keys stay in Japanese');
 });
 
-test('all 129 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
+test('all 142 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
   const keysOf = async (language) => Object.keys(await readJson(new URL(`../extension/i18n/${language}.json`, import.meta.url)));
   const reference = (await keysOf('en')).sort();
-  assert.equal(reference.length, 129, '117 + the five two-way keys + the seven §16 keys');
+  assert.equal(reference.length, 142, '117 + the five two-way keys + the seven §16 keys + the thirteen §17 keys');
   for (const language of LANGUAGES) {
     assert.deepEqual((await keysOf(language)).sort(), reference, `${language} has the key set of en`);
     const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });

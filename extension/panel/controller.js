@@ -29,6 +29,7 @@ export const PANEL_ELEMENT_IDS = Object.freeze([
   'tab-target-label', 'tab-two-way', 'tab-partner-row', 'tab-partner', 'tab-two-way-note',
   'mic-target-label', 'mic-two-way', 'mic-partner-row', 'mic-partner', 'mic-two-way-note',
   'ui-lang-ko', 'ui-lang-ja', 'ui-lang-en', 'update-note', 'update-text', 'btn-update-get', 'btn-update-reload',
+  'lane-tabs', 'lane-tab-tab', 'lane-tab-mic', 'lane-tab-tab-state', 'lane-tab-mic-state', 'card-tab', 'card-mic',
 ]);
 
 const LANES = Object.freeze(['tab', 'mic']);
@@ -38,6 +39,14 @@ const ACTIVE = Object.freeze(['starting', 'running', 'reconnecting']);
 const LANGUAGE_KEY = Object.freeze({ ko: 'language.ko', en: 'language.en', ja: 'language.ja' });
 // The display-language switch in the header (§16): one button per language, pressed = the language the panel shows.
 const UI_LANGUAGE_BUTTONS = Object.freeze(['ko', 'ja', 'en']);
+// §17: the lane tabs. The chip on each tab says, in words, what that lane is doing, so a lane whose card is not shown
+// can still be seen running or needing attention.
+function laneTabState(vm) {
+  if (vm.phase === 'running' || vm.phase === 'reconnecting') return { state: 'running', key: 'ext.laneTab.running' };
+  if (vm.phase === 'starting' || vm.phase === 'awaiting' || vm.phase === 'stopping') return { state: 'waiting', key: 'ext.laneTab.waiting' };
+  if (vm.enabled && (vm.phase === 'error' || vm.notice !== null)) return { state: 'attention', key: 'ext.laneTab.attention' };
+  return vm.enabled ? { state: 'on', key: 'ext.laneTab.on' } : { state: 'off', key: 'ext.laneTab.off' };
+}
 const CAPTURABLE_SCHEMES = Object.freeze(['http:', 'https:', 'file:']);
 const PERMISSION_STATES = Object.freeze(['granted', 'denied', 'prompt']);
 const FRESH_STOP_MS = 60_000;          // a lastStop record older than this is history, not news
@@ -86,6 +95,9 @@ export function createPanelController({
     appliedLanguage: null,
     // §16: the running version (from the manifest) and a newer published one, or null when there is none to offer.
     currentVersion: null, update: null,
+    // §17: the lane whose card is shown (null until the first render picks one) and the error notice each lane had last
+    // time, so a NEW failure on the hidden lane brings its card forward. awaitingMic = a Start waiting for the permission tab.
+    selectedLane: null, lastNotice: { tab: null, mic: null }, awaitingMic: false,
   };
   let disposed = false;
   let latest = null;
@@ -111,7 +123,7 @@ export function createPanelController({
 
   // ---------------------------------------------------------------------------------------------
   // The view model and its rendering.
-  const pendingOf = () => ({ tab: S.awaiting || S.inFlight.tab, mic: S.inFlight.mic });
+  const pendingOf = () => ({ tab: S.awaiting || S.inFlight.tab, mic: S.inFlight.mic || S.awaitingMic });
   function computeViewModel() {
     return buildViewModel({
       settings: S.settings, keyPresent: S.keyPresent, host: S.host, armed: S.armed, targetTab: S.targetTab,
@@ -221,6 +233,47 @@ export function createPanelController({
     renderPreview(lane, vm.preview);
   }
 
+  // §17: one lane card at a time. The first render shows the first lane that is on (the tab lane when both or neither
+  // are); after that the choice is the user's, except that a NEW notice on the hidden lane brings that lane forward.
+  function renderLaneTabs(vm) {
+    // Only a lane that FAILED pulls its card forward (a new error notice); an advisory note on an idle lane (the
+    // microphone permission, say, which arrives after the panel opens) is left to the tab chip ("check this").
+    const first = S.selectedLane === null;
+    if (first) S.selectedLane = !vm.lanes.tab.enabled && vm.lanes.mic.enabled ? 'mic' : 'tab';
+    for (const lane of LANES) {
+      const key = vm.lanes[lane].phase === 'error' ? vm.lanes[lane].notice?.key ?? null : null;
+      if (!first && key !== null && key !== S.lastNotice[lane] && lane !== S.selectedLane) S.selectedLane = lane;
+      S.lastNotice[lane] = key;
+    }
+    for (const lane of LANES) {
+      const selected = lane === S.selectedLane;
+      const chip = laneTabState(vm.lanes[lane]);
+      setAttr(`lane-tab-${lane}`, 'aria-selected', String(selected));
+      setAttr(`lane-tab-${lane}`, 'tabindex', selected ? '0' : '-1');
+      setAttr(`lane-tab-${lane}`, 'data-state', chip.state);
+      setText(`lane-tab-${lane}-state`, t(chip.key));
+      setHidden(`card-${lane}`, !selected);
+    }
+  }
+  function selectLane(lane, { focus = false } = {}) {
+    if (!LANES.includes(lane)) return;
+    S.selectedLane = lane;
+    render();
+    if (focus) attempt(() => els.get(`lane-tab-${lane}`)?.focus());
+  }
+  // The WAI-ARIA tabs keys: arrows move between the two tabs (wrapping), Home and End go to the first and last.
+  function onLaneTabsKey(event) {
+    const moves = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 1, ArrowUp: -1 };
+    const index = LANES.indexOf(S.selectedLane ?? 'tab');
+    let next = null;
+    if (Object.hasOwn(moves, event.key)) next = LANES[(index + moves[event.key] + LANES.length) % LANES.length];
+    else if (event.key === 'Home') next = LANES[0];
+    else if (event.key === 'End') next = LANES[LANES.length - 1];
+    if (next === null) return;
+    event.preventDefault?.();
+    selectLane(next, { focus: true });
+  }
+
   function render() {
     if (disposed || !i18n.current) return;
     const vm = computeViewModel();
@@ -253,7 +306,9 @@ export function createPanelController({
     setAttr('tab-arm-note', 'data-attention', arm?.attention ? 'true' : null);
 
     const permission = vm.micPermission;
-    setText('mic-permission-status', permission.textKeys.map((key) => t(key)).join(' · '));
+    const permissionText = permission.textKeys.map((key) => t(key));
+    if (S.awaitingMic) permissionText.push(t('ext.mic.permissionWaiting'));
+    setText('mic-permission-status', permissionText.join(' · '));
     setHidden('btn-mic-allow', !permission.allowButton);
     const attention = permission.attention ? 'true' : null;
     setAttr('btn-mic-permission', 'data-attention', attention);
@@ -268,6 +323,8 @@ export function createPanelController({
     setAttr('btn-mute', 'data-muted', String(vm.mute.muted));
     setAttr('btn-mute', 'aria-label', t(vm.mute.labelKey));
     setAttr('btn-mute', 'title', t(vm.mute.labelKey));
+
+    renderLaneTabs(vm);
 
     const shown = i18n.current.language;
     for (const code of UI_LANGUAGE_BUTTONS) setAttr(`ui-lang-${code}`, 'aria-pressed', String(shown === code));
@@ -339,8 +396,12 @@ export function createPanelController({
   async function startOne(lane, run) {
     if (lane === 'mic') {
       if (S.micPermission === 'denied' || S.micPermission === 'prompt') {
-        S.localErrors.mic = 'MICROPHONE_DENIED';   // no message sent: the host would only fail the same way
+        // §17: ask instead of failing. The permission tab opens by itself; a grant starts this lane (watchMicPermission).
+        // A blocked microphone cannot be asked again, so it stays an error, and the same tab explains how to unblock it.
+        if (S.micPermission === 'denied') S.localErrors.mic = 'MICROPHONE_DENIED';
+        else S.awaitingMic = true;
         render();
+        await sendToSw(makeMessage('sw/permission-open', {}));
         return;
       }
     } else {
@@ -396,9 +457,11 @@ export function createPanelController({
     if (lane === undefined) {
       S.startRun += 1;
       S.awaiting = false;
+      S.awaitingMic = false;
       S.inFlight = { tab: false, mic: false };
     } else {
       if (lane === 'tab') S.awaiting = false;
+      if (lane === 'mic') S.awaitingMic = false;
       S.inFlight[lane] = false;
     }
     render();
@@ -413,7 +476,13 @@ export function createPanelController({
   };
 
   async function onLaneToggled(lane, enabled) {
+    if (!enabled) S.localErrors[lane] = null;   // §17: a lane switched off takes its old error with it
     await writeField((settings) => { settings.lanes[lane].enabled = enabled; });
+    // §17: switching the microphone on asks for it right away, so the first Start does not stop at a permission step.
+    if (lane === 'mic' && enabled && S.micPermission === 'prompt' && computeViewModel().primary.mode !== 'stop') {
+      await sendToSw(makeMessage('sw/permission-open', {}));
+      return;
+    }
     if (computeViewModel().primary.mode !== 'stop') return;
     if (enabled) await startLanes([lane]);
     else await stopLanes(lane);
@@ -560,6 +629,14 @@ export function createPanelController({
     permissionStatus = status;
     permissionListener = () => {
       S.micPermission = PERMISSION_STATES.includes(status.state) ? status.state : 'unknown';
+      if (S.micPermission === 'granted' && S.awaitingMic) {
+        // §17: the Start that opened the permission tab goes on by itself, unless the lane was switched off meanwhile.
+        S.awaitingMic = false;
+        if (S.settings.lanes.mic.enabled) void startOne('mic', S.startRun);
+      } else if (S.micPermission === 'denied' && S.awaitingMic) {
+        S.awaitingMic = false;
+        S.localErrors.mic = 'MICROPHONE_DENIED';
+      }
       if (S.micPermission === 'granted') {
         S.micWasGranted = true;
         // A refusal that was recorded while the permission was missing is spent: its notice would send the user to an
@@ -680,6 +757,8 @@ export function createPanelController({
     for (const code of UI_LANGUAGE_BUTTONS) {
       bind(`ui-lang-${code}`, 'click', () => writeField((settings) => { settings.uiLanguage = code; }));
     }
+    for (const lane of LANES) bind(`lane-tab-${lane}`, 'click', () => selectLane(lane));
+    bind('lane-tabs', 'keydown', onLaneTabsKey);
     bind('btn-update-get', 'click', () => adapter.tabs.create({ url: UPDATE_SITE_URL }));
     bind('btn-update-reload', 'click', () => { if (!S.lastActive) adapter.runtime.reload(); });
 

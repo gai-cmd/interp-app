@@ -3,6 +3,7 @@
 // loads the same merged dictionaries as the other pages, in the language chosen in the options when that can be read.
 import { createChromeAdapter } from '../lib/chrome-adapter.js';
 import { createFallbackI18n, loadExtensionI18n } from '../lib/i18n.js';
+import { SETUP_QUERY } from '../lib/protocol.js';
 import { readSettings } from '../lib/settings.js';
 import { createPermissionController } from './controller.js';
 
@@ -22,6 +23,7 @@ async function main() {
     window: globalThis,
     i18n,
     timers: { setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms), clearTimeout: (id) => globalThis.clearTimeout(id) },
+    setup: globalThis.location.search === `?${SETUP_QUERY}`,
   }).start();
 }
 

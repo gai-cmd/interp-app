@@ -99,7 +99,8 @@ function statusOf(draft) {
 }
 
 function pillOf(drafts) {
-  const errors = drafts.filter((draft) => draft.phase === 'error');
+  // §17: a lane the user switched off is out of the picture; its old error must not turn the pill into "partial".
+  const errors = drafts.filter((draft) => draft.phase === 'error' && draft.settings.enabled);
   const running = drafts.filter((draft) => ['starting', 'awaiting', 'running', 'reconnecting'].includes(draft.phase));
   if (errors.length > 0 && running.length === 0) {
     return errors.every((draft) => NOT_AN_ALARM.includes(draft.errorCode))

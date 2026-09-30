@@ -12,6 +12,11 @@
   <main id="app">
     <h1 id="perm-title" data-i18n="ext.permission.title"></h1>
     <p id="perm-lead" data-i18n="ext.permission.lead"></p>
+    <ol id="perm-setup" class="setup-steps" hidden><!-- §17: shown only on the page a first install opens (setup mode) -->
+      <li data-i18n="ext.setup.step.mic"></li>
+      <li data-i18n="ext.setup.step.pin"></li>
+      <li data-i18n="ext.setup.step.use"></li>
+    </ol>
     <p id="perm-always" class="notice" data-i18n="ext.permission.chooseAlways"></p>
     <div class="button-row">
       <button id="perm-request" type="button" class="btn btn-primary" data-i18n="ext.permission.allowButton"></button>

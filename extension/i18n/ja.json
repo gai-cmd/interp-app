@@ -127,5 +127,18 @@
   "ext.overlay.hide": "字幕を隠す",
   "ext.overlay.gap": "一部の字幕が欠けている可能性があります。",
   "ext.overlay.reconnecting": "再接続しています…",
-  "ext.overlay.stopped": "通訳が停止しました。パネルを確認してください。"
+  "ext.overlay.stopped": "通訳が停止しました。パネルを確認してください。",
+  "ext.laneTabs.label": "通訳する音声",
+  "ext.laneTab.on": "オン",
+  "ext.laneTab.off": "オフ",
+  "ext.laneTab.running": "通訳中",
+  "ext.laneTab.waiting": "準備中",
+  "ext.laneTab.attention": "要確認",
+  "ext.mic.permissionWaiting": "マイクの許可画面を開きました。許可するとすぐに始まります。",
+  "ext.setup.title": "Live Interpreter の準備",
+  "ext.setup.lead": "インストールできました。次の3つを済ませれば、すぐに使えます。",
+  "ext.setup.step.mic": "マイク：まもなく表示される画面で「許可」を押してください。一度だけです。",
+  "ext.setup.step.pin": "アイコンの固定：アドレスバー右側のパズルのアイコンを押し、Live Interpreter の横のピンを押します。",
+  "ext.setup.step.use": "使い方：通訳したいタブ（Web 会議・動画）でツールバーの Live Interpreter アイコンを押し、「開始」を押します。",
+  "ext.setup.micDone": "マイクの準備ができました。このタブは閉じてもかまいません。"
 }

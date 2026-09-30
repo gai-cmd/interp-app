@@ -35,7 +35,12 @@
     </div>
     <p id="stop-note" class="notice" role="status"></p><!-- live: ext.notice.panelGone or ext.notice.hostLost -->
 
-    <section id="card-tab" class="card lane-card" aria-labelledby="tab-title" data-lane="tab">
+    <div id="lane-tabs" class="lane-tabs" role="tablist" data-i18n-label="ext.laneTabs.label"><!-- §17: which lane's settings are shown; both lanes can still be on and run at once. The state chip is text, never colour alone -->
+      <button id="lane-tab-tab" type="button" class="lane-tab" role="tab" aria-controls="card-tab" aria-selected="true"><span data-i18n="ext.lane.tab.title"></span><span id="lane-tab-tab-state" class="lane-tab-state"></span></button>
+      <button id="lane-tab-mic" type="button" class="lane-tab" role="tab" aria-controls="card-mic" aria-selected="false" tabindex="-1"><span data-i18n="ext.lane.mic.title"></span><span id="lane-tab-mic-state" class="lane-tab-state"></span></button>
+    </div>
+
+    <section id="card-tab" class="card lane-card" role="tabpanel" aria-labelledby="lane-tab-tab" data-lane="tab">
       <label class="lane-head"><input id="tab-enabled" type="checkbox"><span id="tab-title" data-i18n="ext.lane.tab.title"></span></label>
       <p class="text-sub" data-i18n="ext.lane.tab.lead"></p>
       <label class="field"><span id="tab-target-label" data-i18n="language.target"></span>
@@ -72,7 +77,7 @@
       <div id="tab-preview" class="caption-preview" role="region" tabindex="0" aria-live="off" data-i18n-label="sim.captions.latest" hidden></div>
     </section>
 
-    <section id="card-mic" class="card lane-card" aria-labelledby="mic-title" data-lane="mic">
+    <section id="card-mic" class="card lane-card" role="tabpanel" aria-labelledby="lane-tab-mic" data-lane="mic" hidden>
       <label class="lane-head"><input id="mic-enabled" type="checkbox"><span id="mic-title" data-i18n="ext.lane.mic.title"></span></label>
       <p class="text-sub" data-i18n="ext.lane.mic.lead"></p>
       <p id="mic-mode" class="text-sub" data-i18n="ext.mic.mode"></p>
