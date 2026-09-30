@@ -153,6 +153,9 @@ function uplinkFixture(backlog, answer) {
     clearTimeout: (key) => timers.delete(key) };
   const q = createUplinkQueue({ clock, backlog, sendAudio(pcm) { calls.push({ time, value: pcm[0] }); return answer(index++); } });
   return { q, calls, async advance(ms) {
+    // Microtasks run before time moves on, as in a browser (2026-09-30: the
+    // queue now starts its pump from a microtask, not a zero-delay timer).
+    await tick();
     const end = time + ms;
     for (;;) {
       const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];

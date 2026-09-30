@@ -114,7 +114,8 @@ test('speech during the swap reaches the new session first, in order, faster tha
   const s = f.sockets[1];
   const times = [];
   const send = s.send.bind(s);
-  s.send = (text) => { if (text.includes('realtimeInput')) times.push(f.audio.options.now()); send(text); };
+  // Audio frames only: the setup's realtimeInputConfig also contains 'realtimeInput'.
+  s.send = (text) => { if (text.includes('"realtimeInput":{"audio"')) times.push(f.audio.options.now()); send(text); };
   await f.open(s);
   for (let i = 0; i < 40 && s.sent.filter(isAudio).length < 20; i++) { f.audio.advance(8); await tick(); }
   const levels = sentLevels(s);
@@ -214,6 +215,9 @@ function uplinkFixture(backlog) {
   const q = createUplinkQueue({ clock, backlog, sendAudio(pcm) { calls.push({ time, value: pcm[0] }); },
     onDrop: (value) => drops.push(value) });
   return { q, calls, drops, async advance(ms) {
+    // Microtasks run before time moves on, as in a browser (2026-09-30: the
+    // queue now starts its pump from a microtask, not a zero-delay timer).
+    await tick();
     const end = time + ms;
     for (;;) {
       const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
@@ -236,9 +240,11 @@ test('uplink backlog: held frames go first at 8 ms spacing, never stale, and liv
   const spacing = f.calls.slice(1, 20).map((call, i) => call.time - f.calls[i].time);
   assert.ok(spacing.every((gap) => gap === 8), `${spacing}`);
   assert.deepEqual(f.drops, [], 'held frames older than 256 ms were not dropped as stale');
-  // Back to the ordinary 32 ms pace once caught up.
+  // Once caught up, ordinary input goes out as it arrives (2026-09-30: no
+  // second 32 ms spacing on top of the capture's own pace, see uplink-queue.js).
   f.q.enqueue(pcmFrame(100)); f.q.enqueue(pcmFrame(101)); await f.advance(100);
-  assert.equal(f.calls.at(-1).time - f.calls.at(-2).time, 32);
+  assert.deepEqual(f.calls.slice(-2).map((call) => call.value), [100, 101]);
+  assert.equal(f.calls.at(-1).time, f.calls.at(-2).time);
 });
 
 test('uplink backlog: bounded to 125 frames, oldest dropped as overflow; invalid frames are refused', async () => {

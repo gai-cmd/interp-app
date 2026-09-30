@@ -257,7 +257,9 @@ test('two-lane sim: two isolated configs both run, stay separate, and stopping A
   assert.deepEqual([socketB.closeCalls, b.track.stops], [0, 0]);
   const sentBefore = socketB.sent.length;
   b.frame(); b.audio.advance(0); await tick();
-  assert.equal(socketB.sent.length, sentBefore + 1, 'B keeps uploading audio');
+  // One fake 64 ms chunk is two 32 ms frames; both go out at once (2026-09-30:
+  // the uplink no longer spaces frames 32 ms apart on its own).
+  assert.equal(socketB.sent.length, sentBefore + 2, 'B keeps uploading audio');
   content(socketB, { outputTranscription: { text: 'still-b' }, ...audioContent });
   await tick();
   assert.ok(texts(b).some((text) => text.includes('still-b')), 'B keeps receiving captions');
