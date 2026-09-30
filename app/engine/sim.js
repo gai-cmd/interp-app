@@ -210,8 +210,12 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     }
     const player = createStreamPlayer({ ...timing, context: op.audioContext, muted: op.muted,
       onState(value) { if (alive(op)) state.setOutput(value.state, op.generation); },
-      // Audio discarded for a detected reply is not a playback gap.
-      onDrop(value) { if (alive(op) && value.durationMs > 0 && !op.connection?.skipping) store.markGap('audio'); } });
+      // Audio discarded for a detected reply is not a playback gap, and neither is audio the person chose not to
+      // hear: with the voice muted every chunk is "dropped", which used to show "queued speech was skipped" for the
+      // whole of a captions-only session (2026-09-30; the extension starts muted by default).
+      onDrop(value) {
+        if (alive(op) && value.durationMs > 0 && value.reason !== 'muted' && !op.connection?.skipping) store.markGap('audio');
+      } });
     op.player = player;
   }
   // Every INVALID_RESULT that ends a connection is counted by its reason,
@@ -252,7 +256,9 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       if (over > 0) { op.held.splice(0, over); store.markGap('input'); }
       op.reconnectReason = 'key';
     } else { op.player?.cancel(); op.held = null; op.reconnectReason = null; }
-    store.interrupt(); store.markGap('reception');
+    // Nothing can be missing from an interpretation that never ran: a first setup that fails and is retried is a
+    // slow start, not a reception gap (the same rule as the input gap in start()).
+    store.interrupt(); if (op.ran) store.markGap('reception');
     state.transition('reconnecting', op.generation);
     c.fault.resolve({ error: failure, goAway });
   }
@@ -340,10 +346,11 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
   // A part the adapter skipped or repaired. Validated here as at any boundary:
   // only a listed reason is counted. Sound that was discarded is a playback
   // gap, except inside a turn whose audio is being discarded as a reply anyway.
-  function anomaly(c, ev) {
+  function anomaly(op, c, ev) {
     if (!isInvalidResultReason(ev.reason) || typeof ev.dropped !== 'boolean') return;
     metrics.invalidResult(ev.reason);
-    if (ev.dropped && !c.skipping) store.markGap('audio');
+    // Like the player's own drops (makePlayer): not a gap when the voice is muted, since nothing would have played.
+    if (ev.dropped && !c.skipping && !op.muted) store.markGap('audio');
   }
   function event(op, c, ev) {
     if (!alive(op) || op.connection !== c || ev.generation !== c.generation) return;
@@ -356,7 +363,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
     try {
       if (ev.type === 'goAway') { retire(op, c, ev.timeLeftMs); return; }
       if (ev.type === 'error' || ev.type === 'closed') { lost(op, c, ev.error ?? new ProviderError('SESSION_CLOSED')); return; }
-      if (ev.type === 'anomaly') { anomaly(c, ev); return; }
+      if (ev.type === 'anomaly') { anomaly(op, c, ev); return; }
       if (ev.type === 'audio') {
         heard(op, c);
         op.recovery.activity(); metrics.mark('firstAudioReceivedMs'); metrics.audioReceived();
@@ -454,6 +461,7 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
             op.held = null;
             op.uplink.setReady(true);
             op.reconnectReason = null;
+            op.ran = true;
             state.transition('running', op.generation);
             op.ready.resolve(Object.freeze({ status: 'running', sessionId: op.sessionId }));
           }
@@ -571,7 +579,9 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
       targetLanguage: request.targetLanguage, sourceLanguage: request.sourceLanguage ?? null,
       languages: pair, fallback: false, keySwaps: 0, reconnectReason: null, held: null,
       // Memory only: the newest resumable handle and the model that issued it.
-      resume: null, cleanHandover: false };
+      resume: null, cleanHandover: false,
+      // True once a connection of this operation was ready: from then on unsendable input is an input gap.
+      ran: false };
     metrics = createListenMetrics({ now });
     // A corrupted stored selection never reaches the router: fall back to the
     // translation-only default rather than failing or steering to flash.
@@ -606,7 +616,11 @@ export function createSimEngine({ router, sessionManager = createSessionManager(
         // uplink; every other reconnect keeps not accumulating input.
         if (op.held) hold(op, pcm);
         else if (op.connection?.enabled && op.uplink) op.uplink.enqueue(pcm);
-        else store.markGap('input');
+        // Input that cannot be sent is a gap only in an interpretation that was already running (a reconnect).
+        // While the FIRST connection is still being set up nothing has been interpreted yet, and the capture always
+        // delivers frames before that setup completes, so every session used to show "some audio was not sent" from
+        // its first second until it ended (the flag is sticky; owner report, 2026-09-30).
+        else if (op.ran) store.markGap('input');
       } }).start({ signal: op.controller.signal, sessionId: op.sessionId,
         turnId: op.turnId, generation: op.generation,
         activation: context.restart === true ? 'sticky' : 'transient' });
