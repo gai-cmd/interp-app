@@ -488,6 +488,144 @@ test('§20 the built-in pool travels in the ONE host/lane-start (keys, no key); 
   assert.equal('keys' in mic.message, false, 'a person\'s key never falls back to the pool');
 });
 
+// §24 (0.5.2): a lane on the default model follows the latest general Live model. The worker only reads its record and tells the
+// lane; the lane asks the provider (it holds the key) and reports back what it saw.
+const LATEST_ID = 'gemini-3.9-live';
+const HOUR_MS = 60 * 60 * 1000;
+const recordOf = (env, extra = {}) => ({ v: 1, newest: LATEST_ID, checkedAt: env.browser.clock.now(), failedAt: null, rejected: null, ...extra });
+const putRecord = (env, record) => env.panel.chrome.storage.local.set({ [STORAGE_KEYS.latestLive]: record });
+const recordNow = (env) => env.browser.storageData('local')[STORAGE_KEYS.latestLive];
+const offscreenOf = (env) => env.browser.contexts().find((context) => context.kind === 'offscreen');
+
+test('§24 a lane on the default model is told what the worker knows about the latest model: nothing known = ask first, a fresh record = use it, an older one = use it and ask again', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  const first = env.stub.of('host/lane-start').at(-1).message;
+  assert.deepEqual(first.latest, { model: null, refresh: 'blocking' }, 'no record: the lane asks the provider before its first setup');
+  await env.fromPanel('sw/lane-stop', {});
+
+  await env.browser.clock.advance(3 * 24 * HOUR_MS);
+  await putRecord(env, recordOf(env));
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: LATEST_ID, refresh: 'none' }, 'a fresh record is used as it is');
+  await env.fromPanel('sw/lane-stop', {});
+
+  await env.browser.clock.advance(2 * HOUR_MS);
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: LATEST_ID, refresh: 'background' });
+  await env.fromPanel('sw/lane-stop', {});
+
+  await env.browser.clock.advance(30 * HOUR_MS);
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: LATEST_ID, refresh: 'background' }, 'a day later: still no wait');
+  await env.fromPanel('sw/lane-stop', {});
+
+  await env.browser.clock.advance(8 * 24 * HOUR_MS);
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: LATEST_ID, refresh: 'blocking' }, 'expired (a week): ask first');
+});
+
+test('§24 a lane on a model the person chose is told nothing about the latest model; a damaged record never fails a start', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  await env.seedSettings((settings) => { settings.lanes.tab.model = 'gemini-3.5-live-translate-preview'; });
+  await putRecord(env, recordOf(env));
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  const [chosen] = env.stub.of('host/lane-start');
+  assert.equal('latest' in chosen.message, false, 'the choice is the person\'s: nothing is adopted, nothing is asked');
+  assert.equal(chosen.message.request.model, 'gemini-3.5-live-translate-preview');
+  await env.fromPanel('sw/lane-stop', {});
+
+  for (const damaged of ['text', 5, [], { v: 2 }, { ...recordOf(env), newest: 'gemini-3.9-live-preview' }, { ...recordOf(env), checkedAt: 'x' }, { v: 1 }, null]) {
+    await putRecord(env, damaged);
+    assert.deepEqual(await env.start('mic'), { ok: true }, JSON.stringify(damaged));
+    assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: null, refresh: 'blocking' }, `${JSON.stringify(damaged)} is no record`);
+    await env.fromPanel('sw/lane-stop', {});
+  }
+});
+
+test('§24 a record whose model the provider refused is left alone for six hours, and only that model; the key is never part of any of it', async () => {
+  const POOL = [`synthetic-${'p'.repeat(24)}`, `synthetic-${'q'.repeat(24)}`];
+  const env = makeEnv({ builtinKeys: POOL });
+  await env.armTab(7);
+  await env.browser.clock.advance(3 * 24 * HOUR_MS);
+  await putRecord(env, recordOf(env, { rejected: { model: LATEST_ID, at: env.browser.clock.now() } }));
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: null, refresh: 'none' }, 'refused a moment ago: not tried again');
+  await env.fromPanel('sw/lane-stop', {});
+  await env.browser.clock.advance(7 * HOUR_MS);
+  await putRecord(env, recordOf(env, { rejected: { model: LATEST_ID, at: env.browser.clock.now() - 7 * HOUR_MS } }));
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.equal(env.stub.of('host/lane-start').at(-1).message.latest.model, LATEST_ID);
+  assert.equal(JSON.stringify(recordNow(env)).includes('synthetic-'), false);
+  // an expired record whose own candidate was just refused: asking first could not change what this start runs
+  await env.fromPanel('sw/lane-stop', {});
+  await env.browser.clock.advance(9 * 24 * HOUR_MS);
+  await putRecord(env, recordOf(env, { checkedAt: env.browser.clock.now() - 8 * 24 * HOUR_MS, rejected: { model: LATEST_ID, at: env.browser.clock.now() - HOUR_MS } }));
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  assert.deepEqual(env.stub.of('host/lane-start').at(-1).message.latest, { model: null, refresh: 'background' });
+});
+
+test('§24 sw/latest-live (from the offscreen host only): seen, failed and rejected change their own field of the record; two reports at once lose neither', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  await env.sw.ensureOffscreen();
+  const host = offscreenOf(env);
+  await env.browser.clock.advance(HOUR_MS);
+  assert.deepEqual(await env.send(host, 'sw/latest-live', { kind: 'seen', newest: LATEST_ID }), { ok: true });
+  assert.deepEqual(recordNow(env), { v: 1, newest: LATEST_ID, checkedAt: env.browser.clock.now(), failedAt: null, rejected: null });
+  await env.browser.clock.advance(1000);
+  const [failed, rejected] = await Promise.all([env.send(host, 'sw/latest-live', { kind: 'failed' }),
+    env.send(host, 'sw/latest-live', { kind: 'rejected', model: LATEST_ID })]);
+  assert.deepEqual([failed, rejected], [{ ok: true }, { ok: true }]);
+  const record = recordNow(env);
+  assert.equal(record.failedAt, env.browser.clock.now());
+  assert.deepEqual(record.rejected, { model: LATEST_ID, at: env.browser.clock.now() });
+  assert.equal(record.newest, LATEST_ID, 'the answer of the earlier look stays');
+  await env.send(host, 'sw/latest-live', { kind: 'seen', newest: null });
+  assert.deepEqual([recordNow(env).newest, recordNow(env).failedAt], [null, null], 'a look that found none says so, and ends the cool-down');
+  // not the host: refused before any write
+  const before = JSON.stringify(recordNow(env));
+  for (const sender of [env.panel, env.browser.createContext('options'), env.browser.createContext('permission')]) {
+    assert.deepEqual(await env.send(sender, 'sw/latest-live', { kind: 'seen', newest: 'gemini-9.0-live' }), { ok: false, code: 'FORBIDDEN' });
+  }
+  // a receiver refuses what the sender's makeMessage would have refused too: sent raw, as a hostile page of the extension could
+  assert.deepEqual(await host.chrome.runtime.sendMessage({ v: 1, target: 'sw', type: 'sw/latest-live', kind: 'seen', newest: 'gemini-3.5-live-translate-preview' }),
+    { ok: false, code: 'INVALID_MESSAGE' });
+  assert.equal(JSON.stringify(recordNow(env)), before, 'nothing was written by a refused or invalid report');
+});
+
+test('§24 the report queue survives a link that rejects: a later report is still applied', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  await env.sw.ensureOffscreen();
+  const host = offscreenOf(env);
+  let poisoned = true;
+  env.hooks['storage.local.get'] = (real, ...args) => (poisoned && args[0] === STORAGE_KEYS.latestLive
+    ? { get [STORAGE_KEYS.latestLive]() { throw new Error('unreadable'); } } : real());
+  assert.deepEqual(await env.send(host, 'sw/latest-live', { kind: 'seen', newest: LATEST_ID }), { ok: true });
+  assert.equal(recordNow(env), undefined, 'the poisoned report wrote nothing');
+  poisoned = false;
+  assert.deepEqual(await env.send(host, 'sw/latest-live', { kind: 'seen', newest: LATEST_ID }), { ok: true });
+  assert.equal(recordNow(env)?.newest, LATEST_ID, 'the next one is applied');
+});
+
+test('§24 a report that arrives while the storage is failing never breaks the worker or the next start', async () => {
+  const env = makeEnv();
+  await env.armTab(7);
+  await env.seedKey();
+  await env.sw.ensureOffscreen();
+  const host = offscreenOf(env);
+  env.hooks['storage.local.set'] = async () => { throw new Error('quota'); };
+  assert.deepEqual(await env.send(host, 'sw/latest-live', { kind: 'seen', newest: LATEST_ID }), { ok: true });
+  assert.equal(recordNow(env), undefined);
+});
+
 // ---------------------------------------------------------------------------------------------
 test('sw/lane-start (tab): the order of 6.3, the mint is the LAST awaited step, the key travels in ONE message only', async (t) => {
   const env = makeEnv();

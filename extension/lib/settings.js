@@ -13,7 +13,7 @@ import {
 } from './constants.js';
 import { LANES, LIMITS, STORAGE_KEYS } from './protocol.js';
 
-export { CAPTION_SIZE };
+export { CAPTION_SIZE, DEFAULT_LIVE_MODEL };
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 const codedError = (code) => Object.assign(new Error(code), { code });

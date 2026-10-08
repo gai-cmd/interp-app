@@ -133,20 +133,19 @@ test('the key guide link gets its href from links.js and keeps target and rel', 
   assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
 });
 
-test('the model selects are filled from LIVE_MODELS; the microphone label carries "(default)", the tab select keeps its plain label of the same default model', async (t) => {
+test('the model selects are filled from LIVE_MODELS; the first option of both is the automatic latest model (§24)', async (t) => {
   const page = await openPage(t);
   for (const id of ['opt-model-tab', 'opt-model-mic']) {
     assert.deepEqual(page.$(id).options.map((option) => option.value), [...LIVE_MODELS]);
   }
-  // Microphone: the app's labels, the default model tagged (the microphone default IS the default Live model).
-  assert.deepEqual(page.$('opt-model-mic').options.map((option) => option.textContent),
-    ['sim.model0', 'sim.model1', 'sim.model2'].map((key) => page.text(key)));
-  // Tab audio: the same three models and the same default (0.5.1), with the plain label (the hint says the default).
-  assert.deepEqual(page.$('opt-model-tab').options.map((option) => option.textContent),
-    ['ext.options.modelLive', 'sim.model1', 'sim.model2'].map((key) => page.text(key)));
-  assert.notEqual(page.$('opt-model-tab').options[0].textContent, page.text('sim.model0'));
-  assert.doesNotMatch(page.$('opt-model-tab').options[0].textContent, /default/i);
-  assert.match(page.$('opt-model-mic').options[0].textContent, /default/i);
+  // §24: both selects offer the same three models, and their first option (the DEFAULT model) is the automatic latest one:
+  // it names no version, because it follows the newest general Google Live model; the other two keep the app's labels.
+  for (const id of ['opt-model-tab', 'opt-model-mic']) {
+    assert.deepEqual(page.$(id).options.map((option) => option.textContent),
+      ['ext.options.modelAuto', 'sim.model1', 'sim.model2'].map((key) => page.text(key)), id);
+  }
+  assert.notEqual(page.$('opt-model-mic').options[0].textContent, page.text('sim.model0'), 'not the fixed "Gemini 3.8 Live (default)"');
+  assert.doesNotMatch(page.$('opt-model-mic').options[0].textContent, /3\.8/);
   assert.equal(page.$('opt-model-tab').value, LIVE_MODELS[0], 'the tab default is the latest Live model, like the microphone\'s');
   // The defaults of 7.1 are selected: the latest Live model on both lanes.
   assert.equal(page.$('opt-model-tab').value, page.stored().lanes.tab.model);
@@ -521,8 +520,8 @@ test('changing uiLanguage re-renders the page: html lang, labels, model names an
   assert.equal(page.document.title, ko.t('ext.options.title'));
   assert.equal(page.$('opt-key-toggle').textContent, ko.t('ext.options.keyShow'));
   assert.equal(page.$('opt-volume-value').textContent, ko.t('ext.volume.value', { percent: 45 }));
-  assert.equal(page.$('opt-model-tab').options[0].textContent, ko.t('ext.options.modelLive'));
-  assert.equal(page.$('opt-model-mic').options[0].textContent, ko.t('sim.model0'));
+  assert.equal(page.$('opt-model-tab').options[0].textContent, ko.t('ext.options.modelAuto'));
+  assert.equal(page.$('opt-model-mic').options[0].textContent, ko.t('ext.options.modelAuto'));
   assert.equal(page.$('opt-key-status').textContent, ko.t('settings.noKey'));
   assert.equal(page.$('opt-ui-language').value, 'ko', 'the select keeps the chosen value');
   await page.fire('opt-ui-language', 'change', { value: 'auto' });
@@ -566,8 +565,8 @@ test('a failing dictionary load renders the boot dictionary and recovers on the 
   assert.equal(attempts, 2);
   assert.equal(page.i18n.current.has('ext.options.title'), true);
   assert.equal(page.$('opt-title').textContent, 'Options');
-  assert.equal(page.$('opt-model-tab').options[0].textContent, page.text('ext.options.modelLive'));
-  assert.equal(page.$('opt-model-mic').options[0].textContent, page.text('sim.model0'));
+  assert.equal(page.$('opt-model-tab').options[0].textContent, page.text('ext.options.modelAuto'));
+  assert.equal(page.$('opt-model-mic').options[0].textContent, page.text('ext.options.modelAuto'));
 });
 
 test('dispose removes every listener: edits are no longer saved and other contexts no longer re-render the page', async (t) => {

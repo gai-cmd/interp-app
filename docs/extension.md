@@ -20,7 +20,7 @@ while the dialog is open, stops that start and starts its own tab at once (the d
 **§22 (2026-10-08, unreleased, on top of 0.5.0; the owner's Windows report): on Chrome 153 and later the SIDE PANEL opens the
 share dialog itself and relays the chosen tab's audio to the offscreen document; older Chrome keeps the §19/§20 path.** Its
 dialog on Windows is NOT verified (§22). §21 is the number the self-updater's code refers to; its section is not in this file yet.
-§21 (the self-update), §22 (Windows: the dialog is opened by the side panel) and §23 (0.5.1: the latest Google Live model is the default on both lanes) follow §20.
+§21 (the self-update), §22 (Windows: the dialog is opened by the side panel), §23 (0.5.1: the latest Google Live model is the default on both lanes) and §24 (0.5.2: the default FOLLOWS the latest general Live model by itself) follow §20.
 Where an earlier statement and a later section disagree, the later section is the delivered behavior.
 
 Verification state:
@@ -32,7 +32,7 @@ Document state: the text below began as the DESIGN CONTRACT written by the archi
 Deviations from the first draft (delivered behavior that differs from the original contract text; each is now written into the section named):
 1. Panel accessibility (8.2.1, 8.2.6, 8.2.8, 13.31, 13.33, 13.47-13.49): Start is never natively `disabled` but `aria-disabled="true"` with its click ignored, so it stays focusable and its description reachable; the per-lane status lines `#tab-status` / `#mic-status` are plain text, not live regions (the pill and the notices announce state); the two caption previews are `role="region"` with an `aria-label`; the muted mute button shows a slashed speaker (a shape cue), not only a colour.
 2. Backup model (5.11, 8.2.3, 9.2): the warning is a persistent live region `#<lane>-route-note` (`ext.route.fallbackNote`); `ext.route.fallback` is a short label ("Backup model") that stays on the route line next to the model id.
-3. Dictionaries (9.2, 9.6): 117 `ext.*` keys at first delivery (122 with the two-way keys `ext.twoWay.*`, see the Status list above), not 113: `ext.status.off` (a switched-off lane no longer reads "Ready to start"), `ext.route.fallbackNote`, `ext.key.savedBrowser` (the app key's Korean text is in a formal register) and `ext.options.modelLive` (the tab select does not tag its model "(default)"). The caption-lines and auto-hide labels state the ranges (1-6, 0-60); `ext.permission.title` (en) reads "Allow microphone" like the button; `ext.menu.open` and the `_locales` `menuOpen` read "Open the interpreter panel on this tab" at first delivery (the click then opened the panel and did not start interpretation); since §20 change 7 they read "Interpret this tab (opens the interpreter panel)", because the click now starts interpretation.
+3. Dictionaries (9.2, 9.6): 117 `ext.*` keys at first delivery (122 with the two-way keys `ext.twoWay.*`, see the Status list above), not 113: `ext.status.off` (a switched-off lane no longer reads "Ready to start"), `ext.route.fallbackNote`, `ext.key.savedBrowser` (the app key's Korean text is in a formal register) and `ext.options.modelLive` (replaced by `ext.options.modelAuto` in 0.5.2, §24). The caption-lines and auto-hide labels state the ranges (1-6, 0-60); `ext.permission.title` (en) reads "Allow microphone" like the button; `ext.menu.open` and the `_locales` `menuOpen` read "Open the interpreter panel on this tab" at first delivery (the click then opened the panel and did not start interpretation); since §20 change 7 they read "Interpret this tab (opens the interpreter panel)", because the click now starts interpretation.
 4. Microphone permission page (8.4): `#perm-help` is a persistent `role="status"` region whose text is written and cleared, never hidden; `#perm-request` and the panel's `#btn-mic-allow` are named `ext.permission.allowButton` (only the panel's icon button `#btn-mic-permission` keeps `permission.request`).
 5. Options (7.3, 8.3): the two number fields reject an out-of-range or fractional value (the stored value comes back, nothing is written, no "Saved.").
 6. Idle report (5.8, 6.9): a `sw/host-idle` answered `{closed:false}`, or two failed sends, makes the host's panel hub repeat the report 3 s, 6 s and 12 s later, at most 3 times; a panel port cancels and resets the chain (an idle offscreen document can no longer stay for good).
@@ -1879,8 +1879,8 @@ through 6.6; Next = applies from the next start.
 | `#opt-ui-language` | `select` + hint `#opt-ui-language-hint` (`ext.options.uiLanguageHint`: panel and options follow this; captions drawn on web pages, the toolbar tooltip and the context-menu title follow Chrome's own language because they come from `chrome.i18n`) | `language.ui` (options `language.auto`, `language.ko`, `language.en`, `language.ja`) | `uiLanguage` | enum | Live (page re-renders) |
 | `#opt-target-tab` | `select` | `ext.lane.tab.title` + `language.target` | `lanes.tab.targetLanguage` | ko/en/ja | Next |
 | `#opt-target-mic` | `select` | `ext.lane.mic.title` + `language.target` | `lanes.mic.targetLanguage` | ko/en/ja | Next |
-| `#opt-model-tab` | `select`, options = `LIVE_MODELS` with text `ext.options.modelLive`, `sim.model1`, `sim.model2` by index (`sim.model0` carries the app's "(default)" tag, which is true for the microphone only, so the tab select shows the same model untagged) | `ext.options.modelTab` (+ hint `#opt-model-tab-hint`, `ext.options.modelTabHint`) | `lanes.tab.model` | in `LIVE_MODELS` | Next |
-| `#opt-model-mic` | `select`, options text `sim.model0..2` by index | `ext.options.modelMic` (+ hint `ext.options.modelMicHint`) | `lanes.mic.model` | in `LIVE_MODELS` | Next |
+| `#opt-model-tab` | `select`, options = `LIVE_MODELS` with text `ext.options.modelAuto` ("Latest Gemini Live (automatic)", §24; it was `ext.options.modelLive` before 0.5.2), `sim.model1`, `sim.model2` by index | `ext.options.modelTab` (+ hint `#opt-model-tab-hint`, `ext.options.modelTabHint`) | `lanes.tab.model` | in `LIVE_MODELS` | Next |
+| `#opt-model-mic` | `select`, options text `ext.options.modelAuto`, `sim.model1`, `sim.model2` by index (§24) | `ext.options.modelMic` (+ hint `ext.options.modelMicHint`) | `lanes.mic.model` | in `LIVE_MODELS` | Next |
 | `#opt-voice` | `select` (`sim.voice.female`, `sim.voice.male`) | `sim.voice` (+ hint `sim.voiceRestart`) | `voiceGender` | enum | Next |
 | `#opt-volume` | `input[type=range]` 0-100 step 5 + `output#opt-volume-value` | `ext.tab.originalVolume` | `lanes.tab.originalVolume` | int | Live |
 | `#opt-captions-tab` | checkbox | `ext.captions.show` (with lane title) | `lanes.tab.captions` | bool | Live |
@@ -2643,9 +2643,9 @@ INTERPRETED speech, not the tab's sound). It was revised once more after the rev
 | `ext.options.defaultsHint` | 패널을 열 때 처음 선택돼 있을 값이에요. 패널에서 바꾼 값도 여기에 저장돼요. | These are the values selected when the panel opens. Changes made in the panel are saved here too. | パネルを開いたときに最初に選ばれている値です。パネルで変更した値もここに保存されます。 |
 | `ext.options.modelTab` | 탭 오디오 모델 | Tab audio model | タブ音声のモデル |
 | `ext.options.modelMic` | 마이크 모델 | Microphone model | マイクのモデル |
-| `ext.options.modelLive` | Gemini 3.8 Live | Gemini 3.8 Live | Gemini 3.8 Live |
-| `ext.options.modelTabHint` | 탭 소리에는 번역 전용 모델(Gemini 3.5 Live Translate)을 권장해요. 영상 속 말에 통역이 대답하는 일이 거의 없어요. 모델은 다음 시작부터 적용돼요. | For tab audio, the translation-only model (Gemini 3.5 Live Translate) is recommended: it usually does not answer what it hears in a video. The model applies from the next start. | タブの音声には翻訳専用モデル（Gemini 3.5 Live Translate）をおすすめします。動画の中の発言に通訳が返答することはほとんどありません。モデルは次回の開始から適用されます。 |
-| `ext.options.modelMicHint` | 마이크에는 기본 모델(Gemini 3.8 Live)을 권장해요. 모델은 다음 시작부터 적용돼요. | For the microphone, the default model (Gemini 3.8 Live) is recommended. The model applies from the next start. | マイクには既定のモデル（Gemini 3.8 Live）をおすすめします。モデルは次回の開始から適用されます。 |
+| `ext.options.modelAuto` (§24, replaces `ext.options.modelLive`) | 최신 Gemini Live (자동) | Latest Gemini Live (automatic) | 最新のGemini Live（自動） |
+| `ext.options.modelTabHint` | (reworded in 0.5.1 and 0.5.2, §23-§24: "By default, tab audio follows the latest Google Live model automatically …"; the three dictionaries are the source) | | |
+| `ext.options.modelMicHint` | (reworded in 0.5.2, §24: "By default, the microphone follows the latest Google Live model automatically …") | | |
 | `ext.options.uiLanguageHint` | 패널과 옵션의 언어예요. 웹페이지에 뜨는 자막의 안내 문구, 툴바 툴팁, 메뉴 이름은 Chrome의 언어를 따라가요. | The language of the panel and options. Labels on captions drawn into web pages, the toolbar tooltip and the menu item follow Chrome's own language. | パネルとオプションの言語です。ウェブページに表示される字幕の案内文、ツールバーのツールチップ、メニュー名はChromeの言語に従います。 |
 | `ext.options.saved` | 저장했어요. | Saved. | 保存しました。 |
 | `ext.options.keyShow` | 키 보기 | Show key | キーを表示 |
@@ -2952,7 +2952,7 @@ export function createFallbackI18n({ language } = {}) -> I18n     // 3-key Engli
 `sim.status.<status>` for `idle|preparing|connecting|running|stopping|stopped` (the statuses the panel still takes from the app; `reconnecting` and `failed` are `ext.status.*`);
 `sim.output.<state with '-' replaced by '_'>` for `delayed|catching-up|unavailable`; `sim.gap.<audio|reception>`; `language.<ko|en|ja>`;
 `permission.<granted|denied|prompt|checking>`; `captionOnly.display.<dark|light|mono>`;
-`ext.lane.<tab|mic>.title`; `ext.options.position.<top|bottom>`; `sim.model<i>` for `i < LIVE_MODELS.length` (the tab select uses `ext.options.modelLive` in place of `sim.model0`). For every code that can appear in a
+`ext.lane.<tab|mic>.title`; `ext.options.position.<top|bottom>`; `sim.model<i>` for `i < LIVE_MODELS.length` (both selects use `ext.options.modelAuto` in place of `sim.model0` since 0.5.2). For every code that can appear in a
 `LaneState.errorCode` or a `sw/lane-start` error, `errorKeyFor(code, i18n.has, lane)` resolves, for BOTH lanes, to a key that exists (test over `ERROR_CODES` plus the extension codes),
 never to a `sim.error.*` key, and for the tab lane never to a key whose text says "microphone" (`MICROPHONE_UNAVAILABLE`, `BROWSER_INTERRUPTED`, `MICROPHONE_DENIED` -> `ext.error.TAB_INPUT_LOST`).
 
@@ -4514,3 +4514,74 @@ failure read as TAB_ENDED) was fixed in 0.5.0 before release. OPEN, all minor, n
   republishes the built-in keys on a CORS-open URL, so a later key rotation does not remove the old copies.
 Suggested first batch (small, safe, testable): R2, R5, Z3, Z4, U1. NOT verified by anyone yet: Windows, a headed Chrome, the real folder
 picker and a write to a real disk, and a person.
+
+## 24. Release 0.5.2 (2026-10-08): the default follows the latest Google Live model by itself
+
+Owner, 2026-10-08, after 0.5.1: "항상 최신" (always the latest), chosen over "a weekly check and a release". §23 listed what stood in the
+way; this section is what was built. It supersedes the "NOT done" paragraph of §23.
+
+**What it does.** A lane whose model is the DEFAULT (`gemini-3.8-live` today, the first option of both selects, now labelled "Latest
+Gemini Live (automatic)", `ext.options.modelAuto`) runs the newest GENERAL Live model its account lists, with no release: an id of the
+shape `gemini-<major>.<minor>-live` that is strictly newer than the default (`GENERAL_LIVE_ID`, numeric compare: 3.10 > 3.8). Previews,
+`-extended-thinking`, translation, transcription, native-audio and robotics models never count, however high their number. A model the
+person picked (the translation-only preview, the native-audio model) is never replaced and never even asked about. The stored setting
+stays the default: it FOLLOWS the latest; nothing in storage changes at an update.
+
+**Who does what** (the key stays where it already was, so nothing new can leak it):
+1. Worker (`sw-core.js` `latestFor`): reads its record `interp.latest-live.v1` (storage.local) and tells the starting lane, in the one
+   `host/lane-start`, `latest: { model, refresh }`. It never waits for the provider and never fails a start on a damaged record
+   (`normalizeRecord`: exactly this version, general Live ids, integers; anything else is no record). `decide` (extension/lib/latest-live.js):
+   record younger than 1 h = `none` (use it); 1 h to 7 days = `background` (use it, ask again for the next start); older or none =
+   `blocking` (the lane asks first, for at most 2 s; a person who starts every day never waits). When the record's own candidate was refused
+   within 6 h, `blocking` becomes `background` (a look first could not change what the start runs). A failed look (the lane also reports it when a blocking wait runs out) is not repeated for 10 min; a model the provider refused is left alone
+   for 6 h (only that id). A clock that went backwards makes a record stale, never fresh for ever.
+2. Lane (`lane-engine.js` `adoptedModelOf`, `lookAtProvider`): holds the key, so it does the asking: one paged `models.list`
+   (`pageSize=1000`, the key in the `x-goog-api-key` header, never in the URL; the lane's own key, or the first 3 of the pool), 10 s at most,
+   and reports `sw/latest-live` to the worker: `seen { newest }`, `failed`, or `rejected { model }` (ids only; the worker, which has the
+   storage, writes the record with its own clock; two reports at once lose neither). Blocking waits 2 s, then runs the record's model and
+   lets the look finish for the next start; a Stop while waiting ends the start.
+3. Wire (`lane-engine.js` `laneSocket`): the engine is closed over the repository's model list (router, session, fallback chain), so the
+   newer model runs by ONE substitution: the `model` field of the FIRST frame (the setup) of a socket, only when it is exactly
+   `models/gemini-3.8-live`. Everything else is the default's: its setup, its route, its fallback chain. The lane reports the model that
+   really runs (`presented`), and the panel's "applies next" rule treats a newer general Live model on a default setting as the same choice.
+
+**The fall back** (the part that makes it safe to follow a model nobody has tried): a socket of the adopted model that closes before its
+`setupComplete` (any wording of a refusal, a permission or API wording, a quota: the default model gets its one attempt FIRST, with the same key),
+that has not answered its setup within 4 s (`LATEST_LIVE.setupWatchdogMs`), or that closes within 3 s after it with a code other than 1000,
+makes the lane restart on the default model at once, with the same key,
+a fresh budget and no backoff (`restartRun`, the body shared with the pool's key switch), for the rest of this start. A refusal by the provider
+(1007/1008, e.g. `models/gemini-3.9-live is not found for API version v1beta, or is not supported for bidiGenerateContent`, seen from the
+real endpoint on 2026-10-08, ~450 ms) is reported `rejected`; a transient one (no answer, a drop, an outage) only costs this start. A key the
+REASON names as invalid or restricted by IP is still the key's fault and moves the pool on, with the adopted model kept; after the setup a
+quota close is the key swap's. A close WE asked for (a Stop, a key switch, the engine ending its own run: someone called close()) and a
+refused RESUMED setup (the handle's fault: the engine's own retry without it comes first) never blame the model. An unknown 1007/1008 on an adopted socket is the MODEL's: without this the engine's guess
+(`refusalOfClose`) would read it as a refused key and burn the whole pool, each key failing the same way.
+
+**Messages and storage.** `sw/latest-live` (offscreen -> worker; `seen`/`failed`/`rejected`, ids only, validated by `GENERAL_LIVE_ID`),
+`host/lane-start.latest` (optional), `STORAGE_KEYS.latestLive`. The web app is unchanged: `app/` is not touched.
+
+**Tests.** `tests/extension-latest-live.test.mjs` (the pure half; every lane path over the real engine and fake sockets, 15 mutants killed
+in `scratchpad`), the protocol, worker, panel, options and integration tests (the whole chain over the fake browser: first start asks and runs
+the newest model, the next start asks nothing; a refused model falls back and is remembered; an unreachable provider never stands in the
+way). `tools/check-latest-live.mjs` now shares the rules with the extension.
+
+**Known limits / NOT verified.** A start waits up to 2 s for the provider only on a fresh install or after a week without a start (a round trip when the provider answers).
+The record is one per profile, not per credential: a person who adds or removes a personal key may run one start on a model the other account lists or refused (it heals at the next look). A newest model that
+sets up and then misbehaves after 3 s is not detected (the engine's own recovery applies, as for any model). The newest model's quality,
+price and its compatibility with the setup fields (session resumption, context window compression: verified only on 3.8) were never
+measured; the fall back is what protects the member. "Latest" is by id shape: Google could ship a general model under another naming.
+A person who wants to pin 3.8 exactly cannot (the option is "latest"); the translation-only and native-audio options stay. Real endpoint
+with a made-up newer id (`gemini-3.9-live`, which does not exist): see the verification note below.
+
+Verified on 2026-10-08 in a real Chrome (Chrome for Testing 149, headless, muted, a SILENT fake microphone, the shipped pool, the real Live endpoint
+and the real `models.list`; `scratchpad/e2e-latest/e2e.mjs`): (a) a record naming the nonexistent `gemini-3.9-live` as the newest: the lane tried it,
+the real endpoint refused it, the lane went back to `gemini-3.8-live` with the same pool key and ran (panel: connected, route "General Live model ·
+gemini-3.8-live", no notice), and the worker's record said `rejected: gemini-3.9-live` (the refusal is only ever written from the lane's report);
+(b) no record: the lane asked the real `models.list` from the extension (CORS from a `chrome-extension://` origin works), saw that no newer general
+Live model exists, ran `gemini-3.8-live`, and the record said `newest: gemini-3.8-live`. NOT verified: a newer model that EXISTS (there is none yet),
+Windows, a headed Chrome, a person.
+Review (2026-10-08, three lenses and a skeptic per serious finding): no blocker. Fixed from it: a quota or permission wording on the adopted socket
+used to reach the key handling and never the default model (F1); a stalled adopted setup cost 10 s per start (F2, now 4 s and remembered); a refused
+resumed setup was blamed on the model (F3); a successful look that no longer listed the record's model still tried it (F4); a close WE asked for was
+read as the model's failure (F5); a start waited for the provider after 24 h (now a week); a blocking wait that ran out was not reported; an
+invalid key read as a network error in the check tool; the hints promised "automatic" under any selection.

@@ -607,6 +607,23 @@ test('two-way model note: hidden while the lane runs or reconnects on a backup m
   assert.equal(vmOf({ settings: both, host: hostUi({ tab: onBackup }) }).lanes.mic.modelNote, true);
 });
 
+// §24 (0.5.2): the default model follows the latest general Live model, so a lane that runs a NEWER general Live model than the
+// default is running what the setting says.
+test('rule 13 and the latest model: a lane on the default setting that runs a newer general Live model has no pending change; every other difference still has', () => {
+  const NEWER = 'gemini-3.9-live';
+  const applyNext = (settingModel, runningModel, extra = {}) => vmOf({ settings: settingsWith((s) => { s.lanes.tab.model = settingModel; s.lanes.tab.targetLanguage = 'en'; }),
+    host: hostUi({ tab: running('tab', { targetLanguage: 'en', model: runningModel, ...extra }) }) }).lanes.tab.applyNext;
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, DEFAULT_LIVE_MODEL), false, 'the default itself');
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, NEWER), false, 'the default setting runs the newer model it follows');
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, 'gemini-4.0-live'), false);
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, 'gemini-3.7-live'), true, 'an OLDER model is not what the default follows');
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, TRANSLATE_LIVE_MODEL), true, 'a model the setting does not say');
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, 'gemini-3.9-live-preview'), true, 'a preview is not a general Live model');
+  assert.equal(applyNext(TRANSLATE_LIVE_MODEL, NEWER), true, 'a setting that is not the default is never "following"');
+  assert.equal(applyNext(TRANSLATE_LIVE_MODEL, TRANSLATE_LIVE_MODEL), false);
+  assert.equal(applyNext(DEFAULT_LIVE_MODEL, TRANSLATE_LIVE_MODEL, { fallback: true }), false, 'a backup model is expected (unchanged)');
+});
+
 test('two-way: the two model ids the panel pins (it may not import live-config) are the ones the engine uses for a pair', async () => {
   assert.equal(TRANSLATION_ONLY_MODEL, TRANSLATE_LIVE_MODEL);
   // The rule of app/engine/sim.js: a pair on a translation-route model moves to the first model that is not one.

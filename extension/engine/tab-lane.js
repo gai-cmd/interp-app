@@ -28,7 +28,7 @@ const codedError = (code) => Object.assign(new Error(code), { code });
 const codeOf = (error, fallback) => (isMachineCode(attempt(() => error?.code)) ? error.code : fallback);
 const stopTracks = (stream) => { for (const track of attempt(() => stream.getTracks()) ?? []) attempt(() => track.stop()); };
 
-export function createTabLane({ env, deps = {}, timers, onChange, includeVideo = TAB_CAPTURE_INCLUDE_VIDEO, cooldowns = null } = {}) {
+export function createTabLane({ env, deps = {}, timers, onChange, onLatest = null, includeVideo = TAB_CAPTURE_INCLUDE_VIDEO, cooldowns = null } = {}) {
   let controller = null;
   // The one share picker this document has open, if any: { promise, owner }. The dialog cannot be closed from here,
   // so a start that was cancelled while it is open leaves it behind; the next start takes it over instead of stacking
@@ -163,7 +163,7 @@ export function createTabLane({ env, deps = {}, timers, onChange, includeVideo =
     ...(pick === undefined && relay === undefined ? {} : { tabId: captured.tabId }) };
   }
 
-  controller = createLaneController({ lane: 'tab', env, deps, timers, onChange, acquire, cooldowns,
+  controller = createLaneController({ lane: 'tab', env, deps, timers, onChange, onLatest, acquire, cooldowns,
     // 5.7 step 3: the relay closed (§22), then raw tracks stopped (the tab's own audio returns, the capture indicator
     // goes), nodes, context.
     release: (run) => { attempt(() => run.relay?.stop()); return run.graph?.stop(); } });

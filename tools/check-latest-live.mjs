@@ -14,86 +14,16 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_LIVE_MODEL } from '../app/providers/gemini/live-config.js';
-import { REST_ENDPOINT } from '../app/providers/gemini/config.js';
+import {
+  GENERAL_LIVE_ID, LIVE_METHOD, compareGeneralLive, listLiveModelIds as listLive, newestGeneralLive, verdictOf as verdict,
+  versionOfGeneralLive,
+} from '../extension/lib/latest-live.js';
 
-/** The one id shape of a general Live model. */
-export const GENERAL_LIVE_ID = /^gemini-(\d{1,2})\.(\d{1,2})-live$/;
-/** What a Live (bidirectional streaming) model reports among its generation methods. */
-export const LIVE_METHOD = 'bidiGenerateContent';
-export const LIMITS = Object.freeze({ pageSize: 1000, maxPages: 10, timeoutMs: 15000 });
-
-const bare = (name) => (typeof name === 'string' && name.startsWith('models/') ? name.slice('models/'.length) : name);
-
-/** [major, minor] of a general Live id, or null for any other id. */
-export function versionOfGeneralLive(id) {
-  const match = typeof id === 'string' ? GENERAL_LIVE_ID.exec(id) : null;
-  return match ? [Number(match[1]), Number(match[2])] : null;
-}
-
-/** 1 when a is a newer general Live id than b, -1 when older, 0 when equal; null when either is not a general Live id. */
-export function compareGeneralLive(a, b) {
-  const x = versionOfGeneralLive(a);
-  const y = versionOfGeneralLive(b);
-  if (x === null || y === null) return null;
-  if (x[0] !== y[0]) return x[0] > y[0] ? 1 : -1;
-  if (x[1] !== y[1]) return x[1] > y[1] ? 1 : -1;
-  return 0;
-}
-
-/** The newest general Live id of a list of model ids (with or without the "models/" prefix), or null. */
-export function newestGeneralLive(ids) {
-  let best = null;
-  for (const raw of Array.isArray(ids) ? ids : []) {
-    const id = bare(raw);
-    if (versionOfGeneralLive(id) === null) continue;
-    if (best === null || compareGeneralLive(id, best) === 1) best = id;
-  }
-  return best;
-}
-
-/**
- * The verdict of the check: { status: 'up-to-date' | 'newer' | 'default-not-listed', newest, current }.
- * 'default-not-listed' = the account no longer lists the default at all (retired?): as urgent as 'newer'.
- */
-export function verdictOf({ current = DEFAULT_LIVE_MODEL, liveIds = [] } = {}) {
-  const ids = (Array.isArray(liveIds) ? liveIds : []).map(bare);
-  const newest = newestGeneralLive(ids);
-  if (!ids.includes(current)) return Object.freeze({ status: 'default-not-listed', newest, current });
-  return Object.freeze({ status: newest !== null && compareGeneralLive(newest, current) === 1 ? 'newer' : 'up-to-date', newest, current });
-}
-
-/**
- * Every model id of the account that reports bidiGenerateContent, following nextPageToken. The key goes in a header, never in
- * the URL; nothing but ids is returned. Throws an Error whose .code is NETWORK_ERROR, INVALID_KEY, RATE_LIMITED or INVALID_RESULT.
- */
-export async function listLiveModelIds({ fetch: fetchImpl = globalThis.fetch, key, endpoint = REST_ENDPOINT, limits = LIMITS } = {}) {
-  const fail = (code) => Object.assign(new Error(code), { code });
-  if (typeof fetchImpl !== 'function' || typeof key !== 'string' || key === '') throw fail('INVALID_KEY');
-  const ids = [];
-  let token = '';
-  for (let page = 0; page < limits.maxPages; page += 1) {
-    const url = new URL(endpoint);
-    url.searchParams.set('pageSize', String(limits.pageSize));
-    if (token) url.searchParams.set('pageToken', token);
-    let response;
-    try { response = await fetchImpl(url, { method: 'GET', headers: { 'x-goog-api-key': key, accept: 'application/json' }, signal: AbortSignal.timeout(limits.timeoutMs) }); }
-    catch { throw fail('NETWORK_ERROR'); }
-    if (response.status === 401 || response.status === 403) throw fail('INVALID_KEY');
-    if (response.status === 429) throw fail('RATE_LIMITED');
-    if (!response.ok) throw fail('NETWORK_ERROR');
-    let body;
-    try { body = await response.json(); } catch { throw fail('INVALID_RESULT'); }
-    if (!Array.isArray(body?.models)) throw fail('INVALID_RESULT');
-    for (const entry of body.models) {
-      const id = bare(entry?.name);
-      if (typeof id === 'string' && /^[a-z][a-z0-9.-]{0,63}$/.test(id) && Array.isArray(entry?.supportedGenerationMethods)
-        && entry.supportedGenerationMethods.includes(LIVE_METHOD) && !ids.includes(id)) ids.push(id);
-    }
-    token = typeof body.nextPageToken === 'string' ? body.nextPageToken : '';
-    if (!token) return Object.freeze(ids);
-  }
-  throw fail('INVALID_RESULT');   // more pages than any account has: do not guess
-}
+// The rules live in ONE place, extension/lib/latest-live.js, which the extension itself runs (0.5.2: the lane follows the latest
+// general Live model by itself). This tool only adds what a command line needs: the global fetch, a timeout and the default.
+export { GENERAL_LIVE_ID, LIVE_METHOD, compareGeneralLive, newestGeneralLive, versionOfGeneralLive };
+export const verdictOf = ({ current = DEFAULT_LIVE_MODEL, liveIds = [] } = {}) => verdict({ current, liveIds });
+export const listLiveModelIds = (options = {}) => listLive({ fetch: globalThis.fetch, signal: AbortSignal.timeout(60000), ...options });
 
 async function main(argv) {
   const at = argv.indexOf('--key-file');

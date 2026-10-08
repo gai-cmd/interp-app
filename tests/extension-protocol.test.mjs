@@ -59,6 +59,7 @@ const VALID = Object.freeze({
   'sw/permission-open': {},
   'sw/host-probe': {},
   'sw/host-idle': { hostId: 'h-abc123', reason: 'panel-gone' },
+  'sw/latest-live': { kind: 'seen', newest: 'gemini-3.9-live' },   // §24
   'host/ping': {},
   'host/lane-start': LANE_START,
   'host/lane-stop': { lane: 'mic' },
@@ -84,8 +85,8 @@ test('shared constants are frozen and pinned to the values of section 3.5', () =
   assert.deepEqual(LANES, ['tab', 'mic']);
   assert.deepEqual(TARGETS, ['sw', 'offscreen', 'panel', 'content']);
   assert.deepEqual(SENDER_ROLES, ['sw', 'panel', 'offscreen', 'options', 'permission', 'content', 'foreign']);
-  assert.deepEqual(STORAGE_KEYS, { settings: 'interp.settings.v1', key: 'interp.key.v1', update: 'interp.update.v1', armed: 'interp.armed.v1',
-    host: 'interp.host.v1', lastStop: 'interp.lastStop.v1', autostart: 'interp.autostart.v1' });   // §20: the icon's start request
+  assert.deepEqual(STORAGE_KEYS, { settings: 'interp.settings.v1', key: 'interp.key.v1', update: 'interp.update.v1', latestLive: 'interp.latest-live.v1',
+    armed: 'interp.armed.v1', host: 'interp.host.v1', lastStop: 'interp.lastStop.v1', autostart: 'interp.autostart.v1' });   // §20: the icon's start request
   assert.deepEqual(PATHS, { sw: 'extension/background/service-worker.js', panel: 'extension/panel/panel.html',
     options: 'extension/options/options.html', host: 'extension/engine/host.html',
     permission: 'extension/permission/mic-permission.html', overlay: 'extension/overlay/overlay.js' });
@@ -105,7 +106,7 @@ test('shared constants are frozen and pinned to the values of section 3.5', () =
   assert.ok(KEY_PATTERN.test('a'.repeat(LIMITS.keyMaxChars)) && !KEY_PATTERN.test('a'.repeat(LIMITS.keyMaxChars + 1)));
 });
 
-test('the catalog has the 15 rows of section 4.2 (§22 added sw/tab-label) with a target that matches the type prefix', () => {
+test('the catalog has the 16 rows of section 4.2 (§22 added sw/tab-label, §24 sw/latest-live) with a target that matches the type prefix', () => {
   assert.deepEqual([...MESSAGE_TYPES].sort(), Object.keys(VALID).sort());
   const targetOfPrefix = { sw: 'sw', host: 'offscreen', content: 'content' };
   for (const type of MESSAGE_TYPES) {
@@ -117,7 +118,8 @@ test('the catalog has the 15 rows of section 4.2 (§22 added sw/tab-label) with 
   assert.deepEqual(MESSAGE_CATALOG['sw/lane-start'].roles, ['panel']);
   assert.deepEqual(MESSAGE_CATALOG['sw/tab-label'].roles, ['panel'], '§22: only the panel asks for its tab\'s label');
   assert.deepEqual(MESSAGE_CATALOG['sw/host-idle'].roles, ['offscreen']);
-  assert.equal(MESSAGE_TYPES.length, 15);
+  assert.deepEqual(MESSAGE_CATALOG['sw/latest-live'].roles, ['offscreen'], '§24: only the offscreen host reports what a lane learned');
+  assert.equal(MESSAGE_TYPES.length, 16);
   assert.deepEqual(MESSAGE_CATALOG['host/lane-start'].roles, ['sw']);
   assert.deepEqual(MESSAGE_CATALOG['content/overlay-attach'].roles, ['sw']);
   assert.deepEqual(MESSAGE_CATALOG['content/capture-label'].roles, ['sw']);
@@ -875,4 +877,35 @@ test('importing any lib module touches no platform global', async () => {
 
 test('LaneState helpers used by these tests stay consistent with the frame validator', () => {
   for (const lane of LANES) assert.deepEqual(validateLaneState(createIdleLaneState(lane), lane), createIdleLaneState(lane));
+});
+
+// §24 (0.5.2): what a lane learned about the latest general Live model, and what the worker tells a starting lane.
+test('sw/latest-live: seen (an id or null), failed, rejected (an id); anything else, or any extra field, is refused or dropped', () => {
+  const ok = (payload) => validateMessage({ v: 1, target: 'sw', type: 'sw/latest-live', ...payload });
+  assert.deepEqual(ok({ kind: 'seen', newest: 'gemini-3.9-live' }).message, message('sw/latest-live', { kind: 'seen', newest: 'gemini-3.9-live' }));
+  assert.equal(ok({ kind: 'seen', newest: null }).ok, true);
+  assert.deepEqual(ok({ kind: 'failed', junk: 'x' }).message, message('sw/latest-live', { kind: 'failed' }), 'extra fields are dropped');
+  assert.deepEqual(ok({ kind: 'rejected', model: 'gemini-4.0-live' }).message, message('sw/latest-live', { kind: 'rejected', model: 'gemini-4.0-live' }));
+  for (const bad of [{}, { kind: 'seen' }, { kind: 'seen', newest: 'gemini-3.5-live-translate-preview' }, { kind: 'seen', newest: 'gemini-3.9-live-preview' },
+    { kind: 'seen', newest: undefined }, { kind: 'rejected' }, { kind: 'rejected', model: null }, { kind: 'rejected', model: 'models/gemini-3.9-live' },
+    { kind: 'rejected', model: 'gemini-3.9-live ' }, { kind: 'other' }, { kind: 'failed', newest: 5, model: 5 }].filter((payload) => payload.kind !== 'failed')) {
+    assert.equal(ok(bad).ok, false, JSON.stringify(bad));
+  }
+  const keyShaped = ['synthetic', 'k'.repeat(30)].join('-');   // assembled at run time: the privacy scan forbids key-shaped literals
+  assert.equal(JSON.stringify(ok({ kind: 'seen', newest: keyShaped })), JSON.stringify({ ok: false, code: 'INVALID_MESSAGE' }), 'a key-shaped value is no model id, and is never echoed');
+});
+
+test('host/lane-start carries an optional latest { model, refresh }: a general Live id or null, and a refresh; a half-valid one refuses the message', () => {
+  const start = (latest) => validateMessage(message('host/lane-start', withPatch(LANE_START, latest === undefined ? {} : { latest })));
+  assert.equal(Object.hasOwn(start(undefined).message, 'latest'), false, 'absent stays absent');
+  assert.deepEqual(start({ model: 'gemini-3.9-live', refresh: 'none' }).message.latest, { model: 'gemini-3.9-live', refresh: 'none' });
+  assert.deepEqual(start({ model: null, refresh: 'blocking' }).message.latest, { model: null, refresh: 'blocking' });
+  assert.deepEqual(start({ model: null, refresh: 'background', junk: 1 }).message.latest, { model: null, refresh: 'background' }, 'extra fields are dropped');
+  const mic = validateMessage(message('host/lane-start', withPatch(MIC_START, { latest: { model: 'gemini-3.9-live', refresh: 'none' } })));
+  assert.deepEqual(mic.message.latest, { model: 'gemini-3.9-live', refresh: 'none' }, 'both lanes');
+  for (const bad of [null, 5, 'x', [], {}, { model: 'gemini-3.9-live' }, { refresh: 'none' }, { model: undefined, refresh: 'none' }, { model: 'gemini-3.9-live', refresh: 'always' },
+    { model: 'gemini-3.5-live-translate-preview', refresh: 'none' }, { model: 'gemini-3.9-live-preview', refresh: 'none' }, { model: 5, refresh: 'none' },
+    { model: 'models/gemini-3.9-live', refresh: 'none' }]) {
+    assert.equal(start(bad).ok, false, JSON.stringify(bad));
+  }
 });

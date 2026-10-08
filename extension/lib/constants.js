@@ -74,6 +74,13 @@ export const ERROR_REASON_PATTERN = /^[a-z][a-z-]{1,31}$/;
 export const isErrorReason = (value) => typeof value === 'string' && ERROR_REASON_PATTERN.test(value);
 // `request.model` on the wire and `LaneState.model` are both bounded to this many characters (4.2.1, 4.6.1).
 export const MODEL_MAX_CHARS = 64;
+// §24 (0.5.2): the ONE id shape of a general Google Live model, `gemini-<major>.<minor>-live`. Previews, `-extended-thinking`,
+// translation, transcription, native-audio and robotics models never match, so none of them is ever adopted as "the latest".
+export const GENERAL_LIVE_ID = /^gemini-(\d{1,2})\.(\d{1,2})-live$/;
+/** What the worker tells a starting lane about the latest model: use the record as it is, ask in the background, or ask first. */
+export const LATEST_REFRESH = Object.freeze(['none', 'background', 'blocking']);
+/** What a lane reports back to the worker (sw/latest-live): the newest general Live model the account lists, a failed look, a refused model. */
+export const LATEST_REPORT_KINDS = Object.freeze(['seen', 'failed', 'rejected']);
 
 // Vocabulary of LaneState (4.6.1) and of the caption frame (4.6.3), shared by the builders and the frame validator.
 export const LANE_PHASES = Object.freeze(['off', 'starting', 'running', 'reconnecting', 'stopping', 'error']);

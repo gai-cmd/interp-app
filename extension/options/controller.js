@@ -26,13 +26,12 @@ const SAVED_FLASH_MS = 2_000;
 // the reload did not happen: the buttons come back instead of staying greyed out forever.
 const RELOAD_WAIT_MS = 15_000;
 const I18N_RETRY_MS = Object.freeze([2_000, 6_000, 18_000]);
-// sim.model0..2 are the labels of LIVE_MODELS by index (9.4); a model beyond the table shows its own id. sim.model0
-// carries the app's "(default)" tag. Both lanes default to the latest Live model since 0.5.1 (2026-10-08; the tab
-// lane's default used to be the translation model); the tab select keeps its plain label of that model and says the
-// default in its hint (ext.options.modelTabHint).
+// LIVE_MODELS by index: the first is the DEFAULT model, which since 0.5.2 follows the latest general Google Live model
+// ('Latest Gemini Live (automatic)', ext.options.modelAuto, on both selects); sim.model1..2 are the app's labels of the
+// other two; a model beyond the table shows its own id.
 const MODEL_KEYS = Object.freeze({
-  'opt-model-tab': Object.freeze(['ext.options.modelLive', 'sim.model1', 'sim.model2']),
-  'opt-model-mic': Object.freeze(['sim.model0', 'sim.model1', 'sim.model2']),
+  'opt-model-tab': Object.freeze(['ext.options.modelAuto', 'sim.model1', 'sim.model2']),
+  'opt-model-mic': Object.freeze(['ext.options.modelAuto', 'sim.model1', 'sim.model2']),
 });
 
 // [control id, how the control is read, getter, setter, integer range]. Every control of 7.3 that maps to one setting.

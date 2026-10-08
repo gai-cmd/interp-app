@@ -1350,6 +1350,102 @@ test('0.5.1 the tab lane defaults to the latest Live model end to end: the icon 
   panel.close();
 });
 
+// §24 (0.5.2), the whole chain over the fake browser: worker -> host -> lane -> provider look -> report -> record -> next start.
+const NEWEST = 'gemini-3.9-live';
+const LATEST_RECORD = (world) => world.browser.storageData('local')[STORAGE_KEYS.latestLive];
+const providerList = (ids, calls = []) => async (url, init) => {
+  calls.push({ url: String(url), key: init?.headers?.['x-goog-api-key'] });
+  return { ok: true, status: 200, json: async () => ({ models: ids.map((id) => ({ name: `models/${id}`, supportedGenerationMethods: ['bidiGenerateContent'] })) }) };
+};
+
+test('0.5.2 always the latest, end to end: the first start asks the provider and runs the newest general Live model, the record is kept, the next start asks nothing', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  const calls = [];
+  world.audio.env.fetch = providerList([INSTRUCTION_MODEL, NEWEST, TRANSLATION_ONLY, 'gemini-3.9-live-extended-thinking'], calls);
+  assert.equal(LATEST_RECORD(world), undefined, 'a fresh install knows nothing');
+  await world.armTab(5);
+  const tab = await world.connect({ worklet: 0, socket: 0 });
+  assert.deepEqual(startOf(world, 'tab').latest, { model: null, refresh: 'blocking' }, 'the worker said: nothing known, ask first');
+  assert.equal(calls.length, 1, 'one look at the provider');
+  assert.equal(calls[0].url.includes('synthetic'), false, 'the key is not in the URL');
+  assert.equal(setupOf(tab.socket).model, `models/${NEWEST}`, 'the first setup already names the newest general Live model (not the preview, not the thinking variant)');
+  assert.equal(world.lastState().lanes.tab.model, NEWEST, 'the lane tells the truth about the model');
+  assert.match(panel.text('tab-route'), new RegExp(NEWEST.replaceAll('.', '\\.')), 'and so does the route line');
+  assert.equal(panel.text('tab-apply-next'), '', 'running the newer model is what the default setting says: no "applies next"');
+  assert.equal(storedLane(world, 'tab').model, INSTRUCTION_MODEL, 'the stored setting stays the default (it FOLLOWS the latest)');
+  const record = LATEST_RECORD(world);
+  assert.deepEqual([record.v, record.newest, record.failedAt, record.rejected], [1, NEWEST, null, null]);
+  assert.equal(JSON.stringify(world.browser.storageData('local')[STORAGE_KEYS.latestLive]).includes('synthetic'), false, 'no key in the record');
+
+  await panel.click('btn-start');   // Stop
+  await world.settle();
+  await panel.click('btn-start');   // Start again: the tab is still armed
+  const again = await world.connect({ worklet: 1, socket: 1 });
+  assert.deepEqual(laneStarts(world).filter((message) => message.lane === 'tab').at(-1).latest, { model: NEWEST, refresh: 'none' }, 'the record is fresh: used as it is');
+  assert.equal(calls.length, 1, 'nothing was asked the second time');
+  assert.equal(setupOf(again.socket).model, `models/${NEWEST}`);
+  assertNothingLeaks(world);
+  panel.close();
+});
+
+test('0.5.2 a newest model the provider refuses: the lane is back on the default at once, the refusal is remembered, and the next start does not try it', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  world.audio.env.fetch = providerList([INSTRUCTION_MODEL, NEWEST]);
+  await world.armTab(5);
+  await tick();
+  for (let block = 0; block < 3; block += 1) world.audio.worklets[0].emitFrames(0.25);
+  await tick();
+  const first = world.sockets.sockets[0];
+  first.open();
+  assert.equal(setupOf(first).model, `models/${NEWEST}`);
+  first.finishClose(1008, `models/${NEWEST} is not found for API version v1beta, or is not supported for bidiGenerateContent. Call ModelService.`);
+  await world.settle();
+  for (let round = 0; round < 50 && world.sockets.sockets.length < 2; round += 1) { world.audio.worklets.at(-1).emitFrames(0.25); await tick(); }
+  const second = world.sockets.sockets[1];
+  second.open();
+  second.json({ setupComplete: {} });
+  await world.settle();
+  assert.equal(setupOf(second).model, `models/${INSTRUCTION_MODEL}`, 'back on the default model');
+  assert.equal(world.lastState().lanes.tab.phase, 'running');
+  assert.equal(world.lastState().lanes.tab.model, INSTRUCTION_MODEL);
+  assert.equal(world.lastState().lanes.tab.errorCode, null, 'never shown as a failure');
+  assert.equal(panel.text('tab-notice'), '');
+  const record = LATEST_RECORD(world);
+  assert.deepEqual(record.rejected?.model, NEWEST, 'the worker remembers the refusal');
+  assert.equal(record.newest, NEWEST);
+
+  await panel.click('btn-start');   // Stop
+  await world.settle();
+  await panel.click('btn-start');   // Start again: the tab is still armed
+  const third = await world.connect({ worklet: 2, socket: 2 });
+  assert.deepEqual(laneStarts(world).filter((message) => message.lane === 'tab').at(-1).latest, { model: null, refresh: 'none' }, 'refused a moment ago: not tried again');
+  assert.equal(setupOf(third.socket).model, `models/${INSTRUCTION_MODEL}`);
+  panel.close();
+});
+
+test('0.5.2 an unreachable provider never stands in the way of a start: the default model runs, the failed look is remembered for ten minutes', async () => {
+  const world = await makeWorld();
+  const panel = await world.openPanel();
+  let asked = 0;
+  world.audio.env.fetch = async () => { asked += 1; throw new Error('offline'); };
+  await world.armTab(5);
+  const tab = await world.connect({ worklet: 0, socket: 0 });
+  assert.equal(setupOf(tab.socket).model, `models/${INSTRUCTION_MODEL}`);
+  assert.equal(asked, 1);
+  assert.equal(world.lastState().lanes.tab.phase, 'running');
+  const record = LATEST_RECORD(world);
+  assert.deepEqual([record.newest, record.failedAt === null], [null, false]);
+  await panel.click('btn-start');
+  await world.settle();
+  await panel.click('btn-start');   // Start again
+  await world.connect({ worklet: 1, socket: 1 });
+  assert.equal(asked, 1, 'not asked again at once');
+  assert.deepEqual(laneStarts(world).filter((message) => message.lane === 'tab').at(-1).latest, { model: null, refresh: 'none' });
+  panel.close();
+});
+
 test('one-way lanes send no pair: a translation-only tab lane and the default microphone lane, and a two-way switch turned on and off again before Start', async () => {
   const world = await makeWorld({ settings: translationOnlyTab() });
   const panel = await world.openPanel();

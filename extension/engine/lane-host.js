@@ -95,9 +95,14 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
 
   // §20: which built-in keys hit a quota, remembered for this document's life and shared by both lanes and every run.
   const cooldowns = createKeyCooldownMemory();
+  // §24: what a lane learned about the latest general Live model goes to the worker, which keeps the record (this document has
+  // no storage). Ids only; a worker that does not answer costs nothing but the next look.
+  function reportLatest(event) {
+    try { Promise.resolve(runtime.sendMessage(makeMessage('sw/latest-live', event))).catch(() => {}); } catch { /* nobody is listening */ }
+  }
   const lanes = {
-    tab: createTabLane({ env, deps, timers: realm, cooldowns, onChange: (reason) => onLaneChange('tab', reason) }),
-    mic: createMicLane({ env, deps, timers: realm, cooldowns, onChange: (reason) => onLaneChange('mic', reason) }),
+    tab: createTabLane({ env, deps, timers: realm, cooldowns, onLatest: reportLatest, onChange: (reason) => onLaneChange('tab', reason) }),
+    mic: createMicLane({ env, deps, timers: realm, cooldowns, onLatest: reportLatest, onChange: (reason) => onLaneChange('mic', reason) }),
   };
 
   // -------------------------------------------------------------------------------------------

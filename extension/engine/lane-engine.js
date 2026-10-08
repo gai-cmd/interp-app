@@ -7,8 +7,9 @@
 // nor echoed. Environment objects arrive by injection.
 import { createAppConfig as realCreateAppConfig } from '../../app/config.js';
 import { createSimEngine as realCreateSimEngine } from '../../app/engine/sim.js';
-import { liveVoicePreference as realLiveVoicePreference } from '../../app/providers/gemini/live-config.js';
+import { DEFAULT_LIVE_MODEL, liveVoicePreference as realLiveVoicePreference } from '../../app/providers/gemini/live-config.js';
 import { isMachineCode } from '../lib/constants.js';
+import { LATEST_LIVE, isAdoptable, listLiveModelIds, newestGeneralLive } from '../lib/latest-live.js';
 import { LIMITS } from '../lib/protocol.js';
 import { QUOTA_CODES, laneStateFromSnapshot } from '../lib/ui-state.js';
 
@@ -61,11 +62,10 @@ const NOT_A_KEY_REASON = Object.freeze([/^(?:RESOURCE_EXHAUSTED|429)(?:\b|:)/i, 
   /^(?:UNAVAILABLE|503)(?:\b|:)/i, /^MODEL_NOT_SUPPORTED(?:\b|:)/,
   /^models?\b[^\r\n]{0,90}\b(?:not found|not supported|deprecated|retired)\b/i,
   /^(?:INVALID_ARGUMENT\b|Invalid JSON payload\b|Request contains an invalid argument\b|Invalid argument\b)/i]);
-/**
- * refusalOfClose({ code, reason }, setUp) -> 'INVALID_KEY' | 'IP_DENIED' | 'PERMISSION_DENIED' | null: whether a close
- * of a pool socket says that its key was refused. `setUp` = the socket had received its setupComplete.
- */
-export function refusalOfClose(event, setUp) {
+// A refusal the REASON itself names (the key is not valid, its IP or API restriction, a disabled API): independent of the
+// moment and of any guess. A socket that runs an ADOPTED model (§24) is only blamed on its key by this much, never by the
+// guess below, so a model the provider does not accept can never burn the whole pool.
+export function explicitRefusalOfClose(event) {
   const code = attempt(() => event.code);
   if (!REFUSAL_CLOSE_CODES.includes(code)) return null;
   const reason = attempt(() => event.reason);
@@ -73,9 +73,25 @@ export function refusalOfClose(event, setUp) {
   if (INVALID_KEY_REASON.test(text)) return 'INVALID_KEY';
   if (IP_DENIED_REASON.test(text)) return 'IP_DENIED';
   if (DENIED_REASON.some((pattern) => pattern.test(text))) return 'PERMISSION_DENIED';
+  return null;
+}
+/**
+ * refusalOfClose({ code, reason }, setUp) -> 'INVALID_KEY' | 'IP_DENIED' | 'PERMISSION_DENIED' | null: whether a close
+ * of a pool socket says that its key was refused. `setUp` = the socket had received its setupComplete.
+ */
+export function refusalOfClose(event, setUp) {
+  const explicit = explicitRefusalOfClose(event);
+  if (explicit !== null) return explicit;
+  const code = attempt(() => event.code);
+  if (!REFUSAL_CLOSE_CODES.includes(code)) return null;
+  const reason = attempt(() => event.reason);
+  const text = typeof reason === 'string' ? reason : '';
   if (setUp === true || NOT_A_KEY_REASON.some((pattern) => pattern.test(text))) return null;
   return code === 1007 ? 'INVALID_KEY' : 'PERMISSION_DENIED';
 }
+// The close of a quota (429 family): the key swap handles it, so it says nothing about a model.
+const QUOTA_REASON = Object.freeze([/^(?:RESOURCE_EXHAUSTED|429)(?:\b|:)/i, /^exceeded your current quota\b/i]);
+const UNAVAILABLE_REASON = /^(?:UNAVAILABLE|503)(?:\b|:)/i;
 // Whether a server message is the setupComplete. Only messages before it are read, and it is a few bytes long, so a
 // larger message (or a Blob, which cannot be read here at once) is not it.
 const SETUP_COMPLETE = /"setupComplete"\s*:/;
@@ -86,24 +102,104 @@ function isSetupComplete(data) {
     : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
   return bytes !== null && bytes.byteLength <= SETUP_SCAN_BYTES && SETUP_COMPLETE.test(new TextDecoder().decode(bytes));
 }
-// The WebSocket class the pool's config is built with: the real one, plus a message and a close listener registered
-// before the Live client's own. A class without a constructor of its own (a test double that is not a function) is
-// left alone.
-function watchedSocket(Base, onRefusal) {
+// §24 (0.5.2): the latest general Live model. The engine below is closed over the repository's model list (the router, the
+// session, the fallback chain all know DEFAULT_LIVE_MODEL and nothing newer), so the lane runs the newer model by ONE
+// substitution at the wire: the `model` field of the first frame (the setup) of a socket. Everything the engine decides
+// stays on the default model (its setup, its route, its fallback chain); the lane reports the model that really runs. The
+// substitution is revocable: a socket of the adopted model that fails before its setupComplete (or within
+// LATEST_LIVE.earlyCloseMs after it) makes the lane restart on the default model at once, for the rest of this start.
+const SETUP_MODEL = `models/${DEFAULT_LIVE_MODEL}`;
+function aliasedSetup(frame, model) {
+  if (typeof frame !== 'string' || frame.length > 262144) return null;
+  const parsed = attempt(() => JSON.parse(frame));
+  if (parsed === null || typeof parsed !== 'object' || parsed.setup === null || typeof parsed.setup !== 'object' || parsed.setup.model !== SETUP_MODEL) return null;
+  parsed.setup.model = `models/${model}`;
+  // A setup that RESUMES a session (a goAway handover, a reconnect) carries a handle the provider may refuse on its own account.
+  return { frame: JSON.stringify(parsed), resumed: typeof parsed.setup.sessionResumption?.handle === 'string' };
+}
+// How a close of a socket that ran the adopted model reads: the provider REFUSED it (1007/1008: not found, a setup field it
+// does not take, a permission it does not give) or answered with a QUOTA (a new model may have a lower limit than the default:
+// the same key then fails the default model differently, or not at all), or something transient happened (no answer, a dropped
+// connection, an outage). The first two are remembered by the worker (the model is left alone for a while), the last is not.
+const failureKindOf = (event) => {
+  const code = attempt(() => event.code);
+  const reason = attempt(() => event.reason);
+  if (typeof reason === 'string' && QUOTA_REASON.some((pattern) => pattern.test(reason))) return 'rejected';
+  return (code === 1007 || code === 1008) && !(typeof reason === 'string' && UNAVAILABLE_REASON.test(reason)) ? 'rejected' : 'transient';
+};
+/**
+ * The WebSocket class a lane's config is built with: the real one, plus a message and a close listener registered before
+ * the Live client's own. `hooks`: onRefusal(code) for the pool's refused keys (§20), `adoption` ({ model, revoked, applied }),
+ * onAdoptionFailed(kind), onApplied(), now(), setTimeout / clearTimeout (the engine clock). A class without a constructor of its
+ * own (a test double that is not a function) is left alone. Exported for tests/extension-latest-live.test.mjs.
+ *
+ * What a socket that runs the ADOPTED model learns from its end (§24):
+ *  - before its setupComplete: a key the REASON itself names as invalid, or restricted by IP, is the key's fault (the pool moves
+ *    on, the adopted model stays). Everything else is the model's: the default model gets its one attempt FIRST (a refusal in
+ *    any wording, a permission or API wording, a quota: the same key may serve the default model), except a close that
+ *    WE asked for (a Stop, a key switch, the engine giving up on its own run: it called close()) and a setup that resumed a
+ *    session (a refused handle is the handle's fault: the engine's own retry without it comes first);
+ *  - no setupComplete within LATEST_LIVE.setupWatchdogMs: the model stalls, the lane goes back to the default;
+ *  - after its setupComplete: a quota or a refused key stays the key handling's; a close we did not ask for within
+ *    LATEST_LIVE.earlyCloseMs with a code other than 1000 is the model's.
+ */
+export function laneSocket(Base, hooks) {
   if (typeof Base !== 'function') return Base;
-  return class extends Base {
+  const { adoption = null } = hooks;
+  const firstFrames = new WeakMap();   // socket -> the function that may rewrite its FIRST frame (the setup)
+  const closing = new WeakSet();       // sockets whose close() somebody on our side called
+  const Laned = class extends Base {
     constructor(...args) {
       super(...args);
-      let setUp = false;
+      let setUp = false, setUpAt = 0, aliased = false, resumed = false, sentFirst = false, watchdog = null;
+      const disarm = () => { if (watchdog !== null) { attempt(() => hooks.clearTimeout(watchdog)); watchdog = null; } };
+      firstFrames.set(this, (frame) => {
+        if (sentFirst) return frame;
+        sentFirst = true;
+        if (adoption === null || adoption.model === null || adoption.revoked) return frame;
+        const replaced = aliasedSetup(frame, adoption.model);
+        if (replaced === null) return frame;
+        aliased = true;
+        resumed = replaced.resumed;
+        if (!adoption.applied) { adoption.applied = true; hooks.onApplied?.(); }
+        watchdog = attempt(() => hooks.setTimeout(() => { watchdog = null; if (!setUp && !closing.has(this)) hooks.onAdoptionFailed('rejected'); }, LATEST_LIVE.setupWatchdogMs)) ?? null;
+        return replaced.frame;
+      });
       attempt(() => this.addEventListener('message', (event) => {
-        if (!setUp) setUp = attempt(() => isSetupComplete(event.data)) === true;
+        if (!setUp && attempt(() => isSetupComplete(event.data)) === true) { setUp = true; setUpAt = hooks.now(); disarm(); }
       }));
       attempt(() => this.addEventListener('close', (event) => {
-        const code = refusalOfClose(event, setUp);
-        if (code !== null) onRefusal(code);
+        disarm();
+        if (!aliased) {
+          const code = refusalOfClose(event, setUp);
+          if (code !== null) hooks.onRefusal?.(code);
+          return;
+        }
+        const explicit = explicitRefusalOfClose(event);
+        if (!setUp) {
+          if (explicit === 'INVALID_KEY' || explicit === 'IP_DENIED') { hooks.onRefusal?.(explicit); return; }
+          if (!closing.has(this) && !resumed) hooks.onAdoptionFailed(failureKindOf(event));
+          return;
+        }
+        if (explicit !== null) { hooks.onRefusal?.(explicit); return; }
+        const reason = attempt(() => event.reason);
+        if (typeof reason === 'string' && QUOTA_REASON.some((pattern) => pattern.test(reason))) return;
+        if (!closing.has(this) && attempt(() => event.code) !== 1000 && hooks.now() - setUpAt < LATEST_LIVE.earlyCloseMs) hooks.onAdoptionFailed(failureKindOf(event));
       }));
     }
   };
+  // Only a socket class that has a send of its own can be rewritten; any other class runs the default model as it always did.
+  const baseSend = Base.prototype?.send;
+  if (typeof baseSend === 'function') {
+    Object.defineProperty(Laned.prototype, 'send', { configurable: true, writable: true,
+      value(data) { return baseSend.call(this, attempt(() => firstFrames.get(this)?.(data)) ?? data); } });
+  }
+  const baseClose = Base.prototype?.close;
+  if (typeof baseClose === 'function') {
+    Object.defineProperty(Laned.prototype, 'close', { configurable: true, writable: true,
+      value(...args) { closing.add(this); return baseClose.apply(this, args); } });
+  }
+  return Laned;
 }
 
 // The key store remembers which built-in keys hit a quota (fingerprints and times, never a key) through a
@@ -133,7 +229,7 @@ const deferred = () => {
  * ENGINE clock). `cooldowns` is the document's createKeyCooldownMemory() (optional). start() is synchronous like the
  * engine's own and throws Error{code} after cleaning up.
  */
-export function createLaneEngine({ lane, deps = {}, env, platform, onChange, cooldowns = null } = {}) {
+export function createLaneEngine({ lane, deps = {}, env, platform, onChange, onLatest = null, cooldowns = null } = {}) {
   const { createAppConfig, createSimEngine, liveVoicePreference } = { ...REAL_DEPS, ...deps };
   let config = null, engine = null, playback = null, unsubscribe = null, closing = null;
   let level = 0, final = null;
@@ -142,6 +238,9 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange, coo
   // running; `refused` = the machine code of a refusal no spare key could answer (what the lane then reports).
   let pool = false, serial = 0, switching = false, ran = false, refused = null, ended = false;
   let outer = null, launchArgs = null, mutedNow = false;
+  // §24: the latest general Live model of this start. `model` = the id to run instead of the default (null: none),
+  // `applied` = a socket really sent it, `revoked` = the provider refused it (or it failed at once) and the lane went back.
+  let adoption = { model: null, revoked: false, applied: false };
 
   const changed = () => attempt(() => onChange?.());
   // The engine clock. Arrow wrappers, so a native timer function is never called with a foreign `this`.
@@ -206,15 +305,18 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange, coo
   // A refused built-in key: end this run and start the same request again on the next key of the pool, at once and
   // with a fresh budget. rotateBuiltin without a quota code benches the refused key for the rest of this start, so each
   // key is tried at most once. No spare left: the run ends and the lane reports the refusal itself.
-  async function switchKey(id, code) {
+  const switchKey = (id, code) => restartRun(id, { rotate: true, code });
+  // The shared body of a key switch and of the fall back from an adopted model (§24, `rotate: false`): the same request,
+  // the same key, a fresh run on the default model, at once and with a fresh budget.
+  async function restartRun(id, { rotate, code }) {
     if (id !== serial || switching || ended || !engine) return false;
     switching = true;
-    serial += 1;   // the refused run's end is not the lane's end
+    serial += 1;   // the replaced run's end is not the lane's end
     changed();
     try {
       await attemptAsync(() => engine.stop());
       if (ended || !engine) return false;
-      const next = keyMeta()?.builtin === true ? attempt(() => config.keyStore.rotateBuiltin('gemini')) ?? null : null;
+      const next = !rotate ? true : keyMeta()?.builtin === true ? attempt(() => config.keyStore.rotateBuiltin('gemini')) ?? null : null;
       if (next === null) {
         refused = code;
         outer?.resolve(attempt(() => engine.snapshot()));
@@ -234,6 +336,16 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange, coo
     }
   }
 
+  // The adopted model did not work (§24): back to the default model for the rest of this start. A refusal by the provider is
+  // reported (the worker then leaves that model alone for a while); a transient failure only costs this start.
+  function onAdoptionFailed(kind) {
+    if (adoption.revoked || adoption.model === null || ended || switching || !engine) return;
+    adoption.revoked = true;
+    if (kind === 'rejected') attempt(() => onLatest?.({ kind: 'rejected', model: adoption.model }));
+    const id = serial;
+    void Promise.resolve().then(() => restartRun(id, { rotate: false }));
+  }
+
   function onKeyRefused(code) {
     if (!pool || ended || switching || !engine) return;
     const id = serial;
@@ -243,8 +355,11 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange, coo
 
   // What the lane shows (§20): a key switch reads as the start or the calm key reconnect it is, never as the failure or
   // the stop of the refused run; a refusal no spare could answer reads as that refusal, whatever the run ended with.
-  function presented(value) {
-    if (value === null || value === undefined) return value;
+  function presented(raw) {
+    if (raw === null || raw === undefined) return raw;
+    // The engine knows only the default model; the lane says which model really runs (§24).
+    const value = adoption.applied && !adoption.revoked && adoption.model !== null && raw.model === DEFAULT_LIVE_MODEL
+      ? Object.freeze({ ...raw, model: adoption.model }) : raw;
     if (switching) {
       return Object.freeze({ ...value, status: ran ? 'reconnecting' : 'connecting', reconnectReason: ran ? 'key' : null,
         errorCode: null, errorReason: null });
@@ -289,15 +404,22 @@ export function createLaneEngine({ lane, deps = {}, env, platform, onChange, coo
      * on an instruction-driven model (it moves a translation-only `request.model` there itself, and reports the model
      * it really uses in its snapshot, which is what the lane's state shows).
      */
-    start({ key, keys, request, voiceGender, muted, sessionId } = {}) {
+    start({ key, keys, request, latestModel = null, voiceGender, muted, sessionId } = {}) {
       if (engine || closing) throw codedError('ALREADY_RUNNING');
       final = null; level = 0;
       pool = Array.isArray(keys); serial = 0; switching = false; ran = false; refused = null; ended = false;
       mutedNow = muted === true; launchArgs = { request, sessionId };
+      // §24: only a lane on the default model, and only an id that is a general Live model strictly newer than it.
+      adoption = { model: request?.model === DEFAULT_LIVE_MODEL && isAdoptable(latestModel, DEFAULT_LIVE_MODEL) ? latestModel : null,
+        revoked: false, applied: false };
       try {
         // A person's key: exactly as before (no socket watch, no cooldown record, no fallback to the pool).
         config = createAppConfig({ isolated: true, fetch: env.fetch,
-          WebSocket: pool ? watchedSocket(env.WebSocket, onKeyRefused) : env.WebSocket,
+          // A person's own key and no adopted model: the socket class as it is (exactly as before).
+          WebSocket: pool || adoption.model !== null
+            ? laneSocket(env.WebSocket, { adoption, onRefusal: pool ? onKeyRefused : null, onAdoptionFailed,
+              onApplied: changed, now: () => env.now(), setTimeout: (fn, ms) => clock.setTimeout(fn, ms), clearTimeout: (handle) => clock.clearTimeout(handle) })
+            : env.WebSocket,
           ...(pool && cooldowns ? { storage: cooldowns } : {}) });
         if (pool) config.keyStore.setBuiltin('gemini', keys); else config.keyStore.setPersonal('gemini', key);
         config.keyStore.select('gemini', 'personal');
@@ -359,7 +481,7 @@ function slimSnapshot(snapshot) {
  * `params` is the validated host/lane-start message plus the host-assigned `epoch`. `cooldowns` is the document's
  * shared createKeyCooldownMemory() (§20), handed to every lane engine this controller creates.
  */
-export function createLaneController({ lane, env, deps = {}, timers, onChange, acquire, release = async () => {},
+export function createLaneController({ lane, env, deps = {}, timers, onChange, onLatest = null, acquire, release = async () => {},
   cooldowns = null } = {}) {
   // `languages` = the two-way pair of the current run (null for a one-way run): it decides how caption rows are labelled.
   const facts = { tabId: null, epoch: 0, targetLanguage: null, languages: null, hostError: null, stopRequested: false,
@@ -418,17 +540,57 @@ export function createLaneController({ lane, env, deps = {}, timers, onChange, a
     return releaseResources(current).then(() => finalize(current));
   }
 
+  // §24: one look at the provider's model list, with the lane's own key (or the first keys of the pool). It reports what it
+  // saw to the worker (ids only) and never throws. `blocking` waits for it, for at most LATEST_LIVE.blockMs.
+  async function lookAtProvider(params) {
+    const keys = (Array.isArray(params.keys) ? params.keys : [params.key]).filter((key) => typeof key === 'string').slice(0, LATEST_LIVE.maxKeyTries);
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = timers.setTimeout(() => attempt(() => controller?.abort()), LATEST_LIVE.backgroundMs);
+    try {
+      for (const key of keys) {
+        try {
+          const ids = await listLiveModelIds({ fetch: env.fetch, key, ...(controller ? { signal: controller.signal } : {}) });
+          const newest = newestGeneralLive(ids);
+          attempt(() => onLatest?.({ kind: 'seen', newest }));
+          return { seen: true, newest };
+        } catch { if (controller?.signal.aborted) break; }
+      }
+      attempt(() => onLatest?.({ kind: 'failed' }));
+      return { seen: false, newest: null };
+    } finally { timers.clearTimeout(timer); }
+  }
+
+  // The model a start with `params.latest` runs instead of the default (null: the default). A record that says `none` is
+  // trusted as it is; `background` runs on the record and looks for the next start; `blocking` looks first.
+  async function adoptedModelOf(current, params) {
+    const { model, refresh } = params.latest;
+    if (params.request.model !== DEFAULT_LIVE_MODEL) return null;   // a model the person chose is never replaced
+    if (refresh === 'none' || typeof env.fetch !== 'function') return model;
+    const look = lookAtProvider(params);
+    if (refresh === 'background') { attempt(() => look.catch(() => {})); return model; }
+    let answer = null;
+    await settleWithin(Promise.race([look.then((value) => { answer = value; }, () => {}), current.cancelSignal]), LATEST_LIVE.blockMs);
+    // A look that SAW the list is trusted, a model that is no longer listed included (the record's candidate is then dropped,
+    // not tried). One that failed or ran out of time falls back on the record, and the worker is told at once so that the next
+    // start (of this lane or the other one) does not wait for the same hang again; a late answer replaces that report.
+    if (answer === null) attempt(() => onLatest?.({ kind: 'failed' }));
+    if (answer?.seen === true) return isAdoptable(answer.newest, DEFAULT_LIVE_MODEL) ? answer.newest : null;
+    return model;
+  }
+
   async function begin(current, params) {
     try {
       const { platform, tabId } = await acquire({ run: current, params });
       if (current.cancelled) throw codedError('START_CANCELLED');
+      const latestModel = params.latest === undefined ? null : await adoptedModelOf(current, params);
+      if (current.cancelled) throw codedError('START_CANCELLED');
       // §19: a share-picker start learns here which tab the user chose (null: it could not be told).
       if (tabId !== undefined) { facts.tabId = tabId; current.identified = true; }
-      const created = createLaneEngine({ lane, deps, env, platform, onChange: () => emit('data'), cooldowns });
+      const created = createLaneEngine({ lane, deps, env, platform, onChange: () => emit('data'), onLatest, cooldowns });
       engineLane = created;
       // The key travels inside `params` untouched: only the lane engine names it. `muted` is the newest value: a
       // mute toggled while this start was still acquiring its input has nothing to act on yet, so it is applied here.
-      const handle = created.start({ ...params, muted, sessionId: `${lane}-${current.epoch}` });
+      const handle = created.start({ ...params, latestModel, muted, sessionId: `${lane}-${current.epoch}` });
       facts.starting = false;
       attempt(() => handle.ready.catch(() => {}));
       handle.done.then(() => onEngineDone(current), () => onEngineDone(current));

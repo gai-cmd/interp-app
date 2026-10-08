@@ -5,8 +5,8 @@
 // no global at import time. Failures are machine codes (4.1); nothing here logs, and a rejected
 // message is never echoed, so a `key` in a bad `host/lane-start` cannot leak through an error.
 import {
-  CAPTION_ROLES, CAPTION_STATUSES, CAPTURE_LABEL_PATTERN, CAPTURE_NONCE_PATTERN, ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN,
-  KEY_PATTERN, LANE_PHASES,
+  CAPTION_ROLES, CAPTION_STATUSES, CAPTURE_LABEL_PATTERN, CAPTURE_NONCE_PATTERN, ENGINE_STATUSES, GAP_KINDS, GENERAL_LIVE_ID,
+  HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES, LATEST_REFRESH,
   MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, RECONNECT_REASONS, RELAY_ID_PATTERN, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
   VOICE_GENDERS, deepFreeze, isErrorReason, isLanguagePair, isMachineCode, isPlainObject, isValidStyle,
 } from './constants.js';
@@ -19,6 +19,7 @@ export const SENDER_ROLES = Object.freeze(['sw', 'panel', 'offscreen', 'options'
 export const STORAGE_KEYS = Object.freeze({
   settings: 'interp.settings.v1', key: 'interp.key.v1',      // storage.local
   update: 'interp.update.v1',                                // storage.local: the self-update state (§21)
+  latestLive: 'interp.latest-live.v1',                       // storage.local: the newest general Live model the account lists (§24)
   armed: 'interp.armed.v1', host: 'interp.host.v1',          // storage.session
   lastStop: 'interp.lastStop.v1',                            // storage.session: why the last run ended (4.10)
   // §20: the toolbar icon (or its shortcut, or the context menu) asks the panel of that window to start on that tab.
@@ -91,6 +92,8 @@ export const MESSAGE_CATALOG = Object.freeze({
   'sw/permission-open': row('sw', ['panel'], ['INTERNAL', 'FORBIDDEN']),
   'sw/host-probe': row('sw', ['panel'], ['FORBIDDEN']),
   'sw/host-idle': row('sw', ['offscreen'], ['FORBIDDEN', 'INVALID_MESSAGE']),
+  // §24: what a lane learned about the latest Live model (the host holds the key, the worker holds the record).
+  'sw/latest-live': row('sw', ['offscreen'], ['FORBIDDEN', 'INVALID_MESSAGE']),
   'host/ping': row('offscreen', ['sw'], ['FORBIDDEN']),
   'host/lane-start': row('offscreen', ['sw'], LANE_START_ERRORS),
   'host/lane-stop': row('offscreen', ['sw'], ['FORBIDDEN', 'INVALID_MESSAGE']),
@@ -126,9 +129,15 @@ function laneStartOf(m) {
   if (!VOICE_GENDERS.includes(m.voiceGender) || typeof m.muted !== 'boolean' || typeof m.captions !== 'boolean'
     || !isValidStyle(m.style)) return null;
   const pair = request.languages === undefined ? {} : { languages: [request.languages[0], request.languages[1]] };
+  // §24 (0.5.2): what the worker knows about the latest general Live model: the id to run instead of the default (null:
+  // none) and whether the lane should ask the provider first, in the background, or not at all. Absent = nothing known.
+  const { latest } = m;
+  if (latest !== undefined && !(isPlainObject(latest) && (latest.model === null || matches(GENERAL_LIVE_ID, latest.model))
+    && LATEST_REFRESH.includes(latest.refresh))) return null;
   const out = { lane: m.lane, ...(personal ? { key: m.key } : { keys: [...m.keys] }),
     request: { targetLanguage: request.targetLanguage, model: request.model, ...pair },
-    voiceGender: m.voiceGender, muted: m.muted, captions: m.captions, style: pickStyle(m.style) };
+    voiceGender: m.voiceGender, muted: m.muted, captions: m.captions, style: pickStyle(m.style),
+    ...(latest === undefined ? {} : { latest: { model: latest.model, refresh: latest.refresh } }) };
   if (m.lane === 'tab') {
     const { tab } = m;
     if (!isPlainObject(tab) || !int(tab.originalVolume, ORIGINAL_VOLUME.min, ORIGINAL_VOLUME.max)) return null;
@@ -184,6 +193,13 @@ const PAYLOADS = {
   'sw/host-probe': () => ({}),
   'sw/host-idle': (m) => (matches(HOST_ID_PATTERN, m.hostId) && ['panel-gone', 'initial-grace'].includes(m.reason)
     ? { hostId: m.hostId, reason: m.reason } : null),
+  // §24: `seen` = the newest general Live model the account lists (null: none); `failed` = the look failed; `rejected` = the
+  // provider refused `model` when the lane tried to run it. Ids only: no key, no provider text, nothing else crosses.
+  'sw/latest-live': (m) => {
+    if (m.kind === 'seen') return m.newest === null || matches(GENERAL_LIVE_ID, m.newest) ? { kind: 'seen', newest: m.newest } : null;
+    if (m.kind === 'failed') return { kind: 'failed' };
+    return m.kind === 'rejected' && matches(GENERAL_LIVE_ID, m.model) ? { kind: 'rejected', model: m.model } : null;
+  },
   'host/ping': () => ({}),
   'host/lane-start': laneStartOf,
   'host/lane-stop': (m) => (m.lane === undefined ? {} : isLane(m.lane) ? { lane: m.lane } : null),

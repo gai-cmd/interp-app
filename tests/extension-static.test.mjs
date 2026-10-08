@@ -52,7 +52,7 @@ const EXPECTED_FILES = Object.freeze([
   // writes, update-store.js the folder handle (the only module that names IndexedDB), update-state.js the stored record,
   // update-run.js the orchestration the panel and the options page call.
   ['C', 'extension/lib/update-keys.js'], ['C', 'extension/lib/self-update.js'], ['C', 'extension/lib/update-store.js'],
-  ['C', 'extension/lib/update-state.js'], ['C', 'extension/lib/update-run.js'],
+  ['C', 'extension/lib/update-state.js'], ['C', 'extension/lib/update-run.js'], ['C', 'extension/lib/latest-live.js'],
   // §22 (2026-10-08): the share dialog the side panel may open itself (display-media.js) and the tab-audio relay from the
   // panel to the offscreen document (audio-relay.js). Only the panel and the engine import them.
   ['B', 'extension/lib/display-media.js'], ['B', 'extension/lib/audio-relay.js'],
@@ -1353,7 +1353,7 @@ test('scanner R13 and layout: unsafe names, symlinks, foreign file types, stray 
   assert.equal(new Set(EXPECTED_FILES.map(([, path]) => path)).size, EXPECTED_FILES.length);
   assert.ok(EXPECTED_FILES.every(([group, path]) => 'ABCD'.includes(group) && path.startsWith('extension/')));
   assert.ok(ENTRY_FILES.every((path) => EXPECTED_FILES.some(([, expected]) => expected === path)), 'every R10 entry is on the §3.1 list');
-  assert.equal(EXPECTED_FILES.length, 54, '46 + lib/update-check.js (§16) + the five self-update modules (§21) + the two §22 media modules');
+  assert.equal(EXPECTED_FILES.length, 55, '46 + lib/update-check.js (§16) + the five self-update modules (§21) + the two §22 media modules + lib/latest-live.js (§24)');
 });
 
 test('scanner R3: a classic script is one parseable IIFE without import, export or require, for overlay.js and for every manifest content script', async (t) => {

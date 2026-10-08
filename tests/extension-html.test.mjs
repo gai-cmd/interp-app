@@ -577,12 +577,12 @@ test('dictionaries: the strings of the review fixes carry the agreed wording in 
       assert.match(ext[key], new RegExp(`${limits.min}\\s*[–~〜-]\\s*${limits.max}`), `${language} ${key} states ${limits.min}-${limits.max}`);
     }
   }
-  // The untagged model label used by the tab select: same product name as sim.model0 without the "(default)" tag.
+  // §24: the first option of both model selects is the AUTOMATIC latest model (ext.options.modelAuto), not a fixed product name.
   for (const language of LANGUAGES) {
-    const plain = dictionaries[language].ext['ext.options.modelLive'];
-    const tagged = dictionaries[language].app['sim.model0'];
-    assert.ok(tagged.startsWith(plain) && tagged !== plain, `${language}: ${plain} is sim.model0 without its tag`);
-    assert.doesNotMatch(plain, /[()（）]/);
+    const auto = dictionaries[language].ext['ext.options.modelAuto'];
+    assert.ok(typeof auto === 'string' && auto.length > 0 && !/3\.8/.test(auto), `${language}: the automatic label names no version`);
+    assert.match(auto, /Gemini Live/, `${language}: it still names the product`);
+    assert.equal(Object.hasOwn(dictionaries[language].ext, 'ext.options.modelLive'), false, 'the fixed-name label is gone');
   }
 });
 

@@ -30,9 +30,10 @@ import {
   LANES, LIMITS, PATHS, SETUP_QUERY, STORAGE_KEYS, createMessageRouter, makeMessage,
 } from '../lib/protocol.js';
 import {
-  hostSettingsOf, laneRequestOf, moveOldTabDefaultModel, normalizeSettings, readKey, readSettings, resolveCredential,
-  updateSettings,
+  DEFAULT_LIVE_MODEL, hostSettingsOf, laneRequestOf, moveOldTabDefaultModel, normalizeSettings, readKey, readSettings,
+  resolveCredential, updateSettings,
 } from '../lib/settings.js';
+import { afterFailure, afterRejected, afterSeen, decide } from '../lib/latest-live.js';
 import { compareVersions } from '../lib/update-check.js';
 import { createArming } from './arming.js';
 
@@ -69,6 +70,28 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
   const arming = createArming({ storageSession: session, now });
   const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
   const settle = async (task) => { try { return await task(); } catch { return undefined; } };
+
+  // ---------------------------------------------------------------------------------------------
+  // §24: the record of the latest general Live model (storage.local). `decide` re-validates it at every read: a damaged or
+  // hand-edited value is no record, and the answer is then "nothing known: ask first". Writes run one after another, so
+  // the two lanes of one start cannot lose each other's report.
+  async function latestFor() {
+    const stored = await settle(() => local.get(STORAGE_KEYS.latestLive));
+    const { model, refresh } = decide({ record: isObject(stored) ? stored[STORAGE_KEYS.latestLive] : undefined, now: now(), current: DEFAULT_LIVE_MODEL });
+    return { model, refresh };
+  }
+  let latestWrites = Promise.resolve();
+  function onLatestLive(message) {
+    latestWrites = latestWrites.then(async () => {
+      const stored = await settle(() => local.get(STORAGE_KEYS.latestLive));
+      const record = isObject(stored) ? stored[STORAGE_KEYS.latestLive] : undefined;
+      const at = now();
+      const next = message.kind === 'seen' ? afterSeen(record, message.newest, at)
+        : message.kind === 'failed' ? afterFailure(record, at) : afterRejected(record, message.model, at);
+      if (next) await settle(() => local.set({ [STORAGE_KEYS.latestLive]: next }));
+    }).catch(() => {});
+    return latestWrites.then(() => ({}));
+  }
 
   // ---------------------------------------------------------------------------------------------
   // In-memory state (rebuilt empty after a restart): the starts in flight, and the lifecycle mutex.
@@ -316,6 +339,11 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       alive();
       const credential = resolveCredential({ personal, builtin: builtinKeys });
       if (credential === null) throw codeError('CREDENTIAL_REQUIRED');
+      const request = laneRequestOf(settings, lane);
+      // §24 (0.5.2): a lane on the default model follows the latest general Live model. The worker only reads its record
+      // (a start never waits for the provider, never fails on a damaged record): the lane does the asking, with the key.
+      const latest = request.model === DEFAULT_LIVE_MODEL ? await latestFor() : null;
+      alive();
 
       // 2. Tab lane: the tab must exist and be capturable by scheme. Armed (the toolbar icon was clicked on it) means
       //    the instant path below. Anything else is NEEDS_ARM, unless the panel asked for Chrome's share dialog
@@ -363,7 +391,8 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       // 5. The request. The credential (`key` or `keys`) is copied into the one message below and nowhere else.
       const payload = {
         lane, ...credential,
-        request: laneRequestOf(settings, lane),
+        request,
+        ...(latest === null ? {} : { latest }),
         voiceGender: settings.voiceGender,
         muted: settings.speechMuted,
         captions: settings.lanes[lane].captions,
@@ -635,6 +664,7 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
         'sw/permission-open': () => openPermission(),
         'sw/host-probe': async () => ({ up: await probeHost() }),
         'sw/host-idle': (message) => onHostIdle(message),
+        'sw/latest-live': (message) => onLatestLive(message),
       },
     });
     action.onClicked.addListener(onActionClicked);

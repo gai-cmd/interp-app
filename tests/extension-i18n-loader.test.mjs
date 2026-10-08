@@ -130,7 +130,7 @@ test('the keys added for the review fixes resolve through the loader in ko, en a
       ja: '予備モデルが通訳しています。聞こえた内容を通訳せずに返答することがあります。',
     },
     'ext.key.savedBrowser': { ko: '키를 이 브라우저에 저장했어요.', en: 'Key saved in this browser.', ja: 'キーをこのブラウザに保存しました。' },
-    'ext.options.modelLive': { ko: 'Gemini 3.8 Live', en: 'Gemini 3.8 Live', ja: 'Gemini 3.8 Live' },
+    'ext.options.modelAuto': { ko: '최신 Gemini Live (자동)', en: 'Latest Gemini Live (automatic)', ja: '最新のGemini Live（自動）' },
   };
   for (const language of LANGUAGES) {
     const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });

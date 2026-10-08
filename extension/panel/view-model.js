@@ -8,6 +8,7 @@ import {
 } from '../lib/ui-state.js';
 import { LIMITS } from '../lib/protocol.js';
 import { TARGET_LANGUAGES, deepFreeze } from '../lib/constants.js';
+import { isAdoptable } from '../lib/latest-live.js';
 
 const LANES = ['tab', 'mic'];
 const ACTIVE = ['starting', 'running', 'reconnecting'];
@@ -62,6 +63,9 @@ export const TRANSLATION_ONLY_MODEL = 'gemini-3.5-live-translate-preview';
 export const PAIR_MODEL = 'gemini-3.8-live';
 const swappedForPair = (laneSettings) => laneSettings.twoWay === true && laneSettings.model === TRANSLATION_ONLY_MODEL;
 const effectiveModelOf = (laneSettings) => (swappedForPair(laneSettings) ? PAIR_MODEL : laneSettings.model);
+// §24 (0.5.2): the default model follows the latest general Live model, so a lane whose setting is the default and that
+// runs a NEWER general Live model is running what the setting says: that is no pending change.
+const sameModel = (wanted, running) => wanted === running || (wanted === PAIR_MODEL && isAdoptable(running, PAIR_MODEL));
 // What the running lane was started with is not part of LaneState (the host reports only the first language), so the
 // controller remembers the two-way choice of the start it sent; without a record nothing is claimed (rule 13).
 const pairChanged = (started, laneSettings) => started !== null && typeof started === 'object'
@@ -283,7 +287,7 @@ export function buildViewModel(input) {
       // the next start.
       applyNext: isActive(draft.phase) && hostLane !== null
         && ((hostLane.targetLanguage !== null && laneSettings.targetLanguage !== hostLane.targetLanguage)
-          || (hostLane.model !== null && effectiveModelOf(laneSettings) !== hostLane.model && !hostLane.fallback)
+          || (hostLane.model !== null && !sameModel(effectiveModelOf(laneSettings), hostLane.model) && !hostLane.fallback)
           || pairChanged(runWith?.[lane] ?? null, laneSettings)),
       level: live ? (hostLane?.level ?? 0) : 0,
       levelVisible: live,
