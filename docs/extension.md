@@ -4474,6 +4474,12 @@ not use discovery at all. Until a run-time adoption is built (a strict id rule s
 `gemini-3.8-live` on any failure before audio, discovery that pages), the default moves with a release: change `DEFAULT_LIVE_MODEL`, package,
 and the 0.5.x self-update delivers it.
 
+Interim guard (2026-10-08): `node tools/check-latest-live.mjs` (tests: `tests/latest-live-check.test.mjs`) does one free, paged `models.list`
+and says whether `DEFAULT_LIVE_MODEL` is still the newest GENERAL Live model: exit 0 = up to date, 1 = a newer `gemini-<n>.<m>-live` exists
+(or the default is no longer listed), 2 = could not check. The id rule is strict (previews, `-extended-thinking`, translation, transcription,
+native-audio and robotics models never count) and versions compare as numbers (3.10 > 3.8). Run on 2026-10-08: `up-to-date`, default and
+newest `gemini-3.8-live`, 9 Live models, 1 of them general. Not scheduled yet (a schedule that messages the owner needs his approval).
+
 Verified in a real Chrome (2026-10-08, Chrome for Testing 149, headless, muted, `scripts/boot-test-package.mjs`, the exact 0.5.1 zip as served by
 the site; no API call): (a) a FRESH install boots, its service worker runs, the panel, options, permission and offscreen host pages load
 with 0 console errors, exceptions or failed requests, and the first-run defaults store `gemini-3.8-live` for both lanes; (b) an UPGRADE the way
