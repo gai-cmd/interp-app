@@ -4488,3 +4488,29 @@ extension comes back, the version reads 0.5.1, the old tab default moved to `gem
 untouched, no console error. OBSERVED, not a defect: when a browser RESTART merely finds new files in the folder (no reload), Chrome does not
 deliver `onInstalled(update)`, so no one-time migration (0.5.0's voice move or 0.5.1's model move) runs; the guide's steps always say Reload,
 and the self-updater reloads. Not verified: Windows, a headed Chrome, the real folder picker, a person.
+
+Review of 0.5.0/0.5.1 (2026-10-08; muted real-Chrome smoke on branded 155 and Chrome for Testing 149/145, three code reviews, a package audit,
+a skeptic per serious finding): no blocker and no major defect remains. The two "major" updater findings were downgraded (U1: needs a
+same-version duplicate folder picked against the instruction, no corruption) or refuted (U2: the suite catches a syntax error in a shared
+module; what was missing is the real-Chrome boot gate, now `scripts/boot-test-package.mjs`). The relay bug it found (every Stop and engine
+failure read as TAB_ENDED) was fixed in 0.5.0 before release. OPEN, all minor, none fixed yet:
+- Updater: U1 a byte-identical copy of the extension folder passes the folder-identity check (fix: write a random marker file, fetch it with
+  `chrome.runtime.getURL`, refuse if it is not served); U2 no revert or alive-ack for a bad signed release (the boot test is the gate; consider
+  holding auto-apply for a few hours after a release); U3 an interrupted apply leaves a mixed tree under the old `manifest.json`; U4 obsolete
+  files are deleted before `manifest.json` is committed; U5 `latest.json` is unsigned, so a site attacker can pick an OLDER signed version or
+  hide a new one; U6 the reload can cut a lane the member just started, and the options page's "Update now" never checks for a running lane;
+  U7 a failing update is retried from scratch at every panel open and no request has a timeout.
+- Relay: R1 a tab that ends before the host listens gives a 4 s wait and the wrong notice; R2 the gate does not test `MediaStreamTrackGenerator`
+  and `AudioData`, and nothing falls back at run time; R3 a panel renderer that dies without `pagehide` leaves the lane "running" while
+  another window's panel is open; R4 Mac and Linux members also take the relay (the gate is by version only; the offscreen dialog worked there);
+  R5 the 8 s "cannot see the Chrome window" hint is shown for a dialog the panel owns, over the browser window; R6 test gaps (AudioData
+  `closed` assertions on the sender's success path); D2 closing the side panel ends the relay lane as TAB_ENDED, so a panel reopened inside the
+  3 s grace shows a stale "Audio can no longer be taken" notice.
+- Zero setup: Z1 a structured key refusal shows one error frame before the next key starts; Z2 an unrecognised 1007/1008 close before
+  `setupComplete` burns the whole pool and is reported as a key problem; Z3 when every shared key is refused the notices tell a member to check
+  a key they never entered; Z4 the voice is on by default but the copy says nothing about echo with speakers in a call (only the microphone lane
+  has an echo note); a wrong PERSONAL key reads as a network problem and takes about 10 s (pre-existing, only the pool socket is watched).
+- Package: the guide page and the six PDFs do not describe the automatic update (folder grant, "Update now"); every `update/<version>/` folder
+  republishes the built-in keys on a CORS-open URL, so a later key rotation does not remove the old copies.
+Suggested first batch (small, safe, testable): R2, R5, Z3, Z4, U1. NOT verified by anyone yet: Windows, a headed Chrome, the real folder
+picker and a write to a real disk, and a person.
