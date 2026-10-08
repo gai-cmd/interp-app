@@ -354,7 +354,7 @@ test('the boot dictionary keeps the page working when the dictionaries did not l
   assert.equal(closes.length, 1);
 });
 
-test('§17 setup mode (first install): setup title and lead, the three steps, the microphone asked at once, and the tab stays open', async (t) => {
+test('§17 setup mode (first install): setup title and lead, the setup steps, the microphone asked at once, and the tab stays open', async (t) => {
   const page = await openPage(t, { setup: true, wrapNavigator: allowOnPrompt });
   await page.started;
   await page.browser.settle();
@@ -363,7 +363,8 @@ test('§17 setup mode (first install): setup title and lead, the three steps, th
   assert.equal(page.$('perm-lead').textContent, page.i18n.t('ext.setup.lead'));
   assert.equal(page.$('perm-setup').hidden, false);
   assert.deepEqual([...page.$('perm-setup').children].map((item) => item.textContent),
-    ['ext.setup.step.mic', 'ext.setup.step.pin', 'ext.setup.step.use'].map((key) => page.i18n.t(key)));
+    // §20: the fourth step says where the voice plays (the computer's sound output, so earphones when it uses them).
+    ['ext.setup.step.mic', 'ext.setup.step.pin', 'ext.setup.step.use', 'ext.setup.step.sound'].map((key) => page.i18n.t(key)));
   assert.equal(page.$('perm-status').textContent, page.text('permission.granted', 'ext.setup.micDone'));
   await page.browser.clock.advance(10_000);
   assert.deepEqual(page.closes, [], 'the pin and first-use steps are still to be read: no auto-close');

@@ -22,7 +22,7 @@ export const STYLE = Object.freeze({ size: 1.5, position: 'bottom', display: 'da
  * One rig = one fake browser + one fake audio environment + one socket fixture. `sockets.sockets[n]` are the Live
  * sockets in the order the engines opened them, `audio.worklets[n]` the capture worklets in creation order.
  */
-export function createRig({ autoplay, micPermission, autoClose = true } = {}) {
+export function createRig({ autoplay, micPermission, autoClose = true, relay = false } = {}) {
   const browser = createFakeBrowser();
   // A live SW context: it mints stream ids, sends host/* messages, and records what the host sends it (sw/host-idle).
   // Like the real router it answers only messages addressed to it; `swReply.mode` is 'ok', 'silent' (no answer: the
@@ -40,8 +40,11 @@ export function createRig({ autoplay, micPermission, autoClose = true } = {}) {
     });
   });
   browser.sw.idleTimeoutMs = 1e12;                  // tests advance the virtual clock freely; the SW must not idle out
-  const sockets = createSocketFixture({ autoClose });
-  const audio = createFakeAudioEnv({ browser, sockets, autoplay, micPermission });
+  // Every Live URL a lane opened, in order (§20: which key of the pool each session used). Read, never printed.
+  const urls = [];
+  const sockets = createSocketFixture({ autoClose, inspectURL: (url) => urls.push(url) });
+  // `relay` (§22): the offscreen env also gets the relay constructors (BroadcastChannel, MediaStreamTrackGenerator, AudioData).
+  const audio = createFakeAudioEnv({ browser, sockets, autoplay, micPermission, relay });
   const swChrome = () => browser.sw.context.chrome;
 
   /** A tab with a content script, invoked (activeTab grant) and a fresh single-use stream id. */
@@ -54,13 +57,17 @@ export function createRig({ autoplay, micPermission, autoClose = true } = {}) {
   /** The params of a lane start as the lane sees them (the validated host/lane-start message + epoch). */
   async function laneParams(lane, { tabId = 5, epoch = 1, muted = true, captions = true, targetLanguage = 'ko',
     model = 'gemini-3.5-live-translate-preview', key = fakeKey(lane), originalVolume = 65, streamId, style = STYLE,
-    voiceGender = 'female', languages, pick } = {}) {
+    voiceGender = 'female', languages, pick, relay, chosenTab = null, passthrough = true } = {}) {
     // `languages` (a two-way pair) is part of the request only when given, exactly like the SW builds it.
     const params = { v: 1, target: 'offscreen', type: 'host/lane-start', lane, key,
       request: { targetLanguage, model, ...(languages === undefined ? {} : { languages }) },
       voiceGender, muted, captions, style: { ...style }, epoch };
-    // §19: `pick` (a nonce) makes it a share-picker start, which carries no tab id and no stream id.
-    if (lane === 'tab') params.tab = pick === undefined ? { tabId, streamId: streamId ?? await tabStreamId(tabId), originalVolume } : { pick, originalVolume };
+    // §19: `pick` (a nonce) makes it a share-picker start, which carries no tab id and no stream id. §22: `relay` (an id)
+    // makes it a relay start: the tab the panel named (`chosenTab`, null: unknown) and whether Chrome silenced it.
+    if (lane === 'tab') {
+      if (relay !== undefined) params.tab = { relay, tabId: chosenTab, passthrough, originalVolume };
+      else params.tab = pick === undefined ? { tabId, streamId: streamId ?? await tabStreamId(tabId), originalVolume } : { pick, originalVolume };
+    }
     return params;
   }
 
@@ -82,7 +89,7 @@ export function createRig({ autoplay, micPermission, autoClose = true } = {}) {
   }
   const counts = () => ({ worklet: audio.worklets.length, socket: sockets.sockets.length });
 
-  return { browser, sockets, audio, env: audio.env, clock: browser.clock, swChrome, swInbox, swReply, tabStreamId, laneParams,
+  return { browser, sockets, urls, audio, env: audio.env, clock: browser.clock, swChrome, swInbox, swReply, tabStreamId, laneParams,
     connect, counts };
 }
 

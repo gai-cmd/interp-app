@@ -12,8 +12,10 @@
 //     it, add a second copy of it (comments included) or split it over lines, or the
 //     keyed build refuses with EXTENSION_KEY_SLOT_INVALID.
 //   - This module imports nothing and touches no global, so any extension context
-//     may import it. Only BUILTIN_KEYS[0] is ever used (no rotation, §7.4), and the
-//     personal key stored by the options page always wins over it.
-//   - Anyone who holds a keyed folder or zip can read the key; a keyed build is a
-//     personal convenience, never something to hand to other people.
+//     may import it. The whole list is used as a pool (§20, 7.4): the worker sends
+//     every key of it (at most LIMITS.maxPoolKeys) in host/lane-start, and the lane
+//     moves to the next key by itself when one hits its quota or is refused. A
+//     personal key stored by the options page always wins and never falls back.
+//   - Anyone who holds a keyed folder or zip can read the keys. The members' zip is
+//     keyed on purpose (owner decision, §16); the same free keys are in the web app.
 export const BUILTIN_KEYS = Object.freeze([]);

@@ -190,10 +190,41 @@ test('the two-way keys resolve through the loader in ko, en and ja, are ext.* ke
   assert.equal(ja.t('ext.twoWay.hint'), TWO_WAY['ext.twoWay.hint'].ja, 'the other keys stay in Japanese');
 });
 
-test('all 143 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
+// §21 (the automatic update): the ext.updater.* strings reach the panel and the options page through the loader, their three
+// placeholders are filled (a raw {version} on screen would be a bug nobody can read around), and a language that lacks one
+// falls back to English for that key only.
+test('the ext.updater.* keys resolve through the loader in ko, en and ja, fill their placeholders and fall back to English per key', async () => {
+  for (const language of LANGUAGES) {
+    const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });
+    const app = await readJson(new URL(`../app/i18n/${language}.json`, import.meta.url));
+    const filled = [
+      i18n.t('ext.updater.available', { version: '0.6.0', current: '0.5.0' }),
+      i18n.t('ext.updater.check.none', { current: '0.5.0' }),
+      i18n.t('ext.updater.lastError', { error: i18n.t('ext.updater.error.UPDATE_FETCH_FAILED') }),
+    ];
+    assert.ok(filled[0].includes('0.6.0') && filled[0].includes('0.5.0'), `${language}: both versions appear`);
+    assert.ok(filled[1].includes('0.5.0'), `${language}: the running version appears`);
+    assert.ok(filled[2].includes(i18n.t('ext.updater.error.UPDATE_FETCH_FAILED')), `${language}: the nested error sentence appears`);
+    for (const text of filled) assert.doesNotMatch(text, /\{[a-z]+\}/i, `${language}: no placeholder is left on screen`);
+    for (const key of Object.keys(await readJson(new URL(`../extension/i18n/${language}.json`, import.meta.url))).filter((name) => name.startsWith('ext.updater.'))) {
+      assert.equal(i18n.has(key), true, `${language} ${key}`);
+      assert.equal(Object.hasOwn(app, key), false, `${key} is not an app key`);
+    }
+  }
+  const missing = fileFetch({ edit: (path, dictionary) => {
+    if (path !== 'extension/i18n/ko.json') return dictionary;
+    const { 'ext.updater.step.writing': _dropped, ...rest } = dictionary;
+    return rest;
+  } });
+  const ko = await loadExtensionI18n({ fetch: missing, language: 'ko' });
+  assert.equal(ko.t('ext.updater.step.writing'), 'Replacing the files of the folder…', 'a missing key falls back to English, never to the raw key');
+  assert.notEqual(ko.t('ext.updater.step.verifying'), 'Checking the signature…', 'the other keys stay in Korean');
+});
+
+test('all 192 ext.* keys of every language resolve through the loader, and the languages carry the same key set', async () => {
   const keysOf = async (language) => Object.keys(await readJson(new URL(`../extension/i18n/${language}.json`, import.meta.url)));
   const reference = (await keysOf('en')).sort();
-  assert.equal(reference.length, 143, '117 + the five two-way keys + the seven §16 keys + the thirteen §17 keys + the one §19 key');
+  assert.equal(reference.length, 192, '117 + the five two-way keys + the seven §16 keys + the thirteen §17 keys + the one §19 key = 143, minus the two keys of the old wait for the icon, plus the six §20 keys = 147, plus the 45 ext.updater.* keys of §21');
   for (const language of LANGUAGES) {
     assert.deepEqual((await keysOf(language)).sort(), reference, `${language} has the key set of en`);
     const i18n = await loadExtensionI18n({ fetch: fileFetch(), language });

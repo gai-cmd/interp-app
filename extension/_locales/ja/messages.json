@@ -8,15 +8,15 @@
     "description": "Extension description shown in Chrome (max 132 characters)."
   },
   "actionTitle": {
-    "message": "通訳パネルを開く",
+    "message": "このタブを通訳",
     "description": "Toolbar icon tooltip."
   },
   "commandOpen": {
-    "message": "このタブで通訳パネルを開く",
+    "message": "このタブを通訳（通訳パネルが開きます）",
     "description": "Description of the keyboard shortcut."
   },
   "menuOpen": {
-    "message": "このタブで通訳パネルを開く",
+    "message": "このタブを通訳（通訳パネルが開きます）",
     "description": "Context menu item title."
   },
   "overlayRegion": {

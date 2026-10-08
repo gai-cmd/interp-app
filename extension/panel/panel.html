@@ -24,10 +24,12 @@
     <div id="update-note" class="notice" hidden><!-- §16, not live: shown while the download site publishes a newer version -->
       <span id="update-text"></span>
       <span class="update-actions">
+        <button id="btn-update-auto" type="button" class="btn" hidden aria-describedby="update-text"></button><!-- §21: label ("Update now" / "Turn on automatic updates") and aria-disabled come from the controller; hidden unless the self-updater is on -->
         <button id="btn-update-get" type="button" class="btn" data-i18n="ext.update.get"></button>
         <button id="btn-update-reload" type="button" class="btn" data-i18n="ext.update.reload"></button>
       </span>
     </div>
+    <p id="update-progress" class="sr-only" role="status"></p><!-- live, §21: the step of a silent update, or why it failed; the banner above shows the same for sighted users -->
 
     <div id="key-missing" class="notice" role="status"><!-- live: ext.key.missing while no key is stored; explains why Start is disabled -->
       <span id="key-missing-text"></span>
@@ -66,11 +68,12 @@
         <output id="tab-volume-value" for="tab-volume"></output></label>
       <label class="field field-check"><input id="tab-captions" type="checkbox"><span data-i18n="ext.captions.show"></span></label>
       <p id="tab-tabline" class="text-sub" hidden></p>
-      <p id="tab-arm-note" class="notice" role="status"></p><!-- live: ext.arm.needed, ext.arm.waiting, ext.arm.ready or ext.error.TAB_UNSUPPORTED -->
+      <p id="tab-arm-note" class="notice" role="status"></p><!-- live: ext.arm.needed, ext.arm.picking (+ ext.arm.pickSlow, ext.arm.pickLost), ext.arm.ready or ext.error.TAB_UNSUPPORTED -->
       <p id="tab-status" class="text-sub"></p><!-- not live: the pill and the notices announce state changes -->
       <p id="tab-route" class="text-sub" hidden></p>
       <p id="tab-route-note" class="notice" role="status"></p><!-- live: ext.route.fallbackNote while a backup model interprets -->
       <p id="tab-output" class="text-sub" role="status"></p><!-- live -->
+      <p id="tab-quiet-note" class="notice" role="status"></p><!-- live: ext.quiet.check (§20) while the lane hears speech but has interpreted nothing yet -->
       <p id="tab-gap" class="text-sub" role="status"></p><!-- live: ext.gap.input, sim.gap.audio or sim.gap.reception -->
       <meter id="tab-level" min="0" max="100" value="0" data-i18n-label="ext.level.tab" hidden></meter>
       <p id="tab-notice" class="notice" role="alert"></p><!-- live (assertive): the error notice of the lane -->
@@ -107,6 +110,7 @@
       <p id="mic-route" class="text-sub" hidden></p>
       <p id="mic-route-note" class="notice" role="status"></p><!-- live: ext.route.fallbackNote while a backup model interprets -->
       <p id="mic-output" class="text-sub" role="status"></p><!-- live -->
+      <p id="mic-quiet-note" class="notice" role="status"></p><!-- live: ext.quiet.check (§20) -->
       <p id="mic-gap" class="text-sub" role="status"></p><!-- live -->
       <meter id="mic-level" min="0" max="100" value="0" data-i18n-label="seq.inputLevel" hidden></meter>
       <p id="mic-notice" class="notice" role="alert"></p><!-- live (assertive) -->

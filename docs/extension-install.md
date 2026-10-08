@@ -35,6 +35,8 @@ The page has the zip download, Windows and Mac install steps, usage, updating an
 2. `npm run package:extension` (= `node scripts/package-extension.mjs [--builtin-key-file <path>] [--chrome <path>] [--released YYYY-MM-DD]`)
    - 기본 키 파일 `~/.config/interp-app/builtin-key`로 **키를 넣은 빌드**를 `dist/extension-package/LiveInterpreter`에 만들고, 안내 페이지를 헤드리스 Chrome으로 인쇄해 PDF 6종을 만든 뒤, `dist/extension-site/`(배포 루트: 페이지, `latest.json`, `live-interpreter.zip`, `manuals/`, `vercel.json`)를 채웁니다.
    - 끝에 `PACKAGE_OK version=… keys=… zip=… pdfs=6`이 나와야 합니다. 키 파일이 없거나 비어 있으면 실패합니다(이 배포는 키 포함이 정책).
+   - **실제 Chrome 부팅 점검(필수, Node 가짜로는 못 잡는 오류용)**: `node scripts/boot-test-package.mjs dist/extension-package/LiveInterpreter <새 빈 폴더> --old <이전 릴리스를 푼 LiveInterpreter 폴더> --expect-tab-model <기본 모델>` — 소리 없이 헤드리스 Chrome for Testing에서 새 설치와 `chrome.runtime.reload()` 업그레이드(자동 업데이트와 같은 경로)를 돌려, 모든 확장 페이지가 오류 0으로 뜨고 일회성 이전(migration)이 실행되는지 봅니다. 모두 통과해야 배포합니다.
+   - **Real-Chrome boot test (required; it catches what Node fakes cannot):** the command above runs a fresh install and a `chrome.runtime.reload()` upgrade (the self-updater's path) in muted headless Chrome for Testing; every check must pass before the deploy.
 3. 확인 후 **승인을 받고** `dist/extension-site`에서 `vercel deploy --prod`(프로젝트 `kc-live-interpreter`)로 올립니다. 키가 든 zip이므로 **git에는 절대 커밋하지 않습니다**(`dist/`는 gitignore). CLI로 직접 올립니다.
 
 소스: 페이지와 설명서 내용은 `extension-site/content.js` 한 곳에 있습니다(한·일·영 × Windows·Mac). 테스트: `tests/extension-package.test.mjs`.

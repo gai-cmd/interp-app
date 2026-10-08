@@ -6,6 +6,9 @@
 // These two literals are the ONLY place the site is written (the R11 scan pins them to this file).
 export const UPDATE_SITE_URL = 'https://kc-live-interpreter.vercel.app/';
 export const UPDATE_MANIFEST_URL = 'https://kc-live-interpreter.vercel.app/latest.json';
+// §21 (owner, 2026-10-08): the signed update tree lives under this base, one folder per version. The URL of every file is
+// derived from the version latest.json publishes (updateTreeUrls below), so latest.json itself stays four fields.
+export const UPDATE_TREE_URL = 'https://kc-live-interpreter.vercel.app/update/';
 
 const VERSION = /^\d{1,5}(?:\.\d{1,5}){0,3}$/;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -47,4 +50,28 @@ export async function checkForUpdate({ fetch: fetcher, currentVersion } = {}) {
   } catch {
     return NONE;
   }
+}
+
+const treeError = (code) => Object.assign(new Error(code), { code });
+
+/**
+ * updateTreeUrls(version) -> { manifest, signature, file(path) }: the three kinds of URL of one version's update tree
+ * (§21): `<base><version>/manifest.json` (the signed manifest), `<base><version>/manifest.sig` and
+ * `<base><version>/files/<path>` with every path segment percent-encoded. Pure string work, no request. A version that is
+ * not a Chrome manifest version throws Error{code:'UPDATE_BAD_MANIFEST'} (it becomes part of a URL, so it is checked
+ * here and nowhere else); a path that is not a string, or has an empty, "." or ".." segment, throws UPDATE_UNSAFE_PATH
+ * (encodeURIComponent leaves ".." alone, and ".." in a URL is a way out of the version's folder).
+ */
+export function updateTreeUrls(version) {
+  if (parseVersion(version) === null) throw treeError('UPDATE_BAD_MANIFEST');
+  const base = `${UPDATE_TREE_URL}${version}/`;
+  return Object.freeze({
+    manifest: `${base}manifest.json`,
+    signature: `${base}manifest.sig`,
+    file(path) {
+      const segments = typeof path === 'string' ? path.split('/') : [];
+      if (segments.length === 0 || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) throw treeError('UPDATE_UNSAFE_PATH');
+      return `${base}files/${segments.map(encodeURIComponent).join('/')}`;
+    },
+  });
 }

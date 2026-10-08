@@ -94,6 +94,21 @@
         <input id="opt-caption-hide" type="number" min="0" max="60" step="1"></label>
     </section>
 
+    <section id="update-section" class="card" aria-labelledby="opt-h-update"><!-- §21: the browser opens this page at #update from the panel's update banner. Shown only in a keyed build; an unkeyed development folder shows #update-disabled-note instead -->
+      <h2 id="opt-h-update" data-i18n="ext.updater.title"></h2>
+      <p id="update-disabled-note" class="text-sub" hidden data-i18n="ext.updater.disabled"></p>
+      <p id="update-lead" class="text-sub" data-i18n="ext.updater.lead"></p>
+      <p id="update-status" class="notice" role="status" tabindex="-1"></p><!-- live, focusable by script: the step of a run, the news of the check, or why something failed -->
+      <p id="update-detail" class="text-sub"></p><!-- not live: the state of the folder, an interrupted update, the last failed attempt -->
+      <p id="update-folder-help" class="text-sub" hidden data-i18n="ext.updater.folderHelp"></p>
+      <div id="update-actions" class="button-row"><!-- the controller shows the buttons the folder state calls for; the label of #btn-update-now is the controller's -->
+        <button id="btn-update-folder" type="button" class="btn btn-primary" hidden data-i18n="ext.updater.button.chooseFolder"></button>
+        <button id="btn-update-now" type="button" class="btn btn-primary" hidden></button>
+        <button id="btn-update-forget" type="button" class="btn" hidden data-i18n="ext.updater.button.forget"></button>
+      </div>
+      <label id="update-auto-row" class="field field-check"><input id="update-auto" type="checkbox" checked><span data-i18n="ext.updater.autoApply"></span></label>
+    </section>
+
     <section class="card" aria-labelledby="opt-h-privacy">
       <h2 id="opt-h-privacy" data-i18n="ext.options.section.privacy"></h2>
       <p id="opt-privacy-audio" data-i18n="ext.privacy.audio"></p>

@@ -7,7 +7,7 @@
 import {
   CAPTION_ROLES, CAPTION_STATUSES, CAPTURE_LABEL_PATTERN, CAPTURE_NONCE_PATTERN, ENGINE_STATUSES, GAP_KINDS, HOST_ID_PATTERN,
   KEY_PATTERN, LANE_PHASES,
-  MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, RECONNECT_REASONS, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
+  MODEL_MAX_CHARS, ORIGINAL_VOLUME, OUTPUT_STATES, OVERLAY_STATES, RECONNECT_REASONS, RELAY_ID_PATTERN, ROUTES, STATUS_PHASES, TARGET_LANGUAGES,
   VOICE_GENDERS, deepFreeze, isErrorReason, isLanguagePair, isMachineCode, isPlainObject, isValidStyle,
 } from './constants.js';
 
@@ -18,8 +18,11 @@ export const TARGETS = Object.freeze(['sw', 'offscreen', 'panel', 'content']);  
 export const SENDER_ROLES = Object.freeze(['sw', 'panel', 'offscreen', 'options', 'permission', 'content', 'foreign']);
 export const STORAGE_KEYS = Object.freeze({
   settings: 'interp.settings.v1', key: 'interp.key.v1',      // storage.local
+  update: 'interp.update.v1',                                // storage.local: the self-update state (§21)
   armed: 'interp.armed.v1', host: 'interp.host.v1',          // storage.session
   lastStop: 'interp.lastStop.v1',                            // storage.session: why the last run ended (4.10)
+  // §20: the toolbar icon (or its shortcut, or the context menu) asks the panel of that window to start on that tab.
+  autostart: 'interp.autostart.v1',                          // storage.session: { v:1, tabId, windowId, at }, consumed once
 });
 export const PATHS = Object.freeze({                          // extension-root relative, no leading slash
   sw: 'extension/background/service-worker.js', panel: 'extension/panel/panel.html',
@@ -40,8 +43,13 @@ export const LIMITS = Object.freeze({
   statusLingerMs: 9000,     // after a lane ends in error, overlay ports stay open this long so the `status` frame can be read
   stopWaitMs: 4000,         // SW: how long a Start waits for a lane that is still 'stopping' (bounded poll, 6.3 step 3)
   startSettleMs: 3000,      // host: how long stop() waits for an in-flight start to notice its cancel flag
-  labelWaitMs: 500,         // SW: how long a share-picker start waits for the pages to take their capture labels (§19)
+  // §22: sw/tab-label (the worker's label wait) and the panel's wait for its answer before it opens the share dialog itself
+  labelWaitMs: 1500,
+  pickLabelWaitMs: 500,     // SW: how long a share-picker start (the offscreen document asks, §19) waits for the label
+  relayFirstFrameMs: 4000,  // host: how long a relay start waits for the panel's first audio before TAB_CAPTURE_FAILED (§22)
   pickKeepAliveMs: 20000,   // SW: while the share picker is open, one cheap API call this often keeps the worker alive (§19)
+  autostartMaxAgeMs: 10000, // panel: an icon click's start request older than this is history, not a request (§20)
+  maxPoolKeys: 8,           // host/lane-start: at most this many built-in keys travel as the pool (§20)
   streamIdMaxChars: 512, keyMaxChars: 512, titleMaxChars: 60,
   maxArmedTabs: 32,
 });
@@ -63,9 +71,15 @@ const pickStyle = (style) => ({ size: style.size, position: style.position, disp
 // ---------------------------------------------------------------------------------------------
 // 4.2 message catalog (control plane). `errors` is the documented error-code column (the panel and
 // the SW test against it); the router itself only ever produces PROTOCOL_CODES.
-// §19 (2026-09-30): NEEDS_ARM is gone. A tab the toolbar icon did not arm is no longer refused: the start asks
-// through the browser's share picker instead (TAB_SHARE_NO_AUDIO = what was shared carries no audio track).
-const LANE_START_ERRORS = ['CREDENTIAL_REQUIRED', 'TAB_UNSUPPORTED', 'TAB_GONE', 'TAB_CAPTURE_BUSY',
+// §19 (2026-09-30) took NEEDS_ARM out: a tab the toolbar icon did not arm was asked through the browser's share picker.
+// §20 (2026-10-02) brings it back for a start WITHOUT `pick`; `pick: true` is what the panel sends for every tab it does
+// not read as armed (Start opens the browser's share dialog on every OS). NEEDS_ARM is only the worker's defense for a stale
+// armed record: the panel answers it with one more start with `pick`, and a start with `pick` is never answered
+// NEEDS_ARM (TAB_SHARE_NO_AUDIO = what was shared in the dialog carries no audio track).
+// §22 (2026-10-08): where the dialog can be shown over a side panel (M153+) the PANEL asks for it and relays the
+// chosen tab's audio (`relay`); such a start asks no dialog of the worker or the host, and sw/tab-label puts the capture
+// label on the panel's tab before the panel opens the dialog.
+const LANE_START_ERRORS = ['CREDENTIAL_REQUIRED', 'NEEDS_ARM', 'TAB_UNSUPPORTED', 'TAB_GONE', 'TAB_CAPTURE_BUSY',
   'TAB_CAPTURE_FAILED', 'TAB_SHARE_NO_AUDIO', 'TAB_AUDIO_BLOCKED', 'HOST_UNAVAILABLE', 'ALREADY_RUNNING', 'LANE_STOPPING', 'START_CANCELLED',
   'MICROPHONE_DENIED', 'MICROPHONE_UNAVAILABLE', 'SESSION_LIMIT', 'MODEL_UNSUPPORTED', 'INVALID_REQUEST',
   'INVALID_MESSAGE', 'FORBIDDEN', 'INTERNAL'];
@@ -73,6 +87,7 @@ const row = (target, roles, errors) => Object.freeze({ target, roles: Object.fre
 export const MESSAGE_CATALOG = Object.freeze({
   'sw/lane-start': row('sw', ['panel'], LANE_START_ERRORS),
   'sw/lane-stop': row('sw', ['panel'], ['FORBIDDEN', 'INVALID_MESSAGE']),
+  'sw/tab-label': row('sw', ['panel'], ['FORBIDDEN', 'INVALID_MESSAGE']),
   'sw/permission-open': row('sw', ['panel'], ['INTERNAL', 'FORBIDDEN']),
   'sw/host-probe': row('sw', ['panel'], ['FORBIDDEN']),
   'sw/host-idle': row('sw', ['offscreen'], ['FORBIDDEN', 'INVALID_MESSAGE']),
@@ -91,9 +106,17 @@ export const MESSAGE_TYPES = Object.freeze(Object.keys(MESSAGE_CATALOG));
 const laneList = (value) => Array.isArray(value) && value.length <= LANES.length && value.every(isLane)
   && new Set(value).size === value.length;
 
-// 4.2.1: the ONE place the key and the stream id are validated on the wire.
+// §20: the built-in key pool. 1..LIMITS.maxPoolKeys keys, each with the shape of a personal key.
+const keyPool = (value) => Array.isArray(value) && value.length >= 1 && value.length <= LIMITS.maxPoolKeys
+  && value.every((key) => matches(KEY_PATTERN, key));
+
+// 4.2.1: the ONE place the key and the stream id are validated on the wire. The credential is EITHER `key` (the
+// person's own, which wins and never falls back) OR `keys` (§20: the whole built-in pool, used in turns); never both.
 function laneStartOf(m) {
-  if (!isLane(m.lane) || !matches(KEY_PATTERN, m.key)) return null;
+  if (!isLane(m.lane)) return null;
+  const personal = m.key !== undefined;
+  if (personal === (m.keys !== undefined)) return null;
+  if (personal ? !matches(KEY_PATTERN, m.key) : !keyPool(m.keys)) return null;
   const { request } = m;
   if (!isPlainObject(request) || !TARGET_LANGUAGES.includes(request.targetLanguage)
     || !text(request.model, 1, MODEL_MAX_CHARS)) return null;
@@ -103,12 +126,20 @@ function laneStartOf(m) {
   if (!VOICE_GENDERS.includes(m.voiceGender) || typeof m.muted !== 'boolean' || typeof m.captions !== 'boolean'
     || !isValidStyle(m.style)) return null;
   const pair = request.languages === undefined ? {} : { languages: [request.languages[0], request.languages[1]] };
-  const out = { lane: m.lane, key: m.key, request: { targetLanguage: request.targetLanguage, model: request.model, ...pair },
+  const out = { lane: m.lane, ...(personal ? { key: m.key } : { keys: [...m.keys] }),
+    request: { targetLanguage: request.targetLanguage, model: request.model, ...pair },
     voiceGender: m.voiceGender, muted: m.muted, captions: m.captions, style: pickStyle(m.style) };
   if (m.lane === 'tab') {
     const { tab } = m;
     if (!isPlainObject(tab) || !int(tab.originalVolume, ORIGINAL_VOLUME.min, ORIGINAL_VOLUME.max)) return null;
-    if (tab.pick !== undefined) {
+    if (tab.relay !== undefined) {
+      // §22, the relay start: the side panel captured the tab itself and relays its audio over the channel this id
+      // names. `tabId` is the tab the panel learned from the capture label (null: it could not tell), `passthrough`
+      // whether the capture silenced that tab. No stream id and no nonce: the three shapes never mix.
+      if (!matches(RELAY_ID_PATTERN, tab.relay) || tab.pick !== undefined || tab.streamId !== undefined
+        || typeof tab.passthrough !== 'boolean' || !(tab.tabId === null || int(tab.tabId))) return null;
+      out.tab = { relay: tab.relay, tabId: tab.tabId, passthrough: tab.passthrough, originalVolume: tab.originalVolume };
+    } else if (tab.pick !== undefined) {
       // §19, the share-picker start: a nonce instead of a stream id, and no tab id (the host learns which tab the
       // user chose from the captured track). The two shapes never mix.
       if (!matches(CAPTURE_NONCE_PATTERN, tab.pick) || tab.tabId !== undefined || tab.streamId !== undefined) return null;
@@ -133,11 +164,22 @@ function hostSettingsOfMessage(m) {
 // Each returns the sanitized payload fields (extra fields dropped) or null.
 const PAYLOADS = {
   'sw/lane-start': (m) => {
-    if (!isLane(m.lane)) return null;
-    if (m.lane === 'mic') return { lane: 'mic' };     // tabId is ignored for the microphone
-    return int(m.tabId) ? { lane: 'tab', tabId: m.tabId } : null;
+    // §20: `pick: true` is what the panel sends for every tab it does not read as armed: it asks for the browser's share dialog.
+    if (!isLane(m.lane) || (m.pick !== undefined && typeof m.pick !== 'boolean')) return null;
+    if (m.lane === 'mic') return { lane: 'mic' };     // tabId, pick and the relay fields are ignored for the microphone
+    if (!int(m.tabId)) return null;
+    const out = { lane: 'tab', tabId: m.tabId, ...(m.pick === true ? { pick: true } : {}) };
+    // §22: `relay` = the panel opened the share dialog itself and relays the chosen tab's audio under this id;
+    // `passthrough` and `chosenTab` (the tab the capture label named, null: unknown) belong to it and mean nothing
+    // without it. `pick` next to `relay` passes here and is refused by the worker (INVALID_REQUEST).
+    if (m.relay === undefined) return out;
+    if (!matches(RELAY_ID_PATTERN, m.relay) || typeof m.passthrough !== 'boolean'
+      || !(m.chosenTab === undefined || m.chosenTab === null || int(m.chosenTab))) return null;
+    return { ...out, relay: m.relay, passthrough: m.passthrough, chosenTab: m.chosenTab ?? null };
   },
   'sw/lane-stop': (m) => (m.lane === undefined ? {} : isLane(m.lane) ? { lane: m.lane } : null),
+  // §22: the panel's tab gets its capture label before the panel opens the share dialog (answered { labelled }).
+  'sw/tab-label': (m) => (int(m.tabId) && matches(CAPTURE_NONCE_PATTERN, m.nonce) ? { tabId: m.tabId, nonce: m.nonce } : null),
   'sw/permission-open': () => ({}),
   'sw/host-probe': () => ({}),
   'sw/host-idle': (m) => (matches(HOST_ID_PATTERN, m.hostId) && ['panel-gone', 'initial-grace'].includes(m.reason)

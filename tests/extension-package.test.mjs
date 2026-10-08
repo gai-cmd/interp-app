@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SECRET_PATTERNS } from '../scripts/check-release.mjs';
 import {
-  CONTENT_SECURITY_POLICY, DEFAULT_KEY_FILE, EXTENSION_FOLDER, MANUALS, README_NAME, SITE_SOURCE_FILES,
+  CONTENT_SECURITY_POLICY, DEFAULT_KEY_FILE, DEFAULT_UPDATE_KEY_FILE, EXTENSION_FOLDER, MANUALS, README_NAME, SITE_SOURCE_FILES,
   checkZipEntries, latestJson, localDate, parseArguments, printUrl, readmeText, vercelConfig,
 } from '../scripts/package-extension.mjs';
 import { CONTENT, LANGS, OSES, SITE, manualFile } from '../extension-site/content.js';
@@ -31,10 +31,12 @@ test('latest.json has exactly version, released, download and page, pointing at 
   }
 });
 
-test('vercel.json: CORS and no-cache on latest.json, no-cache on the zip and manuals, nosniff/no-referrer/noindex everywhere', () => {
+test('vercel.json: CORS and no-cache on latest.json and the update tree, no-cache on the zip and manuals, nosniff/no-referrer/noindex everywhere', () => {
   const { headers } = vercelConfig();
   const rule = (source) => Object.fromEntries(headers.find((entry) => entry.source === source).headers.map(({ key, value }) => [key, value]));
   assert.deepEqual(rule('/latest.json'), { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
+  // docs/extension.md §21: the extension reads update/<version>/ from its own origin, with no host permission.
+  assert.deepEqual(rule('/update/(.*)'), { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
   assert.equal(rule('/live-interpreter.zip')['Cache-Control'], 'no-cache');
   assert.equal(rule('/manuals/(.*)')['Cache-Control'], 'no-cache');
   const all = rule('/(.*)');
@@ -99,13 +101,15 @@ test('zip layout: a missing manifest, manual or README, a wrapper folder, junk a
 // --- CLI arguments, dates, print URLs -------------------------------------------------------------------------------
 
 test('arguments: defaults, each flag once with a value, a well-formed date', () => {
-  assert.deepEqual({ ...parseArguments([]) }, { builtinKeyFile: DEFAULT_KEY_FILE, chrome: null, released: null });
+  const defaults = { builtinKeyFile: DEFAULT_KEY_FILE, chrome: null, released: null, updateKeyFile: DEFAULT_UPDATE_KEY_FILE, updateTree: true };
+  assert.deepEqual({ ...parseArguments([]) }, defaults);
   assert.deepEqual({ ...parseArguments(['--builtin-key-file', '/k', '--chrome', '/c', '--released', '2026-10-01']) },
-    { builtinKeyFile: '/k', chrome: '/c', released: '2026-10-01' });
+    { ...defaults, builtinKeyFile: '/k', chrome: '/c', released: '2026-10-01' });
   for (const bad of [['--zip'], ['--chrome'], ['--chrome', '--released'], ['--chrome', '/a', '--chrome', '/b'], ['--released', '2026-9-1'], 'x']) {
     assert.throws(() => parseArguments(bad), /^Error: PACKAGE_ARGUMENT_INVALID$/);
   }
   assert.match(DEFAULT_KEY_FILE, /\.config[\\/]interp-app[\\/]builtin-key$/);
+  // The update-tree flags are covered in tests/extension-update-tree.test.mjs.
 });
 
 test('localDate is the local calendar date; printUrl carries lang, os, print, version and released', () => {

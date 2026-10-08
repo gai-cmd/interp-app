@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  UPDATE_MANIFEST_URL, UPDATE_SITE_URL, checkForUpdate, compareVersions, parseVersion,
+  UPDATE_MANIFEST_URL, UPDATE_SITE_URL, UPDATE_TREE_URL, checkForUpdate, compareVersions, parseVersion, updateTreeUrls,
 } from '../extension/lib/update-check.js';
 
 test('parseVersion accepts Chrome manifest versions only', () => {
@@ -50,4 +50,66 @@ test('checkForUpdate sends a bare GET: the site file only, no credentials, no ca
 test('the manifest version is one the update check can read', async () => {
   const manifest = JSON.parse(await readFile(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
   assert.notEqual(parseVersion(manifest.version), null);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// §21 (owner, 2026-10-08): the URLs of the signed update tree, derived from the version latest.json publishes.
+
+const codeOf = (fn) => { try { fn(); return null; } catch (error) { return error?.code ?? `no code: ${error?.message}`; } };
+
+test('UPDATE_TREE_URL is the update/ folder of the one download site, and latest.json stays what it was', () => {
+  assert.equal(UPDATE_TREE_URL, 'https://kc-live-interpreter.vercel.app/update/');
+  assert.equal(new URL(UPDATE_TREE_URL).origin, new URL(UPDATE_SITE_URL).origin, 'one site');
+  assert.equal(new URL(UPDATE_TREE_URL).protocol, 'https:');
+  assert.ok(UPDATE_TREE_URL.endsWith('/'), 'a base: the version is appended');
+  assert.equal(UPDATE_MANIFEST_URL, 'https://kc-live-interpreter.vercel.app/latest.json');
+});
+
+test('updateTreeUrls: manifest, signature and file URLs of one version', () => {
+  const urls = updateTreeUrls('0.5.0');
+  assert.equal(urls.manifest, 'https://kc-live-interpreter.vercel.app/update/0.5.0/manifest.json');
+  assert.equal(urls.signature, 'https://kc-live-interpreter.vercel.app/update/0.5.0/manifest.sig');
+  assert.equal(urls.file('manifest.json'), 'https://kc-live-interpreter.vercel.app/update/0.5.0/files/manifest.json');
+  assert.equal(urls.file('extension/lib/self-update.js'), 'https://kc-live-interpreter.vercel.app/update/0.5.0/files/extension/lib/self-update.js');
+  assert.equal(urls.file('_locales/en/messages.json'), 'https://kc-live-interpreter.vercel.app/update/0.5.0/files/_locales/en/messages.json');
+  assert.ok(Object.isFrozen(urls));
+  assert.deepEqual(Object.keys(urls).sort(), ['file', 'manifest', 'signature']);
+  assert.equal(updateTreeUrls('1.2.3.4').manifest, 'https://kc-live-interpreter.vercel.app/update/1.2.3.4/manifest.json');
+  assert.equal(updateTreeUrls('1').signature, 'https://kc-live-interpreter.vercel.app/update/1/manifest.sig');
+  assert.notEqual(updateTreeUrls('0.5.0').file('a.js'), updateTreeUrls('0.5.1').file('a.js'), 'every version has its own folder');
+});
+
+test('updateTreeUrls encodes every path segment and keeps the slashes between them', () => {
+  const urls = updateTreeUrls('0.5.0');
+  const base = 'https://kc-live-interpreter.vercel.app/update/0.5.0/files/';
+  assert.equal(urls.file('icons/icon 16.png'), `${base}icons/icon%2016.png`);
+  assert.equal(urls.file('a+b/c#d/e?f.js'), `${base}a%2Bb/c%23d/e%3Ff.js`);
+  assert.equal(urls.file('50%.js'), `${base}50%25.js`);
+  assert.equal(urls.file('a%2Fb'), `${base}a%252Fb`, 'an escape in a name is a literal percent, not a second slash');
+  assert.equal(urls.file('x"y\'z<>.js'), `${base}x%22y'z%3C%3E.js`);
+  for (const path of ['icons/icon 16.png', 'a+b/c#d/e?f.js', '50%.js', 'a%2Fb']) {
+    const parsed = new URL(urls.file(path));
+    assert.equal(parsed.search, '', `${path}: no query`);
+    assert.equal(parsed.hash, '', `${path}: no fragment`);
+    assert.equal(parsed.pathname.split('/').slice(4).map(decodeURIComponent).join('/'), path, `${path}: decodes back to the path`);
+    assert.equal(parsed.origin, 'https://kc-live-interpreter.vercel.app');
+  }
+});
+
+test('updateTreeUrls refuses a version that is not a Chrome version (it becomes part of a URL), with a coded error', () => {
+  for (const bad of ['', 'latest', 'v1', '1.2.3.4.5', '1..2', '../0.5', '0.5.0/../../x', '0.5.0/', '0.5.0?x=1', '0.5.0#x', ' 0.5.0', '0.5.0 ', '0.5.0\n', '123456', '-1', '1e3',
+    null, undefined, 5, 0.5, {}, [], ['0.5.0']]) {
+    assert.equal(codeOf(() => updateTreeUrls(bad)), 'UPDATE_BAD_MANIFEST', JSON.stringify(bad) ?? String(bad));
+  }
+  assert.equal(codeOf(() => updateTreeUrls('0.5.0')), null);
+  assert.equal(codeOf(() => updateTreeUrls()), 'UPDATE_BAD_MANIFEST');
+});
+
+test('updateTreeUrls().file refuses a path that could leave the version folder, with a coded error', () => {
+  const { file } = updateTreeUrls('0.5.0');
+  for (const bad of ['', '.', '..', '../x', 'a/../b', 'a/..', '/abs', 'a//b', 'a/', './a', 'a/./b', null, undefined, 5, {}, ['a']]) {
+    assert.equal(codeOf(() => file(bad)), 'UPDATE_UNSAFE_PATH', JSON.stringify(bad) ?? String(bad));
+  }
+  assert.equal(codeOf(() => file('a..b/c.d')), null, 'dots inside a name are fine');
+  assert.equal(codeOf(() => file('...')), null, 'only a segment that IS . or .. is refused (the safe-path rules of the manifest refuse the rest)');
 });

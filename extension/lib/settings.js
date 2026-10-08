@@ -11,7 +11,7 @@ import {
   CAPTION_SIZE, DEFAULT_STYLE, KEY_PATTERN, ORIGINAL_VOLUME, TARGET_LANGUAGES, UI_LANGUAGES, deepFreeze,
   defaultPartnerLanguage, isPlainObject, normalizeStyle,
 } from './constants.js';
-import { LANES, STORAGE_KEYS } from './protocol.js';
+import { LANES, LIMITS, STORAGE_KEYS } from './protocol.js';
 
 export { CAPTION_SIZE };
 
@@ -25,7 +25,8 @@ const MIC_TARGET_ORDER = Object.freeze(['en', 'ja', 'ko']);
 /**
  * The 7.1 defaults. The two target languages are seeded from the UI language (tab = that language, mic = the first
  * of en/ja/ko that differs from it); anything else seeds as 'en'. `uiLanguage` itself stays 'auto'. Frozen.
- * Model rationale: 5.12 (an assumption, not a measurement: A8).
+ * Model rationale: 5.12 (an assumption, not a measurement: A8). 0.5.1 (2026-10-08, owner): BOTH lanes default to the
+ * latest Google Live model, DEFAULT_LIVE_MODEL (the tab lane used to default to the translation-only preview, §20).
  */
 export function createDefaultSettings(uiLanguage = 'en') {
   const language = pick(uiLanguage, TARGET_LANGUAGES, 'en');
@@ -34,10 +35,12 @@ export function createDefaultSettings(uiLanguage = 'en') {
     v: 1,
     uiLanguage: 'auto',
     voiceGender: DEFAULT_LIVE_VOICE_GENDER,
-    speechMuted: true,     // captions only until the user unmutes
+    // §20 (2026-10-02): the interpreted voice plays from the first start (it used to start muted, captions only, and a
+    // member heard nothing and did not know why). The mute button stays one press away.
+    speechMuted: false,
     lanes: {
       tab: { enabled: true, targetLanguage: language, twoWay: false, partnerLanguage: defaultPartnerLanguage(language),
-        model: TRANSLATE_LIVE_MODEL, originalVolume: ORIGINAL_VOLUME.initial, captions: true },
+        model: DEFAULT_LIVE_MODEL, originalVolume: ORIGINAL_VOLUME.initial, captions: true },
       // OFF by default: your own translated speech is drawn into a web page only after an explicit opt-in (F14).
       mic: { enabled: false, targetLanguage: micTarget, twoWay: false, partnerLanguage: defaultPartnerLanguage(micTarget),
         model: DEFAULT_LIVE_MODEL, captions: false },
@@ -142,6 +145,16 @@ export function laneRequestOf(settings, lane) {
 }
 
 /**
+ * 0.5.1 (2026-10-08, owner): the tab lane's model default moved from the translation-only preview to the latest Live model.
+ * On a MUTABLE settings draft (the copy an updateSettings mutator gets), a tab lane that still holds the OLD default is
+ * moved to the new one; any other stored model is a choice the user made and stays. Returns nothing.
+ */
+export function moveOldTabDefaultModel(settings) {
+  const tab = settings?.lanes?.tab;
+  if (isPlainObject(tab) && tab.model === TRANSLATE_LIVE_MODEL) tab.model = DEFAULT_LIVE_MODEL;
+}
+
+/**
  * Sets a lane's first language on a MUTABLE settings draft (the copy an updateSettings mutator gets). The pair is two
  * DIFFERENT languages: choosing the current partner as the first language sends the language just left to the
  * partner's place (the swap a user expects). Left to normalization, the pair would be repaired to the default partner
@@ -218,9 +231,13 @@ export async function deleteKey(area) {
 export async function hasKey(area) {
   return (await readKey(area)) !== null;
 }
-/** personal (a valid string) wins; else builtin[0] when it has the key shape; else null. No rotation (7.4). */
-export function resolveKey({ personal, builtin } = {}) {
-  if (keyShaped(personal)) return personal;
-  const first = Array.isArray(builtin) ? builtin[0] : undefined;
-  return keyShaped(first) ? first : null;
+/**
+ * The credential part of a `host/lane-start` (7.4, §20): `{ key }` for a stored personal key (a valid string), which
+ * wins and never falls back; else `{ keys }`, the built-in pool (the keys that have the key shape, each once, at most
+ * LIMITS.maxPoolKeys of them, in their build order), which the lane uses in turns; else null (no key at all).
+ */
+export function resolveCredential({ personal, builtin } = {}) {
+  if (keyShaped(personal)) return Object.freeze({ key: personal });
+  const pool = [...new Set((Array.isArray(builtin) ? builtin : []).filter(keyShaped))].slice(0, LIMITS.maxPoolKeys);
+  return pool.length > 0 ? Object.freeze({ keys: Object.freeze(pool) }) : null;
 }

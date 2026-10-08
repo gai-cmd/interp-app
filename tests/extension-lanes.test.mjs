@@ -2,12 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionManager } from '../app/engine/session-manager.js';
 import { DEFAULT_LIVE_MODEL, LIVE_MODELS, TRANSLATE_LIVE_MODEL, liveVoicePreference } from '../app/providers/gemini/live-config.js';
-import { createLaneEngine } from '../extension/engine/lane-engine.js';
+import { normalizeGeminiLiveClose } from '../app/providers/gemini/errors.js';
+import { createKeyCooldownMemory, createLaneEngine, refusalOfClose } from '../extension/engine/lane-engine.js';
 import { createMicLane } from '../extension/engine/mic-lane.js';
-import { DISPLAY_MEDIA_CONSTRAINTS, TAB_CAPTURE_INCLUDE_VIDEO, createTabLane } from '../extension/engine/tab-lane.js';
+import { DISPLAY_MEDIA_CONSTRAINTS, PICKER_REFUSED_AT_ONCE_MS, TAB_CAPTURE_INCLUDE_VIDEO, createTabLane } from '../extension/engine/tab-lane.js';
+import { KEEP_ALIVE_LEVEL } from '../extension/engine/audio-graph.js';
+import { RELAY_CHANNEL_PREFIX, createRelaySender } from '../extension/lib/audio-relay.js';
 import { LIMITS } from '../extension/lib/protocol.js';
 import { createDefaultSettings, laneRequestOf } from '../extension/lib/settings.js';
 import { laneStateFromSnapshot } from '../extension/lib/ui-state.js';
+import { FakeTrack, createFakeAudioEnv } from './fixtures/fake-audio.mjs';
+import { createMediaSource } from './fixtures/fake-chrome.mjs';
 import { createRig, fakeKey, tick } from './fixtures/extension-lanes.mjs';
 import { content } from './fixtures/sim.mjs';
 
@@ -613,30 +618,84 @@ test('PICKER: a page without a label, a label of another start and a malformed o
   }
 });
 
-test('PICKER: closing the dialog settles the lane in off without an error; any other failure is TAB_CAPTURE_FAILED', async (t) => {
-  const rig = createRig();
-  const { lane } = newTab(rig);
-  t.after(() => lane.dispose());
-  const dismissed = outcomeOf(lane.start(await pickParams(rig)));
+// What a rejected dialog means depends on how long it was open (§20): the lane reads env.now() from the moment the
+// dialog was asked for (the rig's virtual clock, which only `rig.clock.advance` moves). A NotAllowedError sooner than
+// PICKER_REFUSED_AT_ONCE_MS is the browser or a policy refusing to show the dialog (visible: TAB_CAPTURE_FAILED, so Start
+// does not look dead); a later one is the user closing it (nothing failed: START_CANCELLED, back to off, no notice).
+/** Starts a share-picker start, lets the dialog open and lets `openFor` ms of fake time pass. Returns { outcome }: the start's pending outcome (wrapped, so awaiting this function does not wait for the dialog). */
+async function startAndWait(rig, lane, openFor, options = {}) {
+  const outcome = outcomeOf(lane.start(await pickParams(rig, options)));
   await tick();
-  rig.audio.picker.dismiss();
-  assert.equal(await dismissed, 'START_CANCELLED', 'the code that means "nothing failed, the lane did not start"');
+  assert.equal(rig.audio.picker.pending(), 1, 'the dialog is open');
+  await rig.clock.advance(openFor);
+  return { outcome };
+}
+const assertNoError = (lane) => {
   assert.equal(lane.phase(), 'off');
   assert.equal(lane.facts().hostError, null);
   assert.equal(stateOf(lane, 'tab').errorCode, null);
-  assert.equal(rig.audio.contexts.length, 0);
+};
 
-  const failed = outcomeOf(lane.start(await pickParams(rig, { epoch: 2 })));
-  await tick();
-  rig.audio.picker.dismiss('AbortError');
-  assert.equal(await failed, 'TAB_CAPTURE_FAILED');
-  assert.equal(lane.phase(), 'error');
-  assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_CAPTURE_FAILED');
-  // and the lane is not stuck
-  const again = lane.start(await pickParams(rig, { epoch: 3 }));
-  await tick();
-  rig.audio.picker.choose({ label: `${NONCE}.5` });
-  assert.deepEqual(await again, { epoch: 3, tabId: 5 });
+// The rule counts from the moment the dialog was asked for. A rig's clock starts at 0, where a rule on the absolute clock
+// (`env.now() < 400`) or a start time that was never set (0) looks exactly like the right one; so every test below also
+// runs with the clock moved far away from 0 BEFORE the call, which only the right rule survives.
+const CLOCK_SHIFTS_MS = Object.freeze([0, 10_000]);
+
+test('PICKER: the refusal boundary is the documented 400 ms of fake time', () => {
+  assert.equal(PICKER_REFUSED_AT_ONCE_MS, 400);
+});
+
+test('PICKER: a NotAllowedError that arrives at once (< PICKER_REFUSED_AT_ONCE_MS after the call) is a refusal: TAB_CAPTURE_FAILED, not a silent return to idle, at any clock value', async (t) => {
+  for (const [shift, openFor] of CLOCK_SHIFTS_MS.flatMap((moved) => [0, 1, PICKER_REFUSED_AT_ONCE_MS - 1].map((open) => [moved, open]))) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    await rig.clock.advance(shift);
+    const { outcome: refused } = await startAndWait(rig, lane, openFor);
+    rig.audio.picker.dismiss();
+    assert.equal(await refused, 'TAB_CAPTURE_FAILED', `${openFor} ms after the call, the clock at ${shift} ms before it`);
+    assert.equal(lane.phase(), 'error');
+    assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_CAPTURE_FAILED', 'the panel can show it');
+    assert.equal(rig.audio.contexts.length, 0);
+    // and the lane is not stuck: the next start opens a dialog and runs
+    const again = lane.start(await pickParams(rig, { epoch: 2 }));
+    await tick();
+    rig.audio.picker.choose({ label: `${NONCE}.5` });
+    assert.deepEqual(await again, { epoch: 2, tabId: 5 });
+  }
+});
+
+test('PICKER: closing the dialog (a NotAllowedError at or after PICKER_REFUSED_AT_ONCE_MS after the call) settles the lane in off without an error, at any clock value', async (t) => {
+  for (const [shift, openFor] of CLOCK_SHIFTS_MS.flatMap((moved) => [PICKER_REFUSED_AT_ONCE_MS, PICKER_REFUSED_AT_ONCE_MS + 1, 5_000, 600_000].map((open) => [moved, open]))) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    await rig.clock.advance(shift);
+    const { outcome: dismissed } = await startAndWait(rig, lane, openFor);
+    rig.audio.picker.dismiss();
+    assert.equal(await dismissed, 'START_CANCELLED', `${openFor} ms (clock at ${shift} before the call): the code that means "nothing failed, the lane did not start"`);
+    assertNoError(lane);
+    assert.equal(rig.audio.contexts.length, 0);
+    // and the lane is not stuck: the next start opens a dialog and runs
+    const again = lane.start(await pickParams(rig, { epoch: 2 }));
+    await tick();
+    rig.audio.picker.choose({ label: `${NONCE}.5` });
+    assert.deepEqual(await again, { epoch: 2, tabId: 5 });
+  }
+});
+
+test('PICKER: any failure that is not a NotAllowedError is TAB_CAPTURE_FAILED, at once or after a long time', async (t) => {
+  for (const [name, openFor] of [['AbortError', 0], ['AbortError', 5_000], ['NotFoundError', 5_000], ['InvalidStateError', 600_000],
+    ['NotReadableError', PICKER_REFUSED_AT_ONCE_MS]]) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    const { outcome: failed } = await startAndWait(rig, lane, openFor);
+    rig.audio.picker.dismiss(name);
+    assert.equal(await failed, 'TAB_CAPTURE_FAILED', `${name} after ${openFor} ms`);
+    assert.equal(lane.phase(), 'error');
+    assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_CAPTURE_FAILED');
+  }
 });
 
 test('PICKER: something shared without audio (a window, or "share tab audio" off) is TAB_SHARE_NO_AUDIO and every track is released', async (t) => {
@@ -707,13 +766,164 @@ test('PICKER CANCEL: a new Start takes over the dialog a cancelled one left open
   assert.deepEqual(await second, { epoch: 2, tabId: 9 });
   assert.equal(stream.getAudioTracks()[0].readyState, 'live', 'the cancelled start did not take the stream away');
   assert.equal(lane.phase(), 'starting');
-  // Once it was answered, the next start opens a dialog of its own.
+  // Once it was answered, the next start opens a dialog of its own (and a user who closes it later is a dismissal).
   await lane.stop();
   const third = outcomeOf(lane.start(await pickParams(rig, { epoch: 3 })));
   await tick();
   assert.equal(rig.audio.picker.calls.length, 2);
+  await rig.clock.advance(PICKER_REFUSED_AT_ONCE_MS);
   rig.audio.picker.dismiss();
   assert.equal(await third, 'START_CANCELLED');
+});
+
+test('PICKER CANCEL: a taken-over dialog keeps the time it was first asked for: a dismissal long after that is a dismissal, however soon after the takeover', async (t) => {
+  const rig = createRig();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const { outcome: first } = await startAndWait(rig, lane, 5_000);   // the dialog has been open for five seconds
+  await lane.stop();
+  assert.equal(await first, 'START_CANCELLED');
+  const second = outcomeOf(lane.start(await pickParams(rig, { epoch: 2 })));   // takes the same dialog over
+  await tick();
+  assert.equal(rig.audio.picker.calls.length, 1, 'the same dialog');
+  await rig.clock.advance(50);   // 50 ms after the takeover: a clock restarted by the takeover would call this a refusal
+  rig.audio.picker.dismiss();
+  assert.equal(await second, 'START_CANCELLED');
+  assertNoError(lane);
+});
+
+test('PICKER CANCEL: the refusal window of a taken-over dialog is counted from the first call, on both sides of the boundary, at any clock value', async (t) => {
+  for (const [shift, [sinceFirstCall, expected]] of CLOCK_SHIFTS_MS.flatMap((moved) => [[PICKER_REFUSED_AT_ONCE_MS - 1, 'TAB_CAPTURE_FAILED'],
+    [PICKER_REFUSED_AT_ONCE_MS, 'START_CANCELLED']].map((entry) => [moved, entry]))) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    await rig.clock.advance(shift);
+    const { outcome: first } = await startAndWait(rig, lane, 100);
+    await lane.stop();
+    assert.equal(await first, 'START_CANCELLED');
+    const second = outcomeOf(lane.start(await pickParams(rig, { epoch: 2 })));
+    await tick();
+    assert.equal(rig.audio.picker.calls.length, 1);
+    await rig.clock.advance(sinceFirstCall - 100);   // the takeover itself happened at 100 ms
+    rig.audio.picker.dismiss();
+    assert.equal(await second, expected, `${sinceFirstCall} ms after the dialog was first asked for (clock at ${shift} before)`);
+    if (expected === 'START_CANCELLED') assertNoError(lane);
+    else assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_CAPTURE_FAILED');
+  }
+});
+
+test('PICKER CANCEL: the late rejection of a dialog nobody waits for any more never turns into an error, whatever it is and however soon it comes', async (t) => {
+  for (const [name, openFor] of [['NotAllowedError', 0], ['NotAllowedError', 5_000], ['AbortError', 0], ['AbortError', 5_000]]) {
+    const rig = createRig();
+    const { lane, log } = newTab(rig);
+    t.after(() => lane.dispose());
+    const { outcome: started } = await startAndWait(rig, lane, openFor);
+    await lane.stop();
+    assert.equal(await started, 'START_CANCELLED');
+    log.length = 0;
+    rig.audio.picker.dismiss(name);   // the user closes the dialog that was left behind (or Chrome fails it)
+    await tick();
+    await rig.clock.advance(1_000);
+    assertNoError(lane);
+    assert.equal(rig.audio.picker.pending(), 0);
+    assert.equal(rig.audio.contexts.length, 0);
+    assert.deepEqual(log, [], `${name} after ${openFor} ms: the lane reported nothing`);
+    // and the lane is free for the next start
+    const again = lane.start(await pickParams(rig, { epoch: 2 }));
+    await tick();
+    rig.audio.picker.choose({ label: `${NONCE}.5` });
+    assert.deepEqual(await again, { epoch: 2, tabId: 5 });
+  }
+});
+
+// This pins the LANE CONTROLLER's override (lane-engine.js begin(): a cancelled run ends START_CANCELLED whatever the
+// acquisition threw); the `run.cancelled ||` guard inside tab-lane.js is defensive and is not what makes this pass.
+test('PICKER CANCEL: the lane controller overrides the tab lane\'s code: a rejection and a Stop in the same turn end START_CANCELLED, not an error, even for an at-once refusal', async (t) => {
+  for (const name of ['NotAllowedError', 'AbortError']) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    const { outcome: started } = await startAndWait(rig, lane, 0);
+    rig.audio.picker.dismiss(name);
+    const stopping = lane.stop();   // before any promise handler of the rejection has run
+    assert.equal(await started, 'START_CANCELLED', name);
+    await stopping;
+    assertNoError(lane);
+  }
+});
+
+// The model of the real-browser finding that the fakes carry (docs/extension.md §20, check 20.5; headless Chrome for Testing 149,
+// headed Chrome and Windows UNVERIFIED): everything the worker's closeLeftOverDialog and the integration tests rely on.
+const tabCaptureOf = (rig, id) => rig.env.navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: id } } });
+const stillPending = async (promise) => Promise.race([promise.then(() => false), tick().then(() => tick()).then(() => true)]);
+
+test('FAKE: a share dialog nobody answered holds a tab-capture getUserMedia of the same document, not a microphone one; answering it lets the held call go on', async (t) => {
+  for (const answer of ['choose', 'dismiss']) {
+    const rig = createRig();
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    const starting = outcomeOf(lane.start(await pickParams(rig)));
+    await tick();
+    assert.equal(rig.audio.picker.pending(), 1);
+    const id = await rig.tabStreamId(8);
+    const held = tabCaptureOf(rig, id);
+    assert.equal(await stillPending(held), true, 'the tab capture never completes while the dialog is open');
+    assert.equal(rig.audio.blockedTabCaptures(), 1);
+    assert.equal(rig.browser.captures.has(8), false, 'and the stream id is not used up while it waits');
+    const mic = await rig.env.navigator.mediaDevices.getUserMedia({ audio: true });
+    assert.equal(mic.getAudioTracks().length, 1, 'a microphone is not held');
+    if (answer === 'choose') rig.audio.picker.choose({ label: `${NONCE}.8` }); else rig.audio.picker.dismiss();
+    const stream = await held;
+    assert.equal(stream.getAudioTracks().length, 1);
+    assert.equal(rig.audio.blockedTabCaptures(), 0);
+    assert.equal(rig.browser.captures.has(8), true);
+    await starting;
+    // with no dialog open, a tab capture is not held
+    const idle = await rig.tabStreamId(9);
+    assert.equal((await tabCaptureOf(rig, idle)).getAudioTracks().length, 1);
+  }
+});
+
+test('FAKE: closing the offscreen document takes its open dialog with it and a call it was holding never completes; a tab capture in the NEW document is not held', async (t) => {
+  const rig = createRig();
+  const { browser } = rig;
+  const chromeSw = rig.swChrome();
+  const open = () => chromeSw.offscreen.createDocument({ url: 'extension/engine/host.html', reasons: ['USER_MEDIA', 'DISPLAY_MEDIA'], justification: 'tests' });
+  await open();
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const starting = outcomeOf(lane.start(await pickParams(rig)));
+  await tick();
+  assert.equal(rig.audio.picker.pending(), 1);
+  const held = tabCaptureOf(rig, await rig.tabStreamId(8));
+  assert.equal(await stillPending(held), true);
+  await chromeSw.offscreen.closeDocument();
+  assert.equal(rig.audio.picker.pending(), 0, 'the dialog is gone with its document');
+  assert.equal(rig.audio.picker.gone(), 1);
+  assert.equal(rig.audio.blockedTabCaptures(), 0);
+  assert.throws(() => rig.audio.picker.choose({ label: null }), /no share picker is open/);
+  assert.equal(await stillPending(held), true, 'a call of a document that no longer exists never completes');
+  assert.equal(rig.audio.picker.calls.length, 1, 'the log of calls is kept');
+  // the new document has no dialog: its tab capture goes through at once
+  await open();
+  assert.equal(browser.offscreenDocument !== null, true);
+  const fresh = await tabCaptureOf(rig, await rig.tabStreamId(9));
+  assert.equal(fresh.getAudioTracks().length, 1);
+  assert.equal(rig.audio.picker.pending(), 0);
+  void starting;
+});
+
+test('FAKE: pickerBlocksTabCapture:false switches the block off (the fake as it was before the finding)', async (t) => {
+  const rig = createRig();
+  const unblocked = createFakeAudioEnv({ browser: rig.browser, sockets: rig.sockets, pickerBlocksTabCapture: false });
+  const { lane } = newTab(rig, { env: unblocked.env });
+  t.after(() => lane.dispose());
+  void lane.start(await pickParams(rig)).catch(() => {});
+  await tick();
+  assert.equal(unblocked.picker.pending(), 1);
+  const stream = await unblocked.env.navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: await rig.tabStreamId(8) } } });
+  assert.equal(stream.getAudioTracks().length, 1);
 });
 
 test('PICKER: the shared tab closing, or "Stop sharing", ends the lane with TAB_ENDED like any captured tab', async (t) => {
@@ -729,6 +939,229 @@ test('PICKER: the shared tab closing, or "Stop sharing", ends the lane with TAB_
   stream.getAudioTracks()[0].end();
   await until(() => lane.phase() === 'error', 'the lane to end');
   assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_ENDED');
+});
+
+// ---------------------------------------------------------------------------------------------
+// §22 (2026-10-08): the relay start. The side panel opened the share dialog itself and relays the tab's audio; the lane
+// rebuilds it from the relay channel. Every test here fails on 0.5.0, which knew the stream id and the §19 dialog only.
+const RELAY_ID = 'fedcba9876543210'.repeat(2);
+const relayParams = (rig, options = {}) => tabParams(rig, { relay: RELAY_ID, chosenTab: 9, ...options });
+/** The panel's side of a relay start over the rig's relay world: its captured track, its sender and a feeder. */
+function panelSide(rig) {
+  const world = rig.audio.relay;
+  const track = new FakeTrack({ kind: 'audio', label: 'Tab audio', source: createMediaSource() });
+  let sender = null;
+  return {
+    world, track,
+    open() {
+      sender = createRelaySender({ track, relayId: RELAY_ID, env: { MediaStreamTrackProcessor: world.MediaStreamTrackProcessor, BroadcastChannel: world.BroadcastChannel } });
+      return sender;
+    },
+    get sender() { return sender; },
+    feed(chunks = 2, value = 0.25) {
+      for (let chunk = 0; chunk < chunks; chunk += 1) world.feed(track, { frames: 480, sampleRate: 48000, channels: 2, fill: () => value });
+    },
+  };
+}
+async function relayUp(rig, lane, options = {}) {
+  const panel = panelSide(rig);
+  const starting = lane.start(await relayParams(rig, options));
+  panel.open();
+  panel.feed();
+  return { panel, started: await starting };
+}
+
+test('RELAY: the lane listens on the relay channel (no getUserMedia, no dialog), plays the relayed tab at the original volume with a keep-alive, and answers the chosen tab', async (t) => {
+  const rig = createRig({ relay: true });
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  let userMediaCalls = 0;
+  const getUserMedia = rig.env.navigator.mediaDevices.getUserMedia;
+  rig.env.navigator.mediaDevices.getUserMedia = (constraints) => { userMediaCalls += 1; return getUserMedia(constraints); };
+  const before = rig.counts();
+  const { panel, started } = await relayUp(rig, lane, { originalVolume: 40, chosenTab: 9 });
+  assert.deepEqual(started, { epoch: 1, tabId: 9 }, 'the answer names the tab the panel learned from the capture label');
+  assert.equal(lane.facts().tabId, 9);
+  assert.equal(userMediaCalls, 0, 'nothing is captured here: the panel holds the capture');
+  assert.equal(rig.audio.picker.calls.length, 0, 'and no dialog is asked for here');
+  const [generator] = panel.world.generators;
+  assert.ok(generator.written.length >= 1, 'the relayed audio is written into the generator');
+  assert.equal(generator.written[0].samples[0], 0.25);
+  const graphContext = rig.audio.contexts[0];
+  const [source] = graphContext.nodes.filter((node) => node.kind === 'mediaStreamSource');
+  assert.deepEqual(source.mediaStream.getAudioTracks(), [generator], 'the graph plays the generator\'s stream');
+  assert.equal(graphContext.nodes.find((node) => node.kind === 'gain').gain.value, 0.4);
+  const keeper = graphContext.nodes.find((node) => node.kind === 'constantSource');
+  assert.equal(keeper?.offset.value, KEEP_ALIVE_LEVEL, 'the relayed graph keeps itself out of Chrome\'s silent-sink slowdown');
+  lane.setOriginalVolume(70);
+  assert.equal(graphContext.nodes.find((node) => node.kind === 'gain').gain.value, 0.7, 'the volume stays live');
+  await rig.connect(before);
+  assert.equal(lane.phase(), 'running');
+  // the chosen tab may be unknown: the lane still runs, and says so with a null tab
+  const rig2 = createRig({ relay: true });
+  const other = newTab(rig2);
+  t.after(() => other.lane.dispose());
+  assert.deepEqual((await relayUp(rig2, other.lane, { chosenTab: null })).started, { epoch: 1, tabId: null });
+});
+
+test('RELAY: a tab Chrome did not silence (passthrough false) is not played back a second time, whatever the volume says', async (t) => {
+  const rig = createRig({ relay: true });
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  await relayUp(rig, lane, { passthrough: false, originalVolume: 80 });
+  const gain = rig.audio.contexts[0].nodes.find((node) => node.kind === 'gain');
+  assert.equal(gain.gain.value, 0);
+  lane.setOriginalVolume(100);
+  assert.equal(gain.gain.value, 0);
+  assert.ok(rig.audio.contexts[0].nodes.some((node) => node.kind === 'constantSource' && node.started), 'the keep-alive still runs');
+});
+
+test('RELAY: no first audio within LIMITS.relayFirstFrameMs is TAB_CAPTURE_FAILED; the relay is closed and no graph was built', async () => {
+  const rig = createRig({ relay: true });
+  const { lane } = newTab(rig);
+  const starting = outcomeOf(lane.start(await relayParams(rig)));
+  await tick();
+  const world = rig.audio.relay;
+  assert.equal(world.listening(`${RELAY_CHANNEL_PREFIX}${RELAY_ID}`).length, 1, 'the lane listens');
+  await rig.clock.advance(LIMITS.relayFirstFrameMs - 1);
+  assert.equal(lane.phase(), 'starting');
+  await rig.clock.advance(1);
+  assert.equal(await starting, 'TAB_CAPTURE_FAILED');
+  assert.equal(lane.phase(), 'error');
+  assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_CAPTURE_FAILED');
+  assert.equal(world.listening(`${RELAY_CHANNEL_PREFIX}${RELAY_ID}`).length, 0, 'the channel is closed');
+  assert.equal(world.generators[0].readyState, 'ended');
+  assert.equal(rig.audio.contexts.length, 0, 'no graph');
+  assert.equal(rig.sockets.sockets.length, 0, 'no engine');
+});
+
+test('RELAY CANCEL: Stop while the first audio is awaited ends START_CANCELLED at once and closes the relay; audio that comes later is dropped', async () => {
+  const rig = createRig({ relay: true });
+  const { lane } = newTab(rig);
+  const starting = outcomeOf(lane.start(await relayParams(rig)));
+  await tick();
+  await lane.stop();
+  assert.equal(await starting, 'START_CANCELLED');
+  assert.equal(lane.phase(), 'off');
+  assert.equal(stateOf(lane, 'tab').errorCode, null);
+  const world = rig.audio.relay;
+  assert.equal(world.listening(`${RELAY_CHANNEL_PREFIX}${RELAY_ID}`).length, 0);
+  assert.equal(world.generators[0].readyState, 'ended');
+  const panel = panelSide(rig);
+  panel.open();
+  panel.feed(4);
+  await tick();
+  assert.equal(world.generators[0].written.length, 0, 'nothing is written into a stopped relay');
+  assert.equal(rig.audio.contexts.length, 0);
+});
+
+test('RELAY: the relay ending before the first audio: the tab gone is TAB_ENDED, the panel\'s own stop settles in off quietly', async () => {
+  for (const [how, expected] of [['track', 'TAB_ENDED'], ['stop', 'START_CANCELLED']]) {
+    const rig = createRig({ relay: true });
+    const { lane } = newTab(rig);
+    const starting = outcomeOf(lane.start(await relayParams(rig)));
+    const panel = panelSide(rig);
+    const sender = panel.open();
+    if (how === 'track') panel.track.end(); else sender.stop();
+    assert.equal(await starting, expected, how);
+    await until(() => lane.phase() === (expected === 'TAB_ENDED' ? 'error' : 'off'), `${how}: settled`);
+    assert.equal(stateOf(lane, 'tab').errorCode, expected === 'TAB_ENDED' ? 'TAB_ENDED' : null);
+    assert.equal(rig.audio.contexts.length, 0);
+  }
+});
+
+test('RELAY: the shared tab ending while the lane runs (the panel\'s track ends) is TAB_ENDED, through the relay\'s end message', async (t) => {
+  const rig = createRig({ relay: true });
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  const { panel } = await relayUp(rig, lane);
+  const { socket } = await rig.connect(before);
+  assert.equal(lane.phase(), 'running');
+  panel.track.end();   // the tab was closed, or Chrome's "Stop sharing"
+  await until(() => lane.phase() === 'error', 'TAB_ENDED');
+  assert.equal(stateOf(lane, 'tab').errorCode, 'TAB_ENDED');
+  assert.equal(lane.facts().stopRequested, false);
+  assert.ok(socket.closeCalls >= 1, 'the Live session was closed');
+  assert.equal(panel.world.generators[0].readyState, 'ended');
+  assert.ok(rig.audio.contexts.every((context) => context.state === 'closed'));
+});
+
+test('RELAY: the panel\'s own stop (Stop, Cancel, the icon, the panel closing) ends a running lane in off, never TAB_ENDED, even before its host/lane-stop', async (t) => {
+  for (const reason of [undefined, 'pagehide']) {
+    const rig = createRig({ relay: true });
+    const { lane } = newTab(rig);
+    t.after(() => lane.dispose());
+    const before = rig.counts();
+    const { panel } = await relayUp(rig, lane);
+    await rig.connect(before);
+    panel.sender.stop(reason);
+    await until(() => lane.phase() === 'off', 'off');
+    assert.equal(stateOf(lane, 'tab').errorCode, null, String(reason));
+    assert.equal(lane.facts().hostError, null);
+    assert.equal(lane.facts().stopRequested, true, 'reads as a requested stop: no "stopped" notice on the page');
+    await lane.stop();   // the host/lane-stop that follows finds nothing to do
+    assert.equal(lane.phase(), 'off');
+  }
+});
+
+test('RELAY: Stop releases the relay (channel closed, generator stopped) and the graph with its keep-alive; the lane starts again', async (t) => {
+  const rig = createRig({ relay: true });
+  const { lane } = newTab(rig);
+  t.after(() => lane.dispose());
+  const before = rig.counts();
+  const { panel } = await relayUp(rig, lane);
+  await rig.connect(before);
+  const keeper = rig.audio.contexts[0].nodes.find((node) => node.kind === 'constantSource');
+  await lane.stop();
+  assert.equal(lane.phase(), 'off');
+  assert.equal(panel.world.channels[0].name, `${RELAY_CHANNEL_PREFIX}${RELAY_ID}`);
+  assert.equal(panel.world.channels[0].closed, true, 'the lane\'s channel (the first one: it listened before the panel sent) is closed');
+  assert.equal(panel.world.generators[0].readyState, 'ended');
+  assert.equal(panel.world.generators[0].writerClosed, true);
+  assert.equal(keeper.stopped, true);
+  assert.equal(rig.audio.contexts[0].state, 'closed');
+  assert.equal(panel.track.readyState, 'live', 'the panel\'s track is the panel\'s to stop');
+  // a new relay start with a new id works on the same lane
+  const panel2 = panelSide(rig);
+  const params = await relayParams(rig, { relay: 'abcdef0123456789'.repeat(2), epoch: 2 });
+  const starting = lane.start(params);
+  const sender = createRelaySender({ track: panel2.track, relayId: params.tab.relay, env: { MediaStreamTrackProcessor: panel2.world.MediaStreamTrackProcessor, BroadcastChannel: panel2.world.BroadcastChannel } });
+  panel2.feed();
+  assert.deepEqual(await starting, { epoch: 2, tabId: 9 });
+  sender.stop();
+});
+
+test('RELAY: a realm without MediaStreamTrackGenerator answers TAB_CAPTURE_FAILED at once; nothing listens and nothing is built', async () => {
+  const rig = createRig();   // the plain offscreen env: no relay constructors
+  assert.equal(rig.env.MediaStreamTrackGenerator, undefined);
+  const { lane } = newTab(rig);
+  await assert.rejects(lane.start(await relayParams(rig)), code('TAB_CAPTURE_FAILED'));
+  assert.equal(lane.phase(), 'error');
+  assert.equal(rig.audio.relay.channels.length, 0);
+  assert.equal(rig.audio.contexts.length, 0);
+  // only the generator missing
+  const partial = createRig({ relay: true });
+  const { lane: other } = newTab(partial, { env: { ...partial.env, MediaStreamTrackGenerator: undefined } });
+  await assert.rejects(other.start(await relayParams(partial)), code('TAB_CAPTURE_FAILED'));
+});
+
+test('RELAY: the stream-id and the §19 dialog starts are untouched: no relay channel, no keep-alive, the same answers', async (t) => {
+  const rig = createRig({ relay: true });
+  const a = newTab(rig);
+  t.after(() => a.lane.dispose());
+  assert.deepEqual(await a.lane.start(await tabParams(rig)), { epoch: 1 });
+  assert.equal(rig.audio.relay.channels.length, 0);
+  assert.equal(rig.audio.contexts[0].nodes.some((node) => node.kind === 'constantSource'), false);
+  await a.lane.stop();
+  const b = newTab(rig);
+  t.after(() => b.lane.dispose());
+  const starting = b.lane.start(await pickParams(rig, { epoch: 2 }));
+  await tick();
+  rig.audio.picker.choose({ label: `${NONCE}.8` });
+  assert.deepEqual(await starting, { epoch: 2, tabId: 8 });
+  assert.equal(rig.audio.relay.channels.length, 0);
+  assert.equal(rig.audio.contexts.at(-1).nodes.some((node) => node.kind === 'constantSource'), false);
 });
 
 test('CANCEL: stop during the mic permission query - nothing exists yet, the start rejects START_CANCELLED, phase off', async () => {
@@ -966,13 +1399,14 @@ test('TWO LANES: SESSION_LIMIT - a refused engine start fails only its own lane;
   assert.equal(pair.tab.snapshot().retries, 0);
 });
 
-test('TWO LANES: the model defaults differ per lane and each reaches its engine', async (t) => {
+test('TWO LANES: both lanes default to the latest Live model (0.5.1), and each lane\'s own model reaches its engine', async (t) => {
   const defaults = createDefaultSettings('ko');
-  assert.equal(laneRequestOf(defaults, 'tab').model, TRANSLATE_LIVE_MODEL);
+  assert.equal(laneRequestOf(defaults, 'tab').model, DEFAULT_LIVE_MODEL);
   assert.equal(laneRequestOf(defaults, 'mic').model, DEFAULT_LIVE_MODEL);
   const rig = createRig();
+  // The tab lane is started on the translation-only preview on purpose (a user's choice): the two lanes then differ.
   const { tab, mic } = await bothRunning(t, rig, {
-    tabOptions: { params: { model: laneRequestOf(defaults, 'tab').model } },
+    tabOptions: { params: { model: TRANSLATE_LIVE_MODEL } },
     micOptions: { params: { model: laneRequestOf(defaults, 'mic').model } } });
   assert.equal(tab.snapshot().model, TRANSLATE_LIVE_MODEL);
   assert.equal(mic.snapshot().model, DEFAULT_LIVE_MODEL);
@@ -1218,4 +1652,309 @@ test('the API key never shows up in a two-way lane\'s facts, snapshot, state or 
   const shown = JSON.stringify({ facts: lane.facts(), snapshot: lane.snapshot(), state: stateOf(lane, 'tab'), sent: socket.sent });
   assert.equal(shown.includes(key), false);
   assert.equal(shown.includes('synthetic-'), false, 'no key-shaped text at all');
+});
+
+// ---------------------------------------------------------------------------------------------
+// §20 (2026-10-02): the built-in key pool. Fails on 0.4.0, where the lane got BUILTIN_KEYS[0] only and installed it with
+// setPersonal: a quota on it, or a refused key, ended the lane with no way to the other keys.
+
+const POOL = Object.freeze([fakeKey('pool-a'), fakeKey('pool-b'), fakeKey('pool-c')]);
+const keyOf = (url) => decodeURIComponent(new URL(url).searchParams.get('key'));
+const poolParams = async (rig, lane, options = {}) => {
+  const { key, ...params } = await rig.laneParams(lane, { model: DEFAULT_LIVE_MODEL, ...options });
+  return { ...params, keys: [...(options.keys ?? POOL)] };
+};
+const REFUSED = 'API key not valid. Please pass a valid API key.';   // the close reason the real endpoint sent, 2026-10-02
+// The next socket after `index`: one capture block on the lane's newest worklet (a key switch starts a new capture),
+// then the socket appears.
+async function nextSocket(rig, index) {
+  await until(() => rig.audio.worklets.length > 0, 'a capture worklet');
+  for (let round = 0; round < 50 && rig.sockets.sockets.length <= index; round += 1) {
+    rig.audio.worklets.at(-1).emitFrames(0.25);
+    await tick();
+  }
+  assert.ok(rig.sockets.sockets.length > index, `socket ${index} opened`);
+  return rig.sockets.sockets[index];
+}
+
+test('§20 lane engine with a pool: setBuiltin + select, the swap hooks, a watched socket and the cooldown memory; a personal key gets none of them', () => {
+  const memory = createKeyCooldownMemory();
+  const seen = [];
+  const deps = {
+    createAppConfig(options) {
+      seen.push(['config', options]);
+      return { keyStore: { setBuiltin: (...args) => seen.push(['setBuiltin', ...args]), setPersonal: (...args) => seen.push(['setPersonal', ...args]),
+        select: (...args) => seen.push(['select', ...args]) },
+      router: {}, sessionManager: {}, resolveFallback: () => null, dispose: async () => {} };
+    },
+    createSimEngine(options) {
+      seen.push(['engine', options]);
+      return { subscribe: () => () => {}, start: () => ({ ready: Promise.resolve(), done: new Promise(() => {}) }), stop: async () => ({}),
+        close: async () => {}, snapshot: () => ({ status: 'running' }) };
+    },
+    liveVoicePreference: { set() {} },
+  };
+  class Socket {}
+  const env = { AudioContext: class {}, WebSocket: Socket, fetch: 'f', now: () => 0, setTimeout: () => 0, clearTimeout: () => {}, random: () => 0 };
+  createLaneEngine({ lane: 'mic', deps, env, platform: {}, onChange() {}, cooldowns: memory })
+    .start({ keys: [...POOL], request: { targetLanguage: 'en', model: 'm' }, voiceGender: 'female', muted: false, sessionId: 'mic-1' });
+  const [, options] = seen.find(([name]) => name === 'config');
+  assert.equal(options.storage, memory, 'the document\'s cooldown memory, never localStorage');
+  assert.notEqual(options.WebSocket, Socket, 'the pool\'s sockets are watched for a refused key');
+  assert.ok(new options.WebSocket() instanceof Socket, 'a subclass of the real one');
+  assert.deepEqual(seen.filter(([name]) => name === 'setBuiltin'), [['setBuiltin', 'gemini', [...POOL]]]);
+  assert.equal(seen.some(([name]) => name === 'setPersonal'), false);
+  assert.deepEqual(seen.find(([name]) => name === 'select'), ['select', 'gemini', 'personal']);
+  const engineOptions = seen.find(([name]) => name === 'engine')[1];
+  assert.equal(typeof engineOptions.swapCredential, 'function');
+  assert.equal(typeof engineOptions.canSwapCredential, 'function');
+
+  seen.length = 0;
+  createLaneEngine({ lane: 'mic', deps, env, platform: {}, onChange() {}, cooldowns: memory })
+    .start({ key: fakeKey('own'), request: { targetLanguage: 'en', model: 'm' }, voiceGender: 'female', muted: false, sessionId: 'mic-2' });
+  const personal = seen.find(([name]) => name === 'config')[1];
+  assert.deepEqual(Object.keys(personal).sort(), ['WebSocket', 'fetch', 'isolated'], 'a personal key: no storage');
+  assert.equal(personal.WebSocket, Socket, 'and no watched socket');
+  assert.equal(seen.some(([name]) => name === 'setBuiltin'), false);
+  const plain = seen.find(([name]) => name === 'engine')[1];
+  assert.equal(plain.swapCredential, undefined, 'no swap hooks for a person\'s key');
+  assert.equal(plain.canSwapCredential, undefined);
+});
+
+test('§20 the cooldown memory keeps the cooldown record only, in memory, and reads anything else as absent', () => {
+  const memory = createKeyCooldownMemory();
+  assert.equal(memory.getItem('interp-app.builtin-cooldown.v1'), null);
+  memory.setItem('interp-app.builtin-cooldown.v1', '{"0123abcd":5}');
+  assert.equal(memory.getItem('interp-app.builtin-cooldown.v1'), '{"0123abcd":5}');
+  memory.setItem('interp-app.personal-key.v1.gemini', fakeKey('never'));
+  assert.equal(memory.getItem('interp-app.personal-key.v1.gemini'), null, 'a key is never kept');
+  memory.setItem('interp-app.builtin-cooldown.v1', 7);
+  assert.equal(memory.getItem('interp-app.builtin-cooldown.v1'), '{"0123abcd":5}', 'strings only');
+  assert.ok(Object.isFrozen(memory));
+});
+
+test('§20 a REFUSED built-in key (close 1007 "API key not valid") moves the lane to the next key at once: same lane run, no failure shown', async (t) => {
+  const rig = createRig();
+  const phases = [];
+  const { lane } = newMic(rig, { onChange: () => phases.push(stateOf(lane, 'mic')) });
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  const first = await nextSocket(rig, 0);
+  assert.equal(keyOf(rig.urls[0]), POOL[0]);
+  first.open();
+  first.finishClose(1007, REFUSED);
+  const second = await nextSocket(rig, 1);
+  assert.equal(keyOf(rig.urls[1]), POOL[1], 'the next key of the pool, at once (no fake time passed)');
+  second.open();
+  second.json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'running on the second key');
+  assert.equal(rig.sockets.sockets.length, 2, 'the refused key was asked once, not three more times with backoff');
+  assert.equal(phases.some((state) => state.phase === 'error' || state.errorCode !== null), false, 'never read as a failure');
+  assert.equal(phases.some((state) => state.phase === 'off'), false, 'nor as a stop');
+  assert.equal(lane.snapshot().model, DEFAULT_LIVE_MODEL, 'the same model: no backup model for a refused key');
+  assert.equal(lane.snapshot().fallback, false);
+  assert.equal(JSON.stringify({ snapshot: lane.snapshot(), facts: lane.facts() }).includes('synthetic-'), false, 'no key in what the lane shows');
+});
+
+test('§20 every key of the pool refused: each is tried ONCE, then the lane reports INVALID_KEY (not a lost network)', async (t) => {
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  for (let index = 0; index < POOL.length; index += 1) {
+    const socket = await nextSocket(rig, index);
+    socket.open();
+    socket.finishClose(1007, REFUSED);
+  }
+  await until(() => lane.phase() === 'error', 'the lane gave up');
+  assert.deepEqual(rig.urls.map(keyOf), [...POOL], 'each key once, in order');
+  assert.equal(stateOf(lane, 'mic').errorCode, 'INVALID_KEY');
+  assert.equal(stateOf(lane, 'mic').keyFailure, true);
+  await rig.clock.advance(30_000);
+  await tick();
+  assert.equal(rig.sockets.sockets.length, POOL.length, 'nothing is retried after that');
+});
+
+// The refusals Google sends for a restricted or disabled key are longer than a close reason may be (123 bytes), so they
+// arrive cut short. These are the provider's texts (made-up project number and address), cut as the socket cuts them.
+const cut = (text) => new TextDecoder().decode(new TextEncoder().encode(text).slice(0, 123));
+const RESTRICTED = Object.freeze({
+  api: cut('Requests to this API generativelanguage.googleapis.com method google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent are blocked.'),
+  ip: cut('The provided API key has an IP address restriction. The originating IP address of the call (203.0.113.7) violates this restriction.'),
+  disabled: cut('Generative Language API has not been used in project 123456789012 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview?project=123456789012 then retry.'),
+  referrer: cut('Requests from referer <empty> are blocked.'),
+});
+
+test('§20 (review K1) refusalOfClose: a 1007/1008 close before setupComplete is a refused key, cut-short texts included; after it only a refusal text counts', () => {
+  assert.equal(RESTRICTED.api.endsWith('blocked.'), false, 'the API restriction really is cut before its "blocked"');
+  for (const setUp of [false, true]) {
+    for (const closeCode of [1007, 1008]) {
+      assert.equal(refusalOfClose({ code: closeCode, reason: REFUSED }, setUp), 'INVALID_KEY', `${closeCode} ${setUp}`);
+      assert.equal(refusalOfClose({ code: closeCode, reason: RESTRICTED.api }, setUp), 'PERMISSION_DENIED');
+      assert.equal(refusalOfClose({ code: closeCode, reason: RESTRICTED.disabled }, setUp), 'PERMISSION_DENIED');
+      assert.equal(refusalOfClose({ code: closeCode, reason: RESTRICTED.referrer }, setUp), 'PERMISSION_DENIED');
+      assert.equal(refusalOfClose({ code: closeCode, reason: RESTRICTED.ip }, setUp), 'IP_DENIED');
+    }
+  }
+  // The moment is the signal: any other 1007/1008 before setupComplete (a phrasing nobody has seen yet, an empty reason)
+  for (const reason of ['', 'Some refusal phrased differently', undefined]) {
+    assert.equal(refusalOfClose({ code: 1007, reason }, false), 'INVALID_KEY', String(reason));
+    assert.equal(refusalOfClose({ code: 1008, reason }, false), 'PERMISSION_DENIED', String(reason));
+    assert.equal(refusalOfClose({ code: 1008, reason }, true), null, `${String(reason)}: after setupComplete it is the network's`);
+  }
+  // Other close codes are never a refusal, whatever they say.
+  for (const closeCode of [1000, 1006, 1011, 1013]) assert.equal(refusalOfClose({ code: closeCode, reason: REFUSED }, false), null);
+  // What the provider gives a meaning of its own (a quota, an outage, a model it does not serve: the engine answers it
+  // with a key swap, a retry or the backup model) and a malformed request are never a refused key. The copy of the
+  // provider's rules agrees with normalizeGeminiLiveClose itself.
+  const reasons = ['RESOURCE_EXHAUSTED: quota', '429 Too many', 'You exceeded your current quota', 'exceeded your current quota, please check',
+    'UNAVAILABLE: try later', '503 Service Unavailable', 'MODEL_NOT_SUPPORTED: x', 'models/gemini-x is not found for API version v1beta',
+    'model gemini-x is not supported for bidiGenerateContent'];
+  for (const reason of reasons) {
+    const own = normalizeGeminiLiveClose({ code: 1008, reason }).code;
+    assert.equal(refusalOfClose({ code: 1008, reason }, false) === null, own !== 'NETWORK_ERROR', `${reason}: ${own}`);
+  }
+  assert.equal(normalizeGeminiLiveClose({ code: 1008, reason: 'You exceeded your current quota' }).code, 'NETWORK_ERROR', 'not a prefix: the provider does not mean it either');
+  for (const reason of ['Request contains an invalid argument.', 'Invalid JSON payload received. Unknown name "x"', 'INVALID_ARGUMENT']) {
+    assert.equal(refusalOfClose({ code: 1007, reason }, false), null, reason);
+  }
+  // A missing or hostile event is no refusal and never throws.
+  assert.equal(refusalOfClose(null, false), null);
+  assert.equal(refusalOfClose({ get code() { throw new Error('x'); } }, false), null);
+});
+
+test('§20 (review K1) a key restricted by API, by IP address or with the API disabled moves the lane to the next key: the cut-short 1008 before setupComplete', async (t) => {
+  for (const [label, reason] of Object.entries(RESTRICTED)) {
+    const rig = createRig();
+    const { lane } = newMic(rig);
+    t.after(() => lane.dispose());
+    await lane.start(await poolParams(rig, 'mic'));
+    const first = await nextSocket(rig, 0);
+    first.open();
+    first.finishClose(1008, reason);
+    const second = await nextSocket(rig, 1);
+    assert.equal(keyOf(rig.urls[1]), POOL[1], `${label}: the next key, at once`);
+    second.open();
+    second.json({ setupComplete: {} });
+    await until(() => lane.phase() === 'running', `${label}: running on the second key`);
+    assert.equal(stateOf(lane, 'mic').errorCode, null, label);
+  }
+  // Every key restricted: each once, then the refusal itself (not a lost network after three retries).
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  for (let index = 0; index < POOL.length; index += 1) {
+    const socket = await nextSocket(rig, index);
+    socket.open();
+    socket.finishClose(1008, RESTRICTED.api);
+  }
+  await until(() => lane.phase() === 'error', 'the lane gave up');
+  assert.deepEqual(rig.urls.map(keyOf), [...POOL]);
+  assert.equal(stateOf(lane, 'mic').errorCode, 'PERMISSION_DENIED');
+});
+
+test('§20 (review K1) a 1008 AFTER setupComplete, or one that names a model, keeps the key: the engine\'s own reconnect, never a key switch', async (t) => {
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  const first = await nextSocket(rig, 0);
+  first.open();
+  first.json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'running on the first key');
+  first.finishClose(1008, 'Policy violation');
+  await until(() => rig.sockets.sockets.length === 2 || lane.phase() !== 'running', 'the engine reacted');
+  await rig.clock.advance(5_000);
+  await nextSocket(rig, 1);
+  assert.equal(keyOf(rig.urls[1]), POOL[0], 'the same key: a close after the setup is not a refusal');
+
+  const model = createRig();
+  const other = newMic(model).lane;
+  t.after(() => other.dispose());
+  await other.start(await poolParams(model, 'mic'));
+  const socket = await nextSocket(model, 0);
+  socket.open();
+  socket.finishClose(1008, 'models/gemini-x is not found for API version v1beta, or is not supported for bidiGenerateContent.');
+  await model.clock.advance(5_000);
+  await nextSocket(model, 1);
+  assert.equal(keyOf(model.urls[1]), POOL[0], 'a model the provider does not serve is not the key\'s fault');
+});
+
+test('§20 a structured refusal (an error message with API_KEY_INVALID) also moves to the next key; a person\'s own key never does', async (t) => {
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  const first = await nextSocket(rig, 0);
+  first.open();
+  first.json({ error: { code: 400, status: 'INVALID_ARGUMENT', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID' }] } });
+  const second = await nextSocket(rig, 1);
+  assert.equal(keyOf(rig.urls[1]), POOL[1]);
+  second.open();
+  second.json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'running on the second key');
+
+  const own = createRig();
+  const mine = newMic(own).lane;
+  t.after(() => mine.dispose());
+  const key = fakeKey('own-key');
+  await mine.start(await own.laneParams('mic', { key, model: DEFAULT_LIVE_MODEL }));
+  const socket = await nextSocket(own, 0);
+  socket.open();
+  socket.json({ error: { code: 400, status: 'INVALID_ARGUMENT', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID' }] } });
+  await until(() => mine.phase() === 'error', 'the person\'s key fails as before');
+  assert.equal(stateOf(mine, 'mic').errorCode, 'INVALID_KEY');
+  assert.deepEqual(own.urls.map(keyOf), [key], 'no other key was tried');
+});
+
+test('§20 a quota close on a built-in key swaps to the next key inside the run (calm "key" reconnect), and the next start remembers the cooldown', async (t) => {
+  const rig = createRig();
+  const memory = createKeyCooldownMemory();
+  const { lane } = newMic(rig, { cooldowns: memory });
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  const first = await nextSocket(rig, 0);
+  first.open();
+  first.json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'running on the first key');
+  first.json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'quota' } });
+  await until(() => rig.sockets.sockets.length === 2, 'the spare key');
+  assert.equal(keyOf(rig.urls[1]), POOL[1]);
+  assert.deepEqual([stateOf(lane, 'mic').phase, stateOf(lane, 'mic').reconnectReason], ['reconnecting', 'key']);
+  rig.sockets.sockets[1].open();
+  rig.sockets.sockets[1].json({ setupComplete: {} });
+  await until(() => lane.phase() === 'running', 'running on the spare key');
+  await lane.stop();
+  assert.equal(lane.phase(), 'off');
+  // The next start of this document (either lane) does not open a session on the key that just hit its quota.
+  const again = newMic(rig, { cooldowns: memory }).lane;
+  t.after(() => again.dispose());
+  await again.start(await poolParams(rig, 'mic', { epoch: 2 }));
+  await nextSocket(rig, 2);
+  assert.equal(keyOf(rig.urls[2]), POOL[1], 'the cooling key is skipped');
+  // Without the shared memory the same start would begin on the first key again.
+  const fresh = createRig();
+  const plain = newMic(fresh).lane;
+  t.after(() => plain.dispose());
+  await plain.start(await poolParams(fresh, 'mic'));
+  await nextSocket(fresh, 0);
+  assert.equal(keyOf(fresh.urls[0]), POOL[0]);
+});
+
+test('§20 a Stop during a key switch ends the lane off, with nothing reopened afterwards', async (t) => {
+  const rig = createRig();
+  const { lane } = newMic(rig);
+  t.after(() => lane.dispose());
+  await lane.start(await poolParams(rig, 'mic'));
+  const first = await nextSocket(rig, 0);
+  first.open();
+  first.finishClose(1007, REFUSED);
+  await tick();
+  await lane.stop();
+  await rig.clock.advance(10_000);
+  for (let round = 0; round < 20; round += 1) await tick();
+  assert.equal(lane.phase(), 'off');
+  assert.ok(rig.sockets.sockets.length <= 2, 'at most the switch that was already under way');
+  for (const socket of rig.sockets.sockets) assert.notEqual(socket.readyState, 1, 'no socket is left open');
 });

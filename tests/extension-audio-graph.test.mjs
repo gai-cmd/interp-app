@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTabAudioGraph, RESUME_TIMEOUT_MS } from '../extension/engine/audio-graph.js';
+import { createTabAudioGraph, KEEP_ALIVE_LEVEL, RESUME_TIMEOUT_MS } from '../extension/engine/audio-graph.js';
 import { createLanePlatform } from '../extension/engine/platform-shim.js';
 import { createMediaSource } from './fixtures/fake-chrome.mjs';
 import { FakeMediaStream, FakeTrack, createFakeAudioEnv } from './fixtures/fake-audio.mjs';
@@ -35,6 +35,58 @@ test('attach wires raw -> source -> gain -> destination and reports a running gr
   assert.equal(graph.rawEnded(), false);
   assert.equal(Object.isFrozen(graph), true);
   assert.equal(Object.isFrozen(graph.snapshot()), true);
+});
+
+// §22 (2026-10-08): the relayed tab's graph keeps a constant 2^-20 on its destination (an all-zero output is rendered
+// slower than real time by Chrome after a while, which would starve the engine's copy of the tab too). Only on request.
+test('§22 keepAlive: a started ConstantSourceNode at 2^-20 on the destination only, never in the engine\'s copy; stopped and disconnected on stop', async () => {
+  const { audio, graph } = setup();
+  await graph.attach(rawStream(), { originalVolume: 0, passthrough: false, keepAlive: true });
+  const [context] = audio.contexts;
+  const keepers = nodeOf(context, 'constantSource');
+  assert.equal(keepers.length, 1);
+  const [keeper] = keepers;
+  assert.equal(KEEP_ALIVE_LEVEL, 2 ** -20);
+  assert.equal(keeper.offset.value, KEEP_ALIVE_LEVEL);
+  assert.equal(keeper.started, true);
+  assert.deepEqual([...keeper.connections], [context.destination], 'what the user hears (inaudible), nothing else');
+  assert.equal(nodeOf(context, 'gain')[0].gain.value, 0, 'the tab itself is still not played back');
+  const engine = graph.createEngineStream();
+  const [destination] = context.destinations;
+  assert.equal(destination.stream, engine);
+  assert.equal(keeper.connections.has(destination), false, 'the engine gets the tab only');
+  assert.ok(nodeOf(context, 'mediaStreamSource')[0].connections.has(destination));
+  assert.deepEqual(graph.snapshot(), { attached: true, contextState: 'running', volume: 0, passthrough: false }, 'the snapshot keeps its shape');
+  await graph.stop();
+  assert.equal(keeper.stopped, true);
+  assert.equal(keeper.connections.size, 0);
+  assert.equal(context.state, 'closed');
+});
+
+test('§22 keepAlive is off by default (the stream-id and §19 graphs are unchanged), and a context without ConstantSourceNode goes on without it', async () => {
+  for (const options of [{}, { keepAlive: false }, { keepAlive: 'yes' }]) {
+    const { audio, graph } = setup();
+    await graph.attach(rawStream(), { originalVolume: 65, ...options });
+    assert.equal(nodeOf(audio.contexts[0], 'constantSource').length, 0, JSON.stringify(options));
+    await graph.stop();
+  }
+  const { audio } = setup();
+  const Base = audio.env.AudioContext;
+  const bare = createTabAudioGraph({ env: { ...audio.env, AudioContext: class extends Base { constructor(options) { super(options); this.createConstantSource = undefined; } } },
+    timers: audio.clock });
+  await bare.attach(rawStream(), { keepAlive: true });
+  assert.equal(bare.snapshot().attached, true, 'no keep-alive, no failure');
+  await bare.stop();
+  // a keep-alive that cannot start is dropped again, and the graph still runs
+  const Refusing = class extends Base {
+    createConstantSource() { const node = super.createConstantSource(); node.start = () => { throw new Error('no'); }; return node; }
+  };
+  const refusing = createTabAudioGraph({ env: { ...audio.env, AudioContext: Refusing }, timers: audio.clock });
+  await refusing.attach(rawStream(), { keepAlive: true });
+  const context = audio.contexts.at(-1);
+  assert.equal(refusing.snapshot().attached, true);
+  assert.equal(nodeOf(context, 'constantSource')[0].connections.size, 0, 'disconnected again');
+  await refusing.stop();
 });
 
 test('setOriginalVolume clamps to integers 0..100, ignores non-numbers and uses setTargetAtTime when present', async () => {

@@ -13,8 +13,9 @@ const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 
 /**
  * createPermissionController({ document, navigator, window, i18n, timers, setup }) -> Readonly<{ start(), dispose() }>.
- * `setup` (§17, the page a first install opens): the title and lead become the setup ones, the three setup steps are
- * shown, and a grant does NOT close the tab, because the pin and first-use steps are still to be read.
+ * `setup` (§17, the page a first install opens): the title and lead become the setup ones, the setup steps are shown
+ * (§20: the microphone, pinning the icon, the icon starting the tab at once, and where the voice plays), and a grant does
+ * NOT close the tab, because those steps are still to be read.
  */
 export function createPermissionController({ document, navigator, window, i18n, timers = {}, setup = false } = {}) {
   const setTimeout = timers.setTimeout ?? ((fn, ms) => globalThis.setTimeout(fn, ms));

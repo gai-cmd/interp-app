@@ -47,7 +47,7 @@ export const CONTENT = Object.freeze({
         id: 'about',
         title: '어떤 프로그램인가요?',
         paras: [
-          'Chrome 사이드패널에서 **지금 보고 있는 탭의 소리**(화상회의·영상)와 **내 마이크**를 Gemini Live로 동시통역하고, 페이지 위에 자막을 띄워요. 한국어·일본어·영어를 지원하고, 두 언어를 서로 통역하는 **양방 통역**도 돼요.',
+          'Chrome 측면 패널에서 **지금 보고 있는 탭의 소리**(화상회의·영상)와 **내 마이크**를 Gemini Live로 동시통역하고, 페이지 위에 자막을 띄워요. 한국어·일본어·영어를 지원하고, 두 언어를 서로 통역하는 **양방 통역**도 돼요.',
           '**PC의 Chrome 116 이상**(Windows·Mac)에서 써요. 휴대폰에서는 웹앱 [link:https://interp-app.vercel.app]을 쓰세요.',
           '**기본 키가 들어 있어서** API 키를 따로 넣지 않아도 바로 쓸 수 있어요.',
         ],
@@ -88,16 +88,18 @@ export const CONTENT = Object.freeze({
         id: 'first-use',
         title: '처음 쓸 때',
         steps: [
-          '통역할 탭(화상회의·영상)에서 툴바의 [ext] Live Interpreter 아이콘을 누르세요. 오른쪽에 사이드패널이 열리고, 이렇게 연 탭은 [btn:시작]만 누르면 바로 통역돼요.',
-          '패널의 **탭 오디오** 탭에서 **도착 언어**(통역해서 들을 언어)를 고른 다음 [btn:시작]을 누르세요.',
+          '통역할 탭(화상회의·영상)에서 툴바의 [ext] Live Interpreter 아이콘을 누르세요. 오른쪽에 측면 패널이 열리고 그 탭의 통역이 **바로 시작돼요**. [btn:시작]을 따로 누르지 않아도 돼요.',
+          '통역 음성은 **처음부터 켜져 있어요**. 컴퓨터의 소리 출력으로 나오고, 컴퓨터가 이어폰으로 소리를 내고 있으면 이어폰으로 들려요. 끄려면 패널 아래쪽의 스피커 버튼을 누르세요.',
+          '패널의 **탭 오디오** 탭에서 **도착 언어**(통역해서 들을 언어)를 고를 수 있어요. 바꾼 언어는 다음 시작부터 적용돼요([btn:중지] → [btn:시작]).',
           '내 말도 통역하려면 **마이크** 탭에서 마이크를 켜세요. 아직 허용하지 않았다면 허용 창이 저절로 뜨고, 허용하면 바로 시작해요.',
           '두 언어가 오가는 대화라면 **양방 통역**을 켜고 **상대 언어**를 고르세요. 들리는 언어에 따라 통역 방향이 정해져요.',
         ],
         bullets: [
-          '아이콘을 누르지 않고 패널을 열었다면(Chrome의 사이드 패널 버튼 등), [btn:시작]을 눌렀을 때 Chrome이 통역할 탭을 물어봐요. 탭을 고르고 **탭 오디오도 공유**를 켠 채로 [btn:공유]를 누르세요.',
-          '사이드패널을 닫으면 통역도 멈춰요. 통역하는 동안에는 열어 두세요.',
+          '다른 탭을 통역하려면 그 탭에서 아이콘을 누르세요. 통역이 그 탭으로 옮겨 가요.',
+          '아이콘을 누르지 않고 패널을 열었다면(Chrome의 측면 패널 버튼 등), [btn:시작]을 누르면 Chrome이 통역할 탭을 고르는 창을 열어요. 탭을 고르고 **탭 오디오와 함께 공유**(또는 **탭 오디오도 공유**)를 켠 채로 [btn:오디오와 함께 공유](또는 [btn:공유])를 누르세요. 통역할 탭에서 아이콘을 누르면 이 창을 건너뛰고 통역이 그 탭으로 옮겨 가요.',
+          '측면 패널을 닫으면 통역도 멈춰요. 통역하는 동안에는 열어 두세요.',
           '통역 음성을 스피커로 들으면 마이크가 그 소리를 다시 받아 되울릴 수 있어요. 헤드폰을 권장해요.',
-          { win: '단축키 [kbd:Alt][kbd:Shift][kbd:Y]로도 패널을 열 수 있어요.', mac: '단축키 [kbd:Option][kbd:Shift][kbd:Y]로도 패널을 열 수 있어요.' },
+          { win: '단축키 [kbd:Alt][kbd:Shift][kbd:Y]는 아이콘을 누르는 것과 같아요(그 탭의 통역이 바로 시작돼요).', mac: '단축키 [kbd:Option][kbd:Shift][kbd:Y]는 아이콘을 누르는 것과 같아요(그 탭의 통역이 바로 시작돼요).' },
         ],
       },
       {
@@ -167,8 +169,16 @@ export const CONTENT = Object.freeze({
             a: '회사가 관리하는 Chrome이면 정책으로 막혀 있을 수 있어요. 관리자에게 문의하세요.',
           },
           {
-            q: '탭 소리가 통역되지 않아요.',
-            a: '[btn:시작]을 누른 뒤 Chrome이 연 창에서 통역할 탭을 고르고, **탭 오디오도 공유**가 켜져 있는지 확인한 다음 [btn:공유]를 누르세요. 통역할 탭에서 툴바 아이콘을 먼저 누르면 이 창 없이 바로 시작해요.',
+            q: '탭 소리가 통역되지 않거나 Chrome 창이 보이지 않아요.',
+            a: '통역할 탭에서 툴바의 [ext] 아이콘을 누르세요. 바로 시작돼요. 아이콘이 안 보이면 [puzzle] 메뉴 안에 있어요. [btn:시작]을 눌러 Chrome 창에서 탭을 골랐다면 **탭 오디오와 함께 공유**(또는 **탭 오디오도 공유**)가 켜져 있는지 확인하세요. Chrome이 연 창이 안 보이면 지금 쓰는 Chrome 창 뒤나 다른 화면에 있을 수 있어요.',
+          },
+          {
+            q: '‘연결됨’인데 자막이 나오지 않아요.',
+            a: '말소리가 이미 **도착 언어**로 되어 있으면 통역할 것이 없어요. 패널에서 도착 언어를 확인하세요(예: 한국어 영상을 한국어로 통역하도록 되어 있지 않은지).',
+          },
+          {
+            q: '통역 음성이 들리지 않아요.',
+            a: '패널 아래쪽의 스피커 버튼이 꺼져 있지 않은지 확인하세요. 소리는 컴퓨터의 소리 출력으로 나와요. 이어폰으로 들으려면 컴퓨터의 소리 출력이 이어폰으로 되어 있어야 해요.',
           },
           {
             q: '툴바에 아이콘이 없어요.',
@@ -243,16 +253,18 @@ export const CONTENT = Object.freeze({
         id: 'first-use',
         title: 'はじめて使うとき',
         steps: [
-          '通訳したいタブ（Web 会議・動画）で、ツールバーの [ext] Live Interpreter アイコンを押します。右側にサイドパネルが開き、こうして開いたタブは [btn:開始] を押すだけですぐに通訳されます。',
-          'パネルの **タブの音声** タブで **通訳先の言語** を選び、[btn:開始] を押します。',
+          '通訳したいタブ（Web 会議・動画）で、ツールバーの [ext] Live Interpreter アイコンを押します。右側にサイドパネルが開き、そのタブの通訳が**すぐに始まります**。[btn:開始] を押す必要はありません。',
+          '通訳音声は**最初からオン**です。パソコンの音声出力から流れ、パソコンがイヤホンから音を出しているときはイヤホンで聞こえます。止めるにはパネル下のスピーカーのボタンを押します。',
+          'パネルの **タブの音声** タブで **通訳先の言語** を選べます。変更は次の開始から反映されます（[btn:停止] → [btn:開始]）。',
           '自分の話も通訳するときは **マイク** タブでマイクをオンにします。まだ許可していなければ許可画面が自動で開き、許可するとすぐに始まります。',
           '2つの言語が行き交う会話では **双方向通訳** をオンにして **相手の言語** を選びます。聞こえた言語によって通訳の向きが決まります。',
         ],
         bullets: [
-          'アイコンを押さずにパネルを開いた場合（Chrome のサイドパネル ボタンなど）は、[btn:開始] を押すと Chrome が通訳するタブを尋ねます。タブを選び、**タブの音声も共有する**をオンにしたまま [btn:共有] を押してください。',
+          '別のタブを通訳するときは、そのタブでアイコンを押します。通訳がそのタブに移ります。',
+          'アイコンを押さずにパネルを開いた場合（Chrome のサイドパネル ボタンなど）は、[btn:開始] を押すと Chrome が通訳するタブを選ぶウィンドウを開きます。タブを選び、**タブの音声を含めて共有する**（または**タブの音声も共有する**）をオンにしたまま [btn:音声付きで共有]（または [btn:共有]）を押してください。通訳したいタブでアイコンを押すと、このウィンドウを省いて、通訳がそのタブに移ります。',
           'サイドパネルを閉じると通訳も止まります。通訳中は開いたままにしてください。',
           '通訳音声をスピーカーで流すと、マイクがその音を拾って反響することがあります。ヘッドホンをおすすめします。',
-          { win: 'ショートカット [kbd:Alt][kbd:Shift][kbd:Y] でもパネルを開けます。', mac: 'ショートカット [kbd:Option][kbd:Shift][kbd:Y] でもパネルを開けます。' },
+          { win: 'ショートカット [kbd:Alt][kbd:Shift][kbd:Y] はアイコンを押すのと同じです（そのタブの通訳がすぐに始まります）。', mac: 'ショートカット [kbd:Option][kbd:Shift][kbd:Y] はアイコンを押すのと同じです（そのタブの通訳がすぐに始まります）。' },
         ],
       },
       {
@@ -322,8 +334,16 @@ export const CONTENT = Object.freeze({
             a: '会社が管理している Chrome では、ポリシーで制限されていることがあります。管理者に問い合わせてください。',
           },
           {
-            q: 'タブの音声が通訳されません。',
-            a: '[btn:開始] を押したあと、Chrome が開いたウィンドウで通訳するタブを選び、**タブの音声も共有する**がオンになっていることを確かめてから [btn:共有] を押してください。通訳したいタブでツールバーのアイコンを先に押しておくと、このウィンドウなしですぐに始まります。',
+            q: 'タブの音声が通訳されない、または Chrome のウィンドウが見当たりません。',
+            a: '通訳したいタブでツールバーの [ext] アイコンを押してください。すぐに始まります。アイコンが見当たらないときは [puzzle] メニューの中にあります。[btn:開始] を押して Chrome のウィンドウでタブを選んだ場合は、**タブの音声を含めて共有する**（または**タブの音声も共有する**）がオンになっていることを確かめてください。Chrome が開いたウィンドウが見当たらないときは、作業中の Chrome ウィンドウの後ろや別の画面にあるかもしれません。',
+          },
+          {
+            q: '「接続済み」なのに字幕が出ません。',
+            a: '話している言語がすでに**通訳先の言語**なら、通訳するものはありません。パネルで通訳先の言語を確認してください（例：日本語の動画を日本語に通訳する設定になっていないか）。',
+          },
+          {
+            q: '通訳音声が聞こえません。',
+            a: 'パネル下のスピーカーのボタンがオフになっていないか確認してください。音声はパソコンの音声出力から流れます。イヤホンで聞くには、パソコンの音声出力がイヤホンになっている必要があります。',
           },
           {
             q: 'ツールバーにアイコンがありません。',
@@ -398,16 +418,18 @@ export const CONTENT = Object.freeze({
         id: 'first-use',
         title: 'First use',
         steps: [
-          'On the tab you want to interpret (a video call or a video), press the [ext] Live Interpreter icon in the toolbar. The side panel opens on the right, and a tab opened this way is interpreted as soon as you press [btn:Start].',
-          'In the panel’s **Tab audio** tab, choose a language under **Interpret into**, and press [btn:Start].',
+          'On the tab you want to interpret (a video call or a video), press the [ext] Live Interpreter icon in the toolbar. The side panel opens on the right and that tab is **interpreted at once**: there is no [btn:Start] to press.',
+          'The interpreted voice is **on from the start**. It plays through the computer’s sound output, so through earphones when the computer uses them. To turn it off, press the speaker button at the bottom of the panel.',
+          'In the panel’s **Tab audio** tab you can choose the language under **Interpret into**. A change applies from the next start ([btn:Stop], then [btn:Start]).',
           'To interpret your own speech too, open the **Microphone** tab and turn it on. If it is not allowed yet, the permission prompt opens by itself and interpreting starts as soon as you allow it.',
           'For a conversation in two languages, turn on **Two-way interpretation** and choose the **Other language**. The direction follows the language it hears.',
         ],
         bullets: [
-          'If you opened the panel without the icon (with Chrome’s side panel button, for example), pressing [btn:Start] makes Chrome ask which tab to interpret. Choose the tab, leave **Also share tab audio** on, and press [btn:Share].',
+          'To interpret another tab, press the icon on that tab. Interpretation moves to it.',
+          'If you opened the panel without the icon (with Chrome’s side panel button, for example), pressing [btn:Start] makes Chrome open a window where you choose the tab to interpret. Choose the tab, leave **Share with tab audio** (or **Also share tab audio**) on, and press [btn:Share with Audio] (or [btn:Share]). Pressing the icon on the tab you want skips that window: interpretation moves to that tab.',
           'Closing the side panel stops interpretation. Keep it open while interpreting.',
           'If interpreted speech plays through speakers, the microphone can pick it up again and echo. Headphones are recommended.',
-          { win: 'You can also open the panel with [kbd:Alt][kbd:Shift][kbd:Y].', mac: 'You can also open the panel with [kbd:Option][kbd:Shift][kbd:Y].' },
+          { win: 'The shortcut [kbd:Alt][kbd:Shift][kbd:Y] does what the icon does (that tab is interpreted at once).', mac: 'The shortcut [kbd:Option][kbd:Shift][kbd:Y] does what the icon does (that tab is interpreted at once).' },
         ],
       },
       {
@@ -477,8 +499,16 @@ export const CONTENT = Object.freeze({
             a: 'On a Chrome managed by your company, a policy may block it. Ask your administrator.',
           },
           {
-            q: 'Tab audio is not interpreted.',
-            a: 'After pressing [btn:Start], choose the tab in the window Chrome opens, make sure **Also share tab audio** is on, and press [btn:Share]. If you press the toolbar icon on that tab first, it starts right away without that window.',
+            q: 'Tab audio is not interpreted, or I cannot see the Chrome window.',
+            a: 'Press the [ext] icon in the toolbar on the tab you want interpreted: it starts at once. If you cannot see the icon, it is inside the [puzzle] menu. If you pressed [btn:Start] and chose the tab in Chrome’s window, make sure **Share with tab audio** (or **Also share tab audio**) is on. If you cannot see the window Chrome opened, it may be behind the Chrome window you are working in or on another screen.',
+          },
+          {
+            q: 'It says Connected, but no captions appear.',
+            a: 'If the speech is already in the **Interpret into** language, there is nothing to interpret. Check that language in the panel (for example, an English video set to be interpreted into English).',
+          },
+          {
+            q: 'I cannot hear the interpreted voice.',
+            a: 'Check that the speaker button at the bottom of the panel is not turned off. The voice plays through the computer’s sound output: to hear it in earphones, the computer’s sound output must be the earphones.',
           },
           {
             q: 'The icon is not on the toolbar.',

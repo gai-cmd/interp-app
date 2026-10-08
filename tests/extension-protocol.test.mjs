@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { SECRET_PATTERNS } from '../scripts/check-release.mjs';
 import {
   CAPTION_DISPLAYS, CAPTION_POSITIONS, CAPTION_SIZE, CAPTURE_LABEL_PATTERN, CAPTURE_NONCE_PATTERN, DEFAULT_STYLE, GAP_KINDS,
-  HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES, MACHINE_CODE_PATTERN, STYLE_LIMITS, TARGET_LANGUAGES, VOICE_GENDERS, clampCaptionSize,
+  HOST_ID_PATTERN, KEY_PATTERN, LANE_PHASES, MACHINE_CODE_PATTERN, RELAY_ID_PATTERN, STYLE_LIMITS, TARGET_LANGUAGES, VOICE_GENDERS, clampCaptionSize,
   deepFreeze, isMachineCode, isPlainObject, isValidStyle, normalizeStyle, tabIdOfCaptureLabel,
 } from '../extension/lib/constants.js';
 import {
@@ -55,6 +55,7 @@ const HOST_SETTINGS = Object.freeze({ settings: { speechMuted: true, tabOriginal
 const VALID = Object.freeze({
   'sw/lane-start': { lane: 'tab', tabId: 5 },
   'sw/lane-stop': {},
+  'sw/tab-label': { tabId: 5, nonce: '0123456789abcdef'.repeat(2) },   // §22
   'sw/permission-open': {},
   'sw/host-probe': {},
   'sw/host-idle': { hostId: 'h-abc123', reason: 'panel-gone' },
@@ -83,14 +84,16 @@ test('shared constants are frozen and pinned to the values of section 3.5', () =
   assert.deepEqual(LANES, ['tab', 'mic']);
   assert.deepEqual(TARGETS, ['sw', 'offscreen', 'panel', 'content']);
   assert.deepEqual(SENDER_ROLES, ['sw', 'panel', 'offscreen', 'options', 'permission', 'content', 'foreign']);
-  assert.deepEqual(STORAGE_KEYS, { settings: 'interp.settings.v1', key: 'interp.key.v1', armed: 'interp.armed.v1',
-    host: 'interp.host.v1', lastStop: 'interp.lastStop.v1' });
+  assert.deepEqual(STORAGE_KEYS, { settings: 'interp.settings.v1', key: 'interp.key.v1', update: 'interp.update.v1', armed: 'interp.armed.v1',
+    host: 'interp.host.v1', lastStop: 'interp.lastStop.v1', autostart: 'interp.autostart.v1' });   // §20: the icon's start request
   assert.deepEqual(PATHS, { sw: 'extension/background/service-worker.js', panel: 'extension/panel/panel.html',
     options: 'extension/options/options.html', host: 'extension/engine/host.html',
     permission: 'extension/permission/mic-permission.html', overlay: 'extension/overlay/overlay.js' });
   assert.deepEqual(LIMITS, { maxFrameBytes: 8192, maxRowChars: 400, maxRows: 6, maxOverlayPorts: 4, maxPanelPorts: 4,
     frameIntervalMs: 100, panelGraceMs: 3000, panelInitialGraceMs: 15000, statusLingerMs: 9000, stopWaitMs: 4000,
-    startSettleMs: 3000, labelWaitMs: 500, pickKeepAliveMs: 20000,   // §19: the share-picker start
+    startSettleMs: 3000, pickKeepAliveMs: 20000,                    // §19: the share-picker start
+    labelWaitMs: 1500, pickLabelWaitMs: 500, relayFirstFrameMs: 4000,   // §22: the panel's label wait, §19's own, the relay's first audio
+    autostartMaxAgeMs: 10000, maxPoolKeys: 8,                       // §20: the icon's start request, the built-in pool
     streamIdMaxChars: 512, keyMaxChars: 512, titleMaxChars: 60, maxArmedTabs: 32 });
   assert.deepEqual(PROTOCOL_CODES, ['INVALID_MESSAGE', 'FORBIDDEN', 'UNKNOWN_TYPE', 'INTERNAL']);
   for (const value of [PORT_NAMES, LANES, TARGETS, SENDER_ROLES, STORAGE_KEYS, PATHS, LIMITS, PROTOCOL_CODES, MESSAGE_CATALOG,
@@ -102,7 +105,7 @@ test('shared constants are frozen and pinned to the values of section 3.5', () =
   assert.ok(KEY_PATTERN.test('a'.repeat(LIMITS.keyMaxChars)) && !KEY_PATTERN.test('a'.repeat(LIMITS.keyMaxChars + 1)));
 });
 
-test('the catalog has the 14 rows of section 4.2 with a target that matches the type prefix', () => {
+test('the catalog has the 15 rows of section 4.2 (§22 added sw/tab-label) with a target that matches the type prefix', () => {
   assert.deepEqual([...MESSAGE_TYPES].sort(), Object.keys(VALID).sort());
   const targetOfPrefix = { sw: 'sw', host: 'offscreen', content: 'content' };
   for (const type of MESSAGE_TYPES) {
@@ -112,14 +115,17 @@ test('the catalog has the 14 rows of section 4.2 with a target that matches the 
     assert.ok(row.errors.length > 0 && row.errors.every(isMachineCode), type);
   }
   assert.deepEqual(MESSAGE_CATALOG['sw/lane-start'].roles, ['panel']);
+  assert.deepEqual(MESSAGE_CATALOG['sw/tab-label'].roles, ['panel'], '§22: only the panel asks for its tab\'s label');
   assert.deepEqual(MESSAGE_CATALOG['sw/host-idle'].roles, ['offscreen']);
+  assert.equal(MESSAGE_TYPES.length, 15);
   assert.deepEqual(MESSAGE_CATALOG['host/lane-start'].roles, ['sw']);
   assert.deepEqual(MESSAGE_CATALOG['content/overlay-attach'].roles, ['sw']);
   assert.deepEqual(MESSAGE_CATALOG['content/capture-label'].roles, ['sw']);
-  // §19 (2026-09-30) reverses the old pin: an un-armed tab is no longer refused with NEEDS_ARM (the start asks through
-  // the share picker instead), so neither row documents that code and both document the picker's own refusal.
+  // §19 (2026-09-30) took NEEDS_ARM out (an un-armed tab was asked through the share picker); §20 (2026-10-02) brings it
+  // back: only a start the panel sends with `pick` opens the dialog, any other start of an un-armed tab is NEEDS_ARM.
+  // Both rows document it and the picker's own refusal.
   for (const type of ['sw/lane-start', 'host/lane-start']) {
-    assert.ok(!MESSAGE_CATALOG[type].errors.includes('NEEDS_ARM'), type);
+    assert.ok(MESSAGE_CATALOG[type].errors.includes('NEEDS_ARM'), type);
     assert.ok(MESSAGE_CATALOG[type].errors.includes('TAB_SHARE_NO_AUDIO'), type);
   }
   assert.deepEqual(MESSAGE_CATALOG['host/lane-start'].errors, MESSAGE_CATALOG['sw/lane-start'].errors);
@@ -177,7 +183,15 @@ test('validateMessage rejects a broken envelope', () => {
 test('validateMessage checks each row payload', () => {
   const invalid = (type, payload) => assert.equal(validateMessage(message(type, payload)).ok, false, `${type} ${JSON.stringify(payload)}`);
   for (const bad of [{}, { lane: 'sw' }, { lane: 'tab' }, { lane: 'tab', tabId: -1 }, { lane: 'tab', tabId: 1.5 },
-    { lane: 'tab', tabId: '1' }, { lane: 'tab', tabId: null }, { lane: 'both' }, { lane: null }]) invalid('sw/lane-start', bad);
+    { lane: 'tab', tabId: '1' }, { lane: 'tab', tabId: null }, { lane: 'both' }, { lane: null },
+    { lane: 'tab', tabId: 5, pick: 'yes' }, { lane: 'tab', tabId: 5, pick: 1 }, { lane: 'tab', tabId: 5, pick: null },
+    { lane: 'mic', pick: 'yes' }]) invalid('sw/lane-start', bad);
+  // §20: `pick: true` (the panel's explicit request for the share dialog) is kept; `false` is the default and dropped;
+  // the microphone has no dialog.
+  const start = (payload) => validateMessage(message('sw/lane-start', payload)).message;
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, pick: true }), { v: 1, target: 'sw', type: 'sw/lane-start', lane: 'tab', tabId: 5, pick: true });
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, pick: false }), { v: 1, target: 'sw', type: 'sw/lane-start', lane: 'tab', tabId: 5 });
+  assert.deepEqual(start({ lane: 'mic', pick: true }), { v: 1, target: 'sw', type: 'sw/lane-start', lane: 'mic' });
   for (const bad of [{ lane: 'sw' }, { lane: null }, { lane: 0 }]) { invalid('sw/lane-stop', bad); invalid('host/lane-stop', bad); }
   for (const bad of [{}, { hostId: 'h-1' }, { reason: 'panel-gone' }, { hostId: 'h-1', reason: 'bored' }, { hostId: '', reason: 'panel-gone' },
     { hostId: 'x'.repeat(65), reason: 'panel-gone' }, { hostId: 'has space', reason: 'initial-grace' }, { hostId: 5, reason: 'panel-gone' },
@@ -237,6 +251,36 @@ test('host/lane-start: key, stream id, tab and request shape rules of section 4.
   assert.equal(validateMessage(message('host/lane-start', MIC_START)).ok, true);
 });
 
+// §20 (2026-10-02). Fails on v0.4.0: host/lane-start carried one key only (BUILTIN_KEYS[0]).
+test('host/lane-start carries EITHER a personal key OR the built-in pool (keys: 1..8 key-shaped strings), copied, never echoed', () => {
+  const { key, ...withoutKey } = LANE_START;
+  const pool = [FAKE_KEY, `${FAKE_KEY}-2`, `${FAKE_KEY}-3`];
+  const check = (payload) => validateMessage(message('host/lane-start', payload));
+  const ok = check({ ...withoutKey, keys: pool });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.message.keys, pool);
+  assert.equal('key' in ok.message, false, 'a pool start has no single key');
+  assert.notEqual(ok.message.keys, pool, 'a sanitized copy, not the sender\'s array');
+  assert.ok(Object.isFrozen(ok.message.keys));
+  assert.equal(check({ ...withoutKey, keys: Array.from({ length: LIMITS.maxPoolKeys }, (_, index) => `${FAKE_KEY}-${index}`) }).ok, true, 'eight keys');
+  assert.equal(check({ ...MIC_START, key: undefined, keys: [FAKE_KEY] }).ok, true, 'the microphone lane takes the pool too');
+  for (const [label, payload] of Object.entries({
+    'both a key and a pool': { ...LANE_START, keys: pool },
+    'neither': withoutKey,
+    'an empty pool': { ...withoutKey, keys: [] },
+    'nine keys': { ...withoutKey, keys: Array.from({ length: LIMITS.maxPoolKeys + 1 }, (_, index) => `${FAKE_KEY}-${index}`) },
+    'one key with a space': { ...withoutKey, keys: [FAKE_KEY, 'has space'] },
+    'one key too long': { ...withoutKey, keys: [FAKE_KEY, 'x'.repeat(513)] },
+    'a number in the pool': { ...withoutKey, keys: [FAKE_KEY, 7] },
+    'a string, not a list': { ...withoutKey, keys: FAKE_KEY },
+    'null': { ...withoutKey, keys: null },
+  })) {
+    const result = check(payload);
+    assert.equal(result.ok, false, label);
+    assert.equal(JSON.stringify(result).includes('synthetic'), false, `${label}: a failure never echoes the input`);
+  }
+});
+
 // §19 (2026-09-30). Fails on v0.3.1: the validator knew one tab shape only, and there was no capture-label row.
 test('host/lane-start (tab) has a second shape for the share-picker start: a nonce and a volume, never mixed with a stream id', () => {
   const NONCE = '0123456789abcdef'.repeat(2);
@@ -260,6 +304,77 @@ test('host/lane-start (tab) has a second shape for the share-picker start: a non
     'neither shape': { originalVolume: 40 },
   })) assert.equal(pick(tab).ok, false, label);
   assert.equal(validateMessage(message('host/lane-start', withPatch(MIC_START, { tab: { pick: NONCE, originalVolume: 40 } }))).ok, false, 'never on the microphone lane');
+});
+
+// §22 (2026-10-08). Fails on 0.5.0: no relay shape, no relay fields on sw/lane-start, no sw/tab-label row.
+const RELAY = 'fedcba9876543210'.repeat(2);
+test('§22 host/lane-start (tab) has a third shape for the relay start: relay id, chosen tab (or null), passthrough and volume, never mixed', () => {
+  const start = (tab) => validateMessage(message('host/lane-start', withPatch(LANE_START, { tab })));
+  const ok = start({ relay: RELAY, tabId: 9, passthrough: true, originalVolume: 40, extra: 1 });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.message.tab, { relay: RELAY, tabId: 9, passthrough: true, originalVolume: 40 }, 'exactly these four fields');
+  assert.deepEqual(start({ relay: RELAY, tabId: null, passthrough: false, originalVolume: 0 }).message.tab,
+    { relay: RELAY, tabId: null, passthrough: false, originalVolume: 0 }, 'a tab the panel could not name is null');
+  assert.equal(start({ relay: RELAY, tabId: 0, passthrough: false, originalVolume: 100 }).ok, true);
+  for (const [label, tab] of Object.entries({
+    'mixed with a stream id': { relay: RELAY, tabId: 9, streamId: 'fake-stream-1', passthrough: true, originalVolume: 40 },
+    'mixed with a nonce': { relay: RELAY, tabId: 9, pick: '0123456789abcdef'.repeat(2), passthrough: true, originalVolume: 40 },
+    'no tab id at all': { relay: RELAY, passthrough: true, originalVolume: 40 },
+    'negative tab id': { relay: RELAY, tabId: -1, passthrough: true, originalVolume: 40 },
+    'string tab id': { relay: RELAY, tabId: '9', passthrough: true, originalVolume: 40 },
+    'no passthrough': { relay: RELAY, tabId: 9, originalVolume: 40 },
+    'passthrough not boolean': { relay: RELAY, tabId: 9, passthrough: 1, originalVolume: 40 },
+    'short id': { relay: RELAY.slice(1), tabId: 9, passthrough: true, originalVolume: 40 },
+    'upper-case id': { relay: RELAY.toUpperCase(), tabId: 9, passthrough: true, originalVolume: 40 },
+    'id type': { relay: 7, tabId: 9, passthrough: true, originalVolume: 40 },
+    'null id': { relay: null, tabId: 9, passthrough: true, originalVolume: 40 },
+    'no volume': { relay: RELAY, tabId: 9, passthrough: true },
+  })) assert.equal(start(tab).ok, false, label);
+  assert.equal(validateMessage(message('host/lane-start', withPatch(MIC_START, { tab: { relay: RELAY, tabId: 9, passthrough: true, originalVolume: 40 } }))).ok,
+    false, 'never on the microphone lane');
+  assert.ok(RELAY_ID_PATTERN.test(RELAY) && !RELAY_ID_PATTERN.test(`${RELAY}0`) && !RELAY_ID_PATTERN.test(RELAY.slice(1)) && !RELAY_ID_PATTERN.test(`${RELAY.slice(1)}G`));
+});
+
+test('§22 sw/lane-start (tab) takes the relay fields: id, passthrough (required with it) and chosenTab (int or null, absent = null); the microphone ignores them', () => {
+  const start = (payload) => validateMessage(message('sw/lane-start', payload));
+  const head = { v: 1, target: 'sw', type: 'sw/lane-start' };
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: 9, extra: 1 }).message,
+    { ...head, lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: 9 });
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, relay: RELAY, passthrough: false }).message,
+    { ...head, lane: 'tab', tabId: 5, relay: RELAY, passthrough: false, chosenTab: null }, 'an absent chosen tab is null');
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, relay: RELAY, passthrough: false, chosenTab: null }).message.chosenTab, null);
+  // `pick` next to `relay` is let through on purpose: the worker refuses the pair as INVALID_REQUEST (a panel bug, not a bad wire)
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, pick: true, relay: RELAY, passthrough: true, chosenTab: 5 }).message,
+    { ...head, lane: 'tab', tabId: 5, pick: true, relay: RELAY, passthrough: true, chosenTab: 5 });
+  // without a relay the two other fields mean nothing and are dropped
+  assert.deepEqual(start({ lane: 'tab', tabId: 5, passthrough: true, chosenTab: 9 }).message, { ...head, lane: 'tab', tabId: 5 });
+  assert.deepEqual(start({ lane: 'mic', relay: RELAY, passthrough: true, chosenTab: 9 }).message, { ...head, lane: 'mic' });
+  assert.deepEqual(start({ lane: 'mic', relay: 'junk' }).message, { ...head, lane: 'mic' }, 'the microphone ignores even a bad relay id');
+  for (const [label, payload] of Object.entries({
+    'bad id': { lane: 'tab', tabId: 5, relay: 'x'.repeat(32), passthrough: true },
+    'short id': { lane: 'tab', tabId: 5, relay: RELAY.slice(2), passthrough: true },
+    'null id': { lane: 'tab', tabId: 5, relay: null, passthrough: true },
+    'no passthrough': { lane: 'tab', tabId: 5, relay: RELAY },
+    'passthrough string': { lane: 'tab', tabId: 5, relay: RELAY, passthrough: 'true' },
+    'chosen tab negative': { lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: -2 },
+    'chosen tab fraction': { lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: 1.5 },
+    'chosen tab string': { lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: '9' },
+    'chosen tab false': { lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: false },
+    'no panel tab': { lane: 'tab', relay: RELAY, passthrough: true, chosenTab: 9 },
+  })) assert.deepEqual(start(payload), { ok: false, code: 'INVALID_MESSAGE' }, label);
+  assert.equal(makeMessage('sw/lane-start', { lane: 'tab', tabId: 5, relay: RELAY, passthrough: true, chosenTab: null }).relay, RELAY);
+});
+
+test('§22 sw/tab-label carries the panel\'s tab id and a 32-hex nonce, nothing else', () => {
+  const NONCE = '0123456789abcdef'.repeat(2);
+  const label = (payload) => validateMessage(message('sw/tab-label', payload));
+  assert.deepEqual(label({ tabId: 5, nonce: NONCE, label: 'dropped' }).message, { v: 1, target: 'sw', type: 'sw/tab-label', tabId: 5, nonce: NONCE });
+  assert.equal(label({ tabId: 0, nonce: NONCE }).ok, true);
+  for (const bad of [{}, { tabId: 5 }, { nonce: NONCE }, { tabId: -1, nonce: NONCE }, { tabId: '5', nonce: NONCE }, { tabId: null, nonce: NONCE },
+    { tabId: 5, nonce: NONCE.toUpperCase() }, { tabId: 5, nonce: `${NONCE}.5` }, { tabId: 5, nonce: NONCE.slice(1) }, { tabId: 5, nonce: 5 }]) {
+    assert.deepEqual(label(bad), { ok: false, code: 'INVALID_MESSAGE' }, JSON.stringify(bad));
+  }
+  assert.deepEqual(MESSAGE_CATALOG['sw/tab-label'].errors, ['FORBIDDEN', 'INVALID_MESSAGE'], 'never an error code of its own: a page that cannot be labelled is labelled:false');
 });
 
 test('content/capture-label carries exactly one label `<32 hex>.<tab id>`, and the label names its tab only under its own nonce', () => {

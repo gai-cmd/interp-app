@@ -15,6 +15,8 @@ const KEY = `synthetic-${'x'.repeat(24)}`;   // assembled at runtime: the privac
 const HOST_URL = PATHS.host;
 const NO_ANSWER = Symbol('no answer');
 const PASS = Symbol('pass');   // an override that hands the request to the stub's real handler
+const RELAY_ID = 'fedcba9876543210'.repeat(2);   // §22
+const LABEL_NONCE = '0123456789abcdef'.repeat(2);
 
 const deferred = () => {
   let release;
@@ -33,6 +35,8 @@ function createStubHost(browser, options = {}) {
     // §19, the share-picker start: the nonces received, and what the "user" chooses ({ tabId } or { code }). The
     // dialog stays open while the test holds 'pick'.
     picks: [], choice: options.choice ?? { tabId: null },
+    // §22, the relay start: the tab payloads received. The host waits for the panel's first audio while the test holds 'relay'.
+    relays: [],
     answer: options.answer ?? true,            // false: a zombie document that never answers
     answerFor: options.answerFor ?? null,      // (creationNumber) => boolean, per document
     honorCancel: options.honorCancel ?? true,  // the real host notices a stop that overtakes a start
@@ -70,7 +74,13 @@ function createStubHost(browser, options = {}) {
       stub.lanes[lane] = 'starting';
       const stopsBefore = stub.stops[lane];
       let picked = false;
-      if (lane === 'tab' && message.tab.pick !== undefined) {
+      if (lane === 'tab' && message.tab.relay !== undefined) {
+        stub.relays.push({ ...message.tab });
+        await takeHold('relay');
+        if (stub.honorCancel && stub.stops[lane] !== stopsBefore) { stub.lanes[lane] = 'off'; throw codeError('START_CANCELLED'); }
+        stub.tabId = message.tab.tabId;
+        picked = true;   // the answer names the tab, like the real host
+      } else if (lane === 'tab' && message.tab.pick !== undefined) {
         stub.picks.push(message.tab.pick);
         await takeHold('pick');
         if (stub.honorCancel && stub.stops[lane] !== stopsBefore) { stub.lanes[lane] = 'off'; throw codeError('START_CANCELLED'); }
@@ -157,7 +167,7 @@ function observe(adapter, log, hooks) {
   return walk('', adapter);
 }
 
-function makeEnv({ browserOptions = {}, stubOptions = {} } = {}) {
+function makeEnv({ browserOptions = {}, stubOptions = {}, builtinKeys } = {}) {
   const browser = createFakeBrowser({ messages: { menuOpen: 'Interpret this tab' }, ...browserOptions });
   const stub = createStubHost(browser, stubOptions);
   const env = { browser, stub, log: [], hooks: {}, sw: null, starts: [], counts: [], attaches: [], injected: [] };
@@ -176,7 +186,7 @@ function makeEnv({ browserOptions = {}, stubOptions = {} } = {}) {
   const timerLog = (fn, ms) => { env.log.push('timer'); return browser.clock.setTimeout(fn, ms); };
   browser.sw.register((chromeApi) => {
     const adapter = observe(createChromeAdapter(chromeApi), env.log, env.hooks);
-    env.sw = createServiceWorker({ adapter, now: browser.clock.now, setTimeout: timerLog });
+    env.sw = createServiceWorker({ adapter, now: browser.clock.now, setTimeout: timerLog, ...(builtinKeys ? { builtinKeys } : {}) });
     env.sw.register();
     // Captured in the same synchronous turn as register(): proves the nine listeners are registered synchronously.
     env.starts.push([...browser.sw.context.listeners.keys()].sort());
@@ -199,7 +209,13 @@ function makeEnv({ browserOptions = {}, stubOptions = {} } = {}) {
   };
   env.session = () => browser.storageData('session');
   env.calls = (name) => env.log.filter((entry) => entry === name).length;
-  env.start = (lane, tabId) => env.fromPanel('sw/lane-start', lane === 'tab' ? { lane, tabId } : { lane });
+  // `pick` (§20): the panel's explicit request for Chrome's share dialog, the only way an un-armed tab is started.
+  env.start = (lane, tabId, { pick = false } = {}) => env.fromPanel('sw/lane-start', lane === 'tab' ? { lane, tabId, ...(pick ? { pick } : {}) } : { lane });
+  env.pick = (tabId) => env.start('tab', tabId, { pick: true });
+  // §22: the panel opened the dialog itself and relays the tab's audio.
+  env.relay = (tabId, { relay = RELAY_ID, passthrough = true, chosenTab = tabId, ...rest } = {}) => env.fromPanel('sw/lane-start',
+    { lane: 'tab', tabId, relay, passthrough, chosenTab, ...rest });
+  env.label = (tabId, nonce = LABEL_NONCE) => env.fromPanel('sw/tab-label', { tabId, nonce });
   env.advance = async (ms, promise) => {
     await browser.clock.advance(ms);
     return promise;
@@ -266,7 +282,7 @@ test('bootstrap swallows a failing API: setAccessLevel rejecting does not stop t
 test('onInstalled recreates the context menu once, clears the session keys and never throws "duplicate id"', async () => {
   const env = makeEnv();
   await env.panel.chrome.storage.session.set({ [STORAGE_KEYS.armed]: { v: 1, tabs: {} }, [STORAGE_KEYS.host]: { v: 1, up: true, hostId: 'h', at: 1 },
-    [STORAGE_KEYS.lastStop]: { v: 1, reason: 'panel-gone', at: 1 } });
+    [STORAGE_KEYS.lastStop]: { v: 1, reason: 'panel-gone', at: 1 }, [STORAGE_KEYS.autostart]: { v: 1, tabId: 7, windowId: 1, at: 1 } });
   await env.browser.install('install');
   await env.browser.install('update');
   assert.equal(env.browser.menus.length, 1);
@@ -319,6 +335,160 @@ test('a rejected sidePanel.open (no gesture) still records the arm and does not 
 });
 
 // ---------------------------------------------------------------------------------------------
+// §20 (2026-10-02): the icon = start on this tab. Fails on 0.4.0, where the click only armed the tab and opened the panel.
+test('§20 the toolbar icon asks the panel to start on that tab: open first, the arming written, THEN the autostart record', async (t) => {
+  const env = makeEnv();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', windowId: 1, active: true });
+  await env.browser.settle();
+  env.log.length = 0;
+  const writes = [];
+  env.hooks['storage.session.set'] = (real, items) => { writes.push(Object.keys(items)); return real(); };
+  await env.advance(1234, env.browser.clickAction(7));
+  await env.browser.settle();
+  t.diagnostic(`icon click call log: ${JSON.stringify(env.log)}`);
+  assert.equal(env.log[0], 'sidePanel.open', 'still the first call: the user gesture');
+  assert.deepEqual(writes.slice(0, 2), [[STORAGE_KEYS.armed], [STORAGE_KEYS.autostart]], 'the panel starts only on a tab it reads as armed');
+  const record = env.session()[STORAGE_KEYS.autostart];
+  assert.deepEqual(record, { v: 1, tabId: 7, windowId: 1, at: record.at });
+  assert.equal(typeof record.at, 'number');
+  assert.equal(env.stub.count('host/lane-start'), 0, 'the worker starts nothing by itself: the panel of that window does');
+  // The shortcut (_execute_action dispatches action.onClicked) and the context menu write the same record.
+  await env.browser.install('install');
+  env.browser.addTab({ id: 8, url: 'https://example.com/video', windowId: 2, active: true });
+  for (const [label, invoke] of [['shortcut', () => env.browser.pressShortcut(8)], ['context menu', () => env.browser.clickContextMenu(8, 'interp-open')]]) {
+    await env.panel.chrome.storage.session.remove(STORAGE_KEYS.autostart);
+    await invoke();
+    await env.browser.settle();
+    assert.deepEqual(env.session()[STORAGE_KEYS.autostart]?.tabId, 8, label);
+    assert.deepEqual(env.session()[STORAGE_KEYS.autostart]?.windowId, 2, label);
+  }
+  assert.equal(env.browser.listenerErrors.length, 0);
+});
+
+test('§20 a page that cannot be captured gets no autostart record: the click only opens the panel (and arms, as before)', async () => {
+  const env = makeEnv();
+  for (const [id, url] of [[9, 'chrome://extensions'], [10, 'about:blank'], [11, 'chrome-extension://abc/panel.html'], [12, 'data:text/html,hi']]) {
+    env.browser.addTab({ id, url, windowId: 1, active: true, content: false });
+    await env.browser.clickAction(id);
+    await env.browser.settle();
+    assert.equal(env.session()[STORAGE_KEYS.autostart], undefined, url);
+  }
+  assert.equal(env.browser.panelOpens.length, 4, 'the panel still opens');
+  // file: pages can be captured (with file access): they get one
+  env.browser.addTab({ id: 13, url: 'file:///tmp/a.html', windowId: 1, active: true, content: false });
+  await env.browser.clickAction(13);
+  await env.browser.settle();
+  assert.equal(env.session()[STORAGE_KEYS.autostart]?.tabId, 13);
+});
+
+// §20: 0.4.x started muted. An update from before 0.5.0 turns the voice on once; nothing else changes.
+test('0.5.1 an update from a version before 0.5.1 moves a tab lane that still holds the OLD default model to the latest Live model, once, keeps a model the user chose, and never touches the voice from 0.5.0 on', async () => {
+  const OLD = 'gemini-3.5-live-translate-preview';
+  const LATEST = 'gemini-3.8-live';
+  const stored = async (env) => env.browser.storageData('local')[STORAGE_KEYS.settings];
+  const seed = (tabModel, micModel, speechMuted = false) => (settings) => ({ ...settings, speechMuted,
+    lanes: { ...settings.lanes, tab: { ...settings.lanes.tab, model: tabModel }, mic: { ...settings.lanes.mic, model: micModel } } });
+
+  // The 0.4.x / 0.5.0 default (the translation-only preview on the tab lane) moves; the microphone lane is not touched.
+  for (const previousVersion of ['0.4.0', '0.5.0']) {
+    const env = makeEnv();
+    await env.seedSettings(seed(OLD, OLD));
+    await env.browser.install('update', { previousVersion });
+    await env.browser.settle();
+    assert.deepEqual([(await stored(env)).lanes.tab.model, (await stored(env)).lanes.mic.model], [LATEST, OLD], previousVersion);
+  }
+
+  // From 0.5.0 on the voice is the user's own: the model move runs, a deliberate mute stays.
+  const muted = makeEnv();
+  await muted.seedSettings(seed(OLD, LATEST, true));
+  await muted.browser.install('update', { previousVersion: '0.5.0' });
+  await muted.browser.settle();
+  assert.deepEqual([(await stored(muted)).lanes.tab.model, (await stored(muted)).speechMuted], [LATEST, true]);
+
+  // Once: the user picks the translation-only preview again; an update from 0.5.1 on leaves that choice alone.
+  const env = makeEnv();
+  await env.seedSettings(seed(OLD, LATEST));
+  for (const previousVersion of ['0.5.1', '0.5.2', '1.0']) {
+    await env.browser.install('update', { previousVersion });
+    await env.browser.settle();
+    assert.equal((await stored(env)).lanes.tab.model, OLD, previousVersion);
+  }
+
+  // A model the user chose on purpose is not the old default: it stays, whatever it is.
+  const chosen = makeEnv();
+  await chosen.seedSettings(seed('gemini-2.5-flash-native-audio-latest', LATEST));
+  await chosen.browser.install('update', { previousVersion: '0.4.0' });
+  await chosen.browser.settle();
+  assert.equal((await stored(chosen)).lanes.tab.model, 'gemini-2.5-flash-native-audio-latest');
+
+  // Other reasons, an unreadable version, or no stored settings at all: nothing is written.
+  for (const details of [['install', {}], ['chrome_update', { previousVersion: '0.4.0' }], ['update', {}], ['update', { previousVersion: 'x' }]]) {
+    await env.browser.install(...details);
+    await env.browser.settle();
+    assert.equal((await stored(env)).lanes.tab.model, OLD, JSON.stringify(details));
+  }
+  const fresh = makeEnv();
+  await fresh.browser.install('update', { previousVersion: '0.4.0' });
+  await fresh.browser.settle();
+  assert.equal(await stored(fresh), undefined, 'no record is created: the new defaults already say the latest model');
+  assert.equal(env.browser.listenerErrors.length + muted.browser.listenerErrors.length + chosen.browser.listenerErrors.length + fresh.browser.listenerErrors.length, 0);
+});
+
+test('§20 an update from a version before 0.5.0 turns the interpreted voice on once and changes no other setting', async () => {
+  const stored = async (env) => env.browser.storageData('local')[STORAGE_KEYS.settings];
+  const env = makeEnv();
+  await env.seedSettings((settings) => ({ ...settings, speechMuted: true, uiLanguage: 'ja',
+    lanes: { ...settings.lanes, tab: { ...settings.lanes.tab, originalVolume: 65, targetLanguage: 'ja' } } }));
+  const before = await stored(env);
+  await env.browser.install('update', { previousVersion: '0.4.0' });
+  await env.browser.settle();
+  const after = await stored(env);
+  assert.equal(after.speechMuted, false);
+  assert.deepEqual({ ...after, speechMuted: true }, before, 'only speechMuted changed');
+  // Once: a later mute is the user's own, and the next updates (from 0.5.0 on) leave it alone.
+  await env.seedSettings((settings) => ({ ...settings, speechMuted: true }));
+  for (const previousVersion of ['0.5.0', '0.5.1', '1.0']) {
+    await env.browser.install('update', { previousVersion });
+    await env.browser.settle();
+    assert.equal((await stored(env)).speechMuted, true, previousVersion);
+  }
+  // Other reasons, an unreadable version, or no stored settings at all: nothing is written.
+  for (const details of [['install', {}], ['chrome_update', { previousVersion: '0.4.0' }], ['update', {}], ['update', { previousVersion: 'x' }]]) {
+    await env.browser.install(...details);
+    await env.browser.settle();
+    assert.equal((await stored(env)).speechMuted, true, JSON.stringify(details));
+  }
+  const fresh = makeEnv();
+  await fresh.browser.install('update', { previousVersion: '0.3.1' });
+  await fresh.browser.settle();
+  assert.equal(await stored(fresh), undefined, 'no record is created: the panel still seeds the languages on its first run');
+  assert.equal(env.browser.listenerErrors.length + fresh.browser.listenerErrors.length, 0);
+});
+
+// §20: without a personal key the whole built-in pool travels; a personal key wins alone.
+test('§20 the built-in pool travels in the ONE host/lane-start (keys, no key); a stored personal key is sent alone', async () => {
+  const POOL = [`synthetic-${'p'.repeat(24)}`, `synthetic-${'q'.repeat(24)}`, `synthetic-${'r'.repeat(24)}`];
+  const env = makeEnv({ builtinKeys: POOL });
+  await env.armTab(7);
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  const [start] = env.stub.of('host/lane-start');
+  assert.deepEqual(start.message.keys, POOL);
+  assert.equal('key' in start.message, false);
+  for (const key of POOL) {
+    const carrying = env.browser.deliveries.filter((delivery) => delivery.json.includes(key));
+    assert.equal(carrying.length, 1, 'each key is in exactly one delivery');
+    assert.equal(JSON.parse(carrying[0].json).type, 'host/lane-start');
+  }
+  assert.equal(JSON.stringify(env.browser.storageData('session')).includes(POOL[0]), false);
+  await env.fromPanel('sw/lane-stop', {});
+  await env.seedKey();
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  const mic = env.stub.of('host/lane-start').find((entry) => entry.message.lane === 'mic');
+  assert.equal(mic.message.key, KEY);
+  assert.equal('keys' in mic.message, false, 'a person\'s key never falls back to the pool');
+});
+
+// ---------------------------------------------------------------------------------------------
 test('sw/lane-start (tab): the order of 6.3, the mint is the LAST awaited step, the key travels in ONE message only', async (t) => {
   const env = makeEnv();
   await env.armTab(7);
@@ -343,11 +513,11 @@ test('sw/lane-start (tab): the order of 6.3, the mint is the LAST awaited step, 
   assert.equal(message.key, KEY);
   assert.match(message.tab.streamId, /^fake-stream-\d+$/);
   assert.equal(message.tab.tabId, 7);
-  assert.equal(message.tab.originalVolume, 65);
-  assert.deepEqual(message.request, { targetLanguage: 'en', model: 'gemini-3.5-live-translate-preview' });
+  assert.equal(message.tab.originalVolume, 45, '§20: the starting original volume');
+  assert.deepEqual(message.request, { targetLanguage: 'en', model: 'gemini-3.8-live' }, '0.5.1: the latest Live model on the tab lane');
   assert.deepEqual(Object.keys(message.tab).sort(), ['originalVolume', 'streamId', 'tabId'], 'an armed tab never carries a picker nonce');
   assert.equal(message.voiceGender, 'female');
-  assert.equal(message.muted, true);
+  assert.equal(message.muted, false, '§20: the interpreted voice plays by default');
   assert.equal(message.captions, true);
   assert.deepEqual(Object.keys(message.style).sort(), ['autoHideSeconds', 'display', 'maxLines', 'position', 'showSource', 'size']);
   assert.ok(env.browser.captures.has(7), 'the host consumed the id');
@@ -421,21 +591,33 @@ test('a file: page is allowed, and a corrupt key record counts as no key', async
   assert.deepEqual(await env.start('tab', 7), { ok: true });
 });
 
-// §19 reverses the outcome: the stale record is still cleared, but the start is not refused any more.
-test('the exact grant error from the mint clears the armed record and the start goes on through the share picker', async () => {
+// §19 went on through the share picker after this error; §20 answers NEEDS_ARM (the panel then waits for the icon) unless
+// the panel asked for the dialog. The stale record is cleared either way.
+test('the exact grant error from the mint clears the armed record: NEEDS_ARM, or the share picker when the panel asked for it', async () => {
   const env = makeEnv();
   await env.seedKey();
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
   // A stale record: the worker believes the tab is armed, Chromium holds no grant.
-  await env.panel.chrome.storage.session.set({ [STORAGE_KEYS.armed]: { v: 1, tabs: { 7: { windowId: 1, origin: 'https://claude.ai', at: 1 } } } });
+  const stale = { [STORAGE_KEYS.armed]: { v: 1, tabs: { 7: { windowId: 1, origin: 'https://claude.ai', at: 1 } } } };
+  await env.panel.chrome.storage.session.set(stale);
   assert.equal(env.browser.hasGrant(7), false);
   const seen = [];
   env.hooks['tabCapture.getMediaStreamId'] = async (real) => {
     try { return await real(); } catch (error) { seen.push(error.message); throw error; }
   };
   env.stub.choice = { tabId: 7 };
-  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'NEEDS_ARM' });
   assert.deepEqual(seen, [GRANT_ERROR]);
+  assert.equal(env.session()[STORAGE_KEYS.armed].tabs['7'], undefined);
+  assert.equal(env.stub.count('host/lane-start'), 0, 'nothing was asked of the host');
+  // Unlike the refusal of a tab that has no armed record at all (next test), this one comes from the MINT, which is step 6:
+  // the document was created and flagged up before it (docs/extension.md §20 must not claim "before any host work" for it).
+  assert.notEqual(env.browser.offscreenDocument, null, 'a stale record is only found by the mint, after the document exists');
+  assert.equal(env.session()[STORAGE_KEYS.host].up, true);
+
+  await env.panel.chrome.storage.session.set(stale);
+  assert.deepEqual(await env.pick(7), { ok: true });
+  assert.deepEqual(seen, [GRANT_ERROR, GRANT_ERROR]);
   assert.equal(env.session()[STORAGE_KEYS.armed].tabs['7'], undefined);
   assert.equal(env.stub.count('host/lane-start'), 1);
   const { tab } = env.stub.of('host/lane-start')[0].message;
@@ -444,8 +626,32 @@ test('the exact grant error from the mint clears the armed record and the start 
 });
 
 // ---------------------------------------------------------------------------------------------
-// §19 (2026-09-30): the panel's Start alone. These fail on v0.3.1, where an un-armed tab answered NEEDS_ARM (all but the
-// last one, the control that an ARMED tab is untouched by the new path).
+// §20 (2026-10-02): an un-armed tab is NEEDS_ARM again, unless the panel asked for the share dialog. Fails on 0.4.0, where
+// every start of an un-armed tab opened the dialog by itself.
+test('§20 an UN-ARMED tab without `pick` is NEEDS_ARM before any host work: no document, no label, no dialog', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  env.log.length = 0;
+  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'NEEDS_ARM' });
+  assert.equal(env.calls('offscreen.createDocument'), 0, 'a press that only waits for the icon creates no offscreen document');
+  assert.equal(env.calls('tabCapture.getMediaStreamId'), 0);
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 0);
+  assert.equal(env.browser.offscreenDocument, null);
+  assert.equal(env.stub.count('host/lane-start'), 0);
+  // pick:false is the default, and the microphone ignores it
+  assert.deepEqual(await env.fromPanel('sw/lane-start', { lane: 'tab', tabId: 7, pick: false }), { ok: false, code: 'NEEDS_ARM' });
+  assert.deepEqual(await env.fromPanel('sw/lane-start', { lane: 'mic', pick: true }), { ok: true });
+  // the icon click arms the tab: the same start takes the instant path
+  await env.browser.clickAction(7);
+  await env.browser.settle();
+  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.equal(env.stub.of('host/lane-start').find((entry) => entry.message.lane === 'tab').message.tab.streamId.startsWith('fake-stream-'), true);
+});
+
+// §19 (2026-09-30): the share-picker start, which §20 keeps as the explicit other way (`pick: true`, the panel's
+// "Or choose the tab in a Chrome window" button). Unchanged from §19 apart from that flag.
 test('§19 an UN-ARMED tab is not refused: the panel\'s tab alone gets a capture label, then the host is asked to open the share picker', async (t) => {
   const env = makeEnv();
   await env.seedKey();
@@ -455,7 +661,7 @@ test('§19 an UN-ARMED tab is not refused: the panel\'s tab alone gets a capture
   await env.browser.settle();
   env.stub.choice = { tabId: 7 };
   env.log.length = 0;
-  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.deepEqual(await env.pick(7), { ok: true });
   await env.browser.settle();
   t.diagnostic(`un-armed start call log: ${JSON.stringify(env.log)}`);
 
@@ -464,7 +670,7 @@ test('§19 an UN-ARMED tab is not refused: the panel\'s tab alone gets a capture
   assert.equal(env.stub.count('host/lane-start'), 1);
   const nonce = start.message.tab.pick;
   assert.match(nonce, /^[a-f0-9]{32}$/);
-  assert.deepEqual(start.message.tab, { pick: nonce, originalVolume: 65 }, 'a nonce and the volume: no stream id, no tab id');
+  assert.deepEqual(start.message.tab, { pick: nonce, originalVolume: 45 }, 'a nonce and the volume: no stream id, no tab id');
   assert.equal(start.message.key, KEY);
 
   // ONE label, `<nonce>.<tabId>`, for the tab the panel is on, to its top frame, BEFORE the host is asked. No other
@@ -483,14 +689,14 @@ test('§19 an UN-ARMED tab is not refused: the panel\'s tab alone gets a capture
   assert.equal(JSON.stringify([env.session(), env.browser.storageData('local')]).includes(nonce), false);
 });
 
-test('§19 a page that cannot take a label is not asked, and a page that never answers delays the start by LIMITS.labelWaitMs at most', async () => {
+test('§19 a page that cannot take a label is not asked, and a page that never answers delays the start by LIMITS.pickLabelWaitMs at most', async () => {
   // chrome:// and file: pages have no content script: no message at all, the start goes straight to the host.
   for (const url of ['chrome://extensions', 'file:///tmp/a.html']) {
     const env = makeEnv();
     await env.seedKey();
     env.browser.addTab({ id: 7, url, active: true, content: false });
     await env.browser.settle();
-    const res = await env.start('tab', 7);
+    const res = await env.pick(7);
     assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 0, url);
     if (url.startsWith('file:')) assert.deepEqual(res, { ok: true }); else assert.deepEqual(res, { ok: false, code: 'TAB_UNSUPPORTED' });
   }
@@ -500,8 +706,10 @@ test('§19 a page that cannot take a label is not asked, and a page that never a
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
   await env.browser.settle();
   env.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? new Promise(() => {}) : real());
-  const pending = env.start('tab', 7);
-  await env.browser.clock.advance(LIMITS.labelWaitMs - 1);
+  const pending = env.pick(7);
+  // §22 gave the panel's own label wait (LIMITS.labelWaitMs) more time; this start keeps its 500 ms.
+  assert.equal(LIMITS.pickLabelWaitMs, 500);
+  await env.browser.clock.advance(LIMITS.pickLabelWaitMs - 1);
   assert.equal(env.stub.count('host/lane-start'), 0, 'still waiting for the label');
   await env.browser.clock.advance(1);
   assert.deepEqual(await pending, { ok: true });
@@ -514,7 +722,7 @@ test('§19 Stop during the label wait ends the start at once: nothing reaches th
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
   await env.browser.settle();
   env.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? new Promise(() => {}) : real());
-  const first = env.start('tab', 7);
+  const first = env.pick(7);
   await env.browser.settle();
   assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 1, 'the start is inside the label wait');
   assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
@@ -523,7 +731,7 @@ test('§19 Stop during the label wait ends the start at once: nothing reaches th
   assert.deepEqual(await Promise.race([first, Promise.resolve('still waiting for the label')]), { ok: false, code: 'START_CANCELLED' });
   assert.equal(env.stub.count('host/lane-start'), 0);
   delete env.hooks['tabs.sendMessage'];
-  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.deepEqual(await env.pick(7), { ok: true });
 });
 
 test('§19 HOST_UNAVAILABLE on a picker start is re-sent only while the document may not have been listening yet', async () => {
@@ -534,7 +742,7 @@ test('§19 HOST_UNAVAILABLE on a picker start is re-sent only while the document
   await early.browser.settle();
   let sends = 0;
   early.stub.on('host/lane-start', () => (++sends === 1 ? { ok: false, code: 'HOST_UNAVAILABLE' } : PASS));
-  assert.deepEqual(await early.start('tab', 7), { ok: true });
+  assert.deepEqual(await early.pick(7), { ok: true });
   assert.equal(early.stub.count('host/lane-start'), 2);
 
   // After the dialog has been open for a while: the document went away. A re-send would open a second dialog by
@@ -545,7 +753,7 @@ test('§19 HOST_UNAVAILABLE on a picker start is re-sent only while the document
   await late.browser.settle();
   const answer = deferred();
   late.stub.on('host/lane-start', () => answer.promise);
-  const pending = late.start('tab', 7);
+  const pending = late.pick(7);
   await late.browser.settle();
   await late.browser.clock.advance(5000);
   answer.release({ ok: false, code: 'HOST_UNAVAILABLE' });
@@ -563,12 +771,12 @@ test('§19 each start uses a fresh nonce, and a tab that could not be identified
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
   await env.browser.settle();
   env.stub.choice = { tabId: null };   // a page without the content script: the host cannot tell which tab it is
-  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.deepEqual(await env.pick(7), { ok: true });
   await env.advance(3000, env.browser.settle());
   assert.equal(env.attaches.filter((entry) => entry.message.type === 'content/overlay-attach').length, 0,
     'never the active tab by guess: captions of one tab must not be drawn over another');
   assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
-  assert.deepEqual(await env.start('tab', 7), { ok: true });
+  assert.deepEqual(await env.pick(7), { ok: true });
   assert.equal(env.stub.picks.length, 2);
   assert.notEqual(env.stub.picks[0], env.stub.picks[1]);
 });
@@ -579,12 +787,12 @@ test('§19 closing the picker comes back as the silent START_CANCELLED; what was
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
   await env.browser.settle();
   env.stub.choice = { code: 'START_CANCELLED' };
-  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'START_CANCELLED' });
+  assert.deepEqual(await env.pick(7), { ok: false, code: 'START_CANCELLED' });
   env.stub.choice = { code: 'TAB_SHARE_NO_AUDIO' };
-  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'TAB_SHARE_NO_AUDIO' });
+  assert.deepEqual(await env.pick(7), { ok: false, code: 'TAB_SHARE_NO_AUDIO' });
   assert.equal(env.session()[STORAGE_KEYS.lastStop], undefined);
   env.stub.choice = { tabId: 7 };
-  assert.deepEqual(await env.start('tab', 7), { ok: true }, 'and the next Start asks again');
+  assert.deepEqual(await env.pick(7), { ok: true }, 'and the next Start asks again');
 });
 
 test('§19 while the picker is open the worker keeps itself awake, a second Start is ALREADY_RUNNING, and Stop ends the start at once', async () => {
@@ -593,7 +801,7 @@ test('§19 while the picker is open the worker keeps itself awake, a second Star
   env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
   await env.browser.settle();
   const gate = env.stub.hold('pick');
-  const first = env.start('tab', 7);
+  const first = env.pick(7);
   await env.browser.settle();
   assert.equal(env.stub.count('host/lane-start'), 1, 'the start is waiting for the user inside host/lane-start');
   env.log.length = 0;
@@ -601,7 +809,7 @@ test('§19 while the picker is open the worker keeps itself awake, a second Star
   await env.browser.clock.advance(LIMITS.pickKeepAliveMs * 2);
   assert.equal(env.calls('storage.session.get'), 2);
   assert.deepEqual(env.log.filter((entry) => entry !== 'timer' && entry !== 'storage.session.get'), []);
-  assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'ALREADY_RUNNING' });
+  assert.deepEqual(await env.pick(7), { ok: false, code: 'ALREADY_RUNNING' });
   // Stop: the host is told, and the start answers START_CANCELLED as soon as the host lets go.
   assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
   gate.release();
@@ -624,6 +832,194 @@ test('§19 an ARMED tab whose start succeeds never keeps the worker awake and ne
   await env.browser.clock.advance(LIMITS.pickKeepAliveMs * 2);
   assert.equal(env.calls('storage.session.get'), 0);
   assert.equal(env.attaches.filter((entry) => entry.message.type === 'content/capture-label').length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// §22 (2026-10-08): the panel opens the share dialog itself (Chrome 153+). sw/tab-label labels its tab first; the relay
+// start skips everything the dialog needed from the worker. Every test here fails on 0.5.0.
+test('§22 sw/tab-label puts `<nonce>.<tabId>` on the panel\'s tab (top frame) and answers labelled:true; no document, no mint, no other page', async () => {
+  const env = makeEnv();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  env.browser.addTab({ id: 8, url: 'https://example.com/other', active: false });
+  await env.browser.settle();
+  env.log.length = 0;
+  assert.deepEqual(await env.label(7), { ok: true, labelled: true });
+  const labels = env.attaches.filter((entry) => entry.message.type === 'content/capture-label');
+  assert.deepEqual(labels.map((entry) => [entry.tabId, entry.message.label]), [[7, `${LABEL_NONCE}.7`]]);
+  assertOrder(env.log, ['tabs.get', 'tabs.sendMessage:content/capture-label']);
+  assert.equal(env.calls('offscreen.createDocument'), 0);
+  assert.equal(env.calls('tabCapture.getMediaStreamId'), 0);
+  assert.equal(env.browser.offscreenDocument, null);
+  assert.equal(JSON.stringify([env.session(), env.browser.storageData('local')]).includes(LABEL_NONCE), false, 'the nonce is never stored');
+});
+
+test('§22 sw/tab-label is never an error: a page that cannot take a label, a tab that is gone, a page that refuses or never answers is labelled:false', async () => {
+  const env = makeEnv();
+  env.browser.addTab({ id: 7, url: 'chrome://extensions', active: true, content: false });
+  env.browser.addTab({ id: 8, url: 'file:///tmp/a.html', active: false, content: false });
+  env.browser.addTab({ id: 9, url: 'https://claude.ai/no-script', active: false, content: false });
+  env.browser.addTab({ id: 10, url: 'https://claude.ai/frozen', active: false });
+  await env.browser.settle();
+  assert.deepEqual(await env.label(7), { ok: true, labelled: false }, 'chrome://: not asked');
+  assert.deepEqual(await env.label(8), { ok: true, labelled: false }, 'file:: not asked');
+  assert.deepEqual(await env.label(999), { ok: true, labelled: false }, 'a tab that is gone');
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 0);
+  assert.deepEqual(await env.label(9), { ok: true, labelled: false }, 'no content script: the send fails at once');
+  // a page that never answers: the worker waits LIMITS.labelWaitMs (1500 ms), not a moment less
+  assert.equal(LIMITS.labelWaitMs, 1500);
+  env.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? new Promise(() => {}) : real());
+  const pending = env.label(10);
+  let answered = null;
+  pending.then((value) => { answered = value; });
+  await env.browser.clock.advance(LIMITS.labelWaitMs - 1);
+  assert.equal(answered, null, 'still waiting one millisecond before the limit');
+  await env.browser.clock.advance(1);
+  assert.deepEqual(await pending, { ok: true, labelled: false });
+  // a page that answers something other than ok:true
+  env.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? Promise.resolve({ ok: false }) : real());
+  assert.deepEqual(await env.label(10), { ok: true, labelled: false });
+  // only the panel may ask, and a bad nonce never reaches a page
+  const options = env.browser.createContext('options');
+  assert.deepEqual(await env.send(options, 'sw/tab-label', { tabId: 10, nonce: LABEL_NONCE }), { ok: false, code: 'FORBIDDEN' });
+  delete env.hooks['tabs.sendMessage'];
+  const sent = env.calls('tabs.sendMessage:content/capture-label');
+  assert.deepEqual(await env.panel.chrome.runtime.sendMessage({ v: 1, target: 'sw', type: 'sw/tab-label', tabId: 10, nonce: 'nope' }), { ok: false, code: 'INVALID_MESSAGE' });
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), sent);
+});
+
+test('§22 a relay start asks the worker for nothing the dialog needed: no tab lookup, no arming, no mint, no label, no keep-alive; the host gets the relay shape', async (t) => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });   // the panel's tab, never armed
+  env.browser.addTab({ id: 9, url: 'https://example.com/talk', active: false }); // the tab chosen in the panel's dialog
+  await env.browser.settle();
+  env.log.length = 0;
+  assert.deepEqual(await env.relay(7, { chosenTab: 9, passthrough: false }), { ok: true });
+  await env.browser.settle();
+  t.diagnostic(`relay start call log: ${JSON.stringify(env.log)}`);
+  assert.equal(env.calls('tabs.get'), 0, 'the panel\'s tab is not looked up');
+  assert.equal(env.calls('tabCapture.getMediaStreamId'), 0);
+  assert.equal(env.calls('tabs.sendMessage:content/capture-label'), 0, 'the panel labelled its tab itself (sw/tab-label)');
+  assertOrder(env.log, ['storage.local.get', 'offscreen.createDocument', 'runtime.sendMessage:host/ping', 'storage.session.set', 'runtime.sendMessage:host/lane-start']);
+  const [start] = env.stub.of('host/lane-start');
+  assert.deepEqual(start.message.tab, { relay: RELAY_ID, tabId: 9, passthrough: false, originalVolume: 45 });
+  assert.equal(start.message.key, KEY, 'the key still travels in the one host/lane-start');
+  assert.equal(env.session()[STORAGE_KEYS.host].up, true, 'the document exists and is flagged up');
+  // the chosen tab gets the page captions
+  assert.deepEqual(env.attaches.filter((entry) => entry.message.type === 'content/overlay-attach').map((entry) => entry.tabId), [9]);
+  // no keep-alive loop: time passes without a storage read
+  env.log.length = 0;
+  await env.browser.clock.advance(LIMITS.pickKeepAliveMs * 2);
+  assert.equal(env.calls('storage.session.get'), 0);
+  // the panel's tab may be anything, even a page that could not be captured by itself, or gone
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  env.browser.addTab({ id: 11, url: 'chrome://newtab', active: false, content: false });
+  assert.deepEqual(await env.relay(11, { chosenTab: 9 }), { ok: true });
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.deepEqual(await env.relay(999, { chosenTab: 9 }), { ok: true });
+});
+
+test('§22 a relay start whose tab the panel could not name attaches no page overlay (never the active tab by guess)', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  assert.deepEqual(await env.relay(7, { chosenTab: null }), { ok: true });
+  await env.advance(3000, env.browser.settle());
+  assert.equal(env.attaches.filter((entry) => entry.message.type === 'content/overlay-attach').length, 0);
+  assert.equal(env.stub.relays[0].tabId, null);
+  // an absent chosenTab is the same as null
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.deepEqual(await env.fromPanel('sw/lane-start', { lane: 'tab', tabId: 7, relay: RELAY_ID, passthrough: true }), { ok: true });
+  assert.equal(env.stub.relays[1].tabId, null);
+});
+
+test('§22 `pick` and `relay` together is INVALID_REQUEST before anything happens', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  env.log.length = 0;
+  assert.deepEqual(await env.relay(7, { pick: true }), { ok: false, code: 'INVALID_REQUEST' });
+  assert.equal(env.calls('storage.local.get'), 0);
+  assert.equal(env.calls('offscreen.createDocument'), 0);
+  assert.equal(env.stub.count('host/lane-start'), 0);
+  assert.deepEqual(await env.relay(7, { pick: false }), { ok: true }, '`pick: false` is no pick');
+});
+
+test('§22 a relay start still waits out a stopping lane, refuses a running one, and a second Start while it waits is ALREADY_RUNNING', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  // running
+  assert.deepEqual(await env.relay(7), { ok: true });
+  assert.deepEqual(await env.relay(7, { relay: 'abcdef0123456789'.repeat(2) }), { ok: false, code: 'ALREADY_RUNNING' });
+  assert.equal(env.stub.count('host/lane-start'), 1, 'refused before the host was asked');
+  // stopping, settles within the wait
+  env.stub.lanes.tab = 'stopping';
+  env.browser.clock.setTimeout(() => { env.stub.lanes.tab = 'off'; }, 300);
+  const waiting = env.relay(7);
+  await env.browser.clock.advance(LIMITS.stopWaitMs);
+  assert.deepEqual(await waiting, { ok: true });
+  // stopping for good: LANE_STOPPING
+  env.stub.lanes.tab = 'stopping';
+  const stuck = env.relay(7);
+  await env.browser.clock.advance(LIMITS.stopWaitMs + 500);
+  assert.deepEqual(await stuck, { ok: false, code: 'LANE_STOPPING' });
+  // while a relay start waits for the panel's first audio, another Start is ALREADY_RUNNING
+  env.stub.lanes.tab = 'off';
+  const gate = env.stub.hold('relay');
+  const held = env.relay(7);
+  await env.browser.settle();
+  assert.deepEqual(await env.relay(7), { ok: false, code: 'ALREADY_RUNNING' });
+  gate.release();
+  assert.deepEqual(await held, { ok: true });
+});
+
+test('§22 a Stop of a relay start never closes the document for a left-over dialog (there is none): the start ends START_CANCELLED, the host is told', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  const gate = env.stub.hold('relay');   // the host waits for the panel's first audio
+  const first = env.relay(7);
+  await env.browser.settle();
+  assert.equal(env.stub.relays.length, 1, 'the relay start is inside the host');
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(env.calls('offscreen.closeDocument'), 0, 'closeLeftOverDialog never fires for a relay start');
+  assert.notEqual(env.browser.offscreenDocument, null);
+  assert.equal(hostFlag(env).up, true);
+  assert.ok(env.stub.stops.tab >= 1, 'the host got its host/lane-stop');
+  gate.release();
+  assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.stub.count('host/lane-start'), 1, 'not sent again');
+  // the same for a Stop of everything
+  const again = env.stub.hold('relay');
+  const second = env.relay(7);
+  await env.browser.settle();
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop'), { ok: true });
+  assert.equal(env.calls('offscreen.closeDocument'), 0);
+  again.release();
+  assert.deepEqual(await second, { ok: false, code: 'START_CANCELLED' });
+});
+
+test('§22 HOST_UNAVAILABLE on a relay start is re-sent once (there is no dialog to duplicate), whenever it comes', async () => {
+  const env = makeEnv();
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  const answer = deferred();
+  let sends = 0;
+  env.stub.on('host/lane-start', () => (++sends === 1 ? answer.promise : PASS));
+  const pending = env.relay(7);
+  await env.browser.settle();
+  await env.browser.clock.advance(3000);
+  answer.release({ ok: false, code: 'HOST_UNAVAILABLE' });
+  assert.deepEqual(await pending, { ok: true });
+  assert.equal(env.stub.count('host/lane-start'), 2);
 });
 
 test('the other mint strings map to their codes and never leak the message', async () => {
@@ -897,6 +1293,26 @@ test('LANE_STOPPING: a lane that settles is waited out BEFORE the mint; one that
   assert.equal(stuck.stub.count('host/lane-start'), 0);
 });
 
+// §20 review (F1): a panel that had no host state yet sent a start next to a lane that ran on another tab. The host
+// refused it, but only after the mint, and the id left pending on the clicked tab made the NEXT click there end in
+// TAB_CAPTURE_BUSY. Fails on the first 0.5.0 build, which checked only for 'stopping' before the mint.
+test('§20 a lane the host already runs is refused as ALREADY_RUNNING BEFORE the mint: no stream id is left pending', async () => {
+  for (const phase of ['starting', 'running', 'reconnecting']) {
+    const env = makeEnv();
+    await env.armTab(7);
+    await env.seedKey();
+    await env.sw.ensureOffscreen();
+    env.stub.lanes.tab = phase;
+    env.log.length = 0;
+    assert.deepEqual(await env.start('tab', 7), { ok: false, code: 'ALREADY_RUNNING' }, phase);
+    assert.equal(env.calls('tabCapture.getMediaStreamId'), 0, `${phase}: nothing minted`);
+    assert.equal(env.stub.count('host/lane-start'), 0, phase);
+    // once the lane is off the same tab starts (no id was left pending on it)
+    env.stub.lanes.tab = 'off';
+    assert.deepEqual(await env.start('tab', 7), { ok: true }, `${phase}: the tab is not blocked`);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 test('CANCELLATION 1: sw/lane-stop during ensureOffscreen ends in START_CANCELLED, no mint, and the stop reaches the host', async (t) => {
   const env = makeEnv();
@@ -1124,6 +1540,220 @@ test('a cancelled mic start that is still unwinding is LANE_STOPPING too (the ru
   gate.release();
   assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
   assert.deepEqual(await env.start('mic'), { ok: true });
+});
+
+// ---------------------------------------------------------------------------------------------
+// §20 (2026-10-08), the real-browser finding (docs/extension.md §20, check 20.5): a share dialog that nobody answered
+// stays open in the offscreen document, and while it is open a stream-id start of the SAME document never completes. So a
+// Stop that cancels a dialog start closes the document (the dialog goes with it) unless something else lives in it. The
+// stub host cannot model the block itself; tests/extension-integration.test.mjs does, over the real host and panel.
+const hostFlag = (env) => env.session()[STORAGE_KEYS.host];
+async function dialogEnv(options) {
+  const env = makeEnv(options);
+  await env.seedKey();
+  env.browser.addTab({ id: 7, url: 'https://claude.ai/doc', active: true });
+  await env.browser.settle();
+  return env;
+}
+
+test('R1 a Stop that cancels a share-dialog start closes the offscreen document: the start ends START_CANCELLED without sending or creating anything, the flag says down, and the next Start recreates the document', async () => {
+  const env = await dialogEnv();
+  const gate = env.stub.hold('pick');   // never released: the close alone must end the start
+  const first = env.pick(7);
+  await env.browser.settle();
+  assert.equal(env.stub.count('host/lane-start'), 1, 'the dialog start is inside the host');
+  assert.notEqual(env.browser.offscreenDocument, null);
+  assert.equal(hostFlag(env).up, true);
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(env.calls('offscreen.closeDocument'), 1, 'the dialog the stop leaves open is closed with its document');
+  assert.equal(env.browser.offscreenDocument, null);
+  assert.equal(hostFlag(env).up, false, 'the host flag follows the close');
+  assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
+  // The cancelled start did not go on: no second host/lane-start, no document created for a run that was cancelled.
+  assert.equal(env.stub.count('host/lane-start'), 1, 'not sent again');
+  assert.equal(env.calls('offscreen.createDocument'), 0, 'the HOST_UNAVAILABLE retry did not recreate the document');
+  assert.equal(env.browser.offscreenDocument, null);
+  assert.equal(hostFlag(env).up, false, 'and the flag was not set up again by the unwinding start');
+  assert.equal(env.session()[STORAGE_KEYS.lastStop], undefined, 'our own stop is not a host loss');
+  // The next Start creates a fresh document through ensureOffscreen and runs.
+  assert.deepEqual(await env.pick(7), { ok: true });
+  assert.equal(env.stub.creations, 2, 'a second document');
+  assert.equal(hostFlag(env).up, true);
+  gate.release();
+});
+
+test('R1 the close is for a cancelled DIALOG start only: a normal Stop of a running lane, and a dialog start cancelled before the dialog was asked for, leave the document alone', async () => {
+  // a running armed lane
+  const armed = makeEnv();
+  await armed.armTab(7);
+  await armed.seedKey();
+  assert.deepEqual(await armed.start('tab', 7), { ok: true });
+  armed.log.length = 0;
+  assert.deepEqual(await armed.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(armed.calls('offscreen.closeDocument'), 0);
+  assert.notEqual(armed.browser.offscreenDocument, null);
+  assert.equal(hostFlag(armed).up, true);
+
+  // a running dialog lane (the dialog was answered long ago): there is no start left to cancel
+  const picked = await dialogEnv();
+  picked.stub.choice = { tabId: 7 };
+  assert.deepEqual(await picked.pick(7), { ok: true });
+  picked.log.length = 0;
+  assert.deepEqual(await picked.fromPanel('sw/lane-stop'), { ok: true });
+  assert.equal(picked.calls('offscreen.closeDocument'), 0);
+
+  // a dialog start that a Stop overtakes inside the label wait: nothing was sent to the host, so no dialog exists
+  const labelling = await dialogEnv();
+  labelling.hooks['tabs.sendMessage'] = (real, tabId, message) => (message?.type === 'content/capture-label' ? new Promise(() => {}) : real());
+  const start = labelling.pick(7);
+  await labelling.browser.settle();
+  assert.equal(labelling.calls('tabs.sendMessage:content/capture-label'), 1, 'the start is inside the label wait');
+  labelling.log.length = 0;
+  assert.deepEqual(await labelling.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.deepEqual(await start, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(labelling.stub.count('host/lane-start'), 0);
+  assert.equal(labelling.calls('offscreen.closeDocument'), 0, 'no dialog was ever asked for');
+  assert.notEqual(labelling.browser.offscreenDocument, null);
+});
+
+test('R1 the microphone keeps the document: a running (or starting) microphone is never closed under, and the dialog start still ends START_CANCELLED', async () => {
+  // running microphone, Stop of the tab lane only
+  const env = await dialogEnv();
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  const gate = env.stub.hold('pick');
+  const first = env.pick(7);
+  await env.browser.settle();
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(env.calls('offscreen.closeDocument'), 0, 'closing would end the microphone');
+  assert.notEqual(env.browser.offscreenDocument, null);
+  assert.equal(env.stub.lanes.mic, 'running');
+  assert.equal(hostFlag(env).up, true);
+  gate.release();
+  assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.calls('offscreen.closeDocument'), 0);
+
+  // a Stop of EVERYTHING stops the microphone with the same command, so nothing is left to protect
+  const all = await dialogEnv();
+  assert.deepEqual(await all.start('mic'), { ok: true });
+  all.stub.hold('pick');
+  const dialog = all.pick(7);
+  await all.browser.settle();
+  all.log.length = 0;
+  assert.deepEqual(await all.fromPanel('sw/lane-stop'), { ok: true });
+  assert.equal(all.stub.lanes.mic, 'off');
+  assert.equal(all.calls('offscreen.closeDocument'), 1);
+  assert.equal(all.browser.offscreenDocument, null);
+  assert.deepEqual(await dialog, { ok: false, code: 'START_CANCELLED' });
+
+  // a microphone that is still starting in the host (the fresh ping sees it) is protected as well
+  const starting = await dialogEnv();
+  const micGate = starting.stub.hold('lane-start');
+  const mic = starting.start('mic');
+  await starting.browser.settle();
+  assert.equal(starting.stub.lanes.mic, 'starting');
+  const pickGate = starting.stub.hold('pick');
+  const tab = starting.pick(7);
+  await starting.browser.settle();
+  starting.log.length = 0;
+  assert.deepEqual(await starting.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(starting.calls('offscreen.closeDocument'), 0);
+  pickGate.release();
+  micGate.release();
+  assert.deepEqual(await tab, { ok: false, code: 'START_CANCELLED' });
+  assert.deepEqual(await mic, { ok: true });
+});
+
+test('R1 a start of another lane that has not reached the host yet is invisible to the ping, but closeHost still refuses while it is in flight', async () => {
+  const env = await dialogEnv();
+  const pickGate = env.stub.hold('pick');
+  const dialog = env.pick(7);
+  await env.browser.settle();
+  const pingGate = env.stub.hold('ping');
+  const mic = env.start('mic');   // its wait-out ping takes the gate: this start sits in `starting`, unseen by the host
+  await env.browser.settle();
+  assert.equal(env.stub.lanes.mic, 'off', 'the host has not heard of it');
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(env.stub.lanes.mic, 'off');
+  assert.equal(env.calls('offscreen.closeDocument'), 0, 'the document stays: the microphone start is about to use it');
+  assert.notEqual(env.browser.offscreenDocument, null);
+  pingGate.release();
+  assert.deepEqual(await mic, { ok: true });
+  pickGate.release();   // the document was kept, so the cancelled start unwinds through the host's own answer
+  assert.deepEqual(await dialog, { ok: false, code: 'START_CANCELLED' });
+});
+
+test('R1 a Stop of everything cancels both starts at once: both unwinding starts may sit in `starting`, and the document is still closed', async () => {
+  const env = await dialogEnv();
+  env.stub.hold('pick');
+  const micGate = env.stub.hold('lane-start');
+  const mic = env.start('mic');
+  await env.browser.settle();
+  const dialog = env.pick(7);
+  await env.browser.settle();
+  assert.equal(env.stub.lanes.mic, 'starting');
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop'), { ok: true });
+  assert.equal(env.calls('offscreen.closeDocument'), 1, 'both cancelled lanes are excepted from the in-flight rule');
+  assert.equal(env.browser.offscreenDocument, null);
+  micGate.release();
+  assert.deepEqual(await dialog, { ok: false, code: 'START_CANCELLED' });
+  assert.deepEqual(await mic, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(env.calls('offscreen.createDocument'), 0, 'nothing recreated the document for a cancelled run');
+});
+
+test('R1 a ping that fails means the host is unusable: the document is closed even with the microphone listed as running', async () => {
+  const env = await dialogEnv();
+  assert.deepEqual(await env.start('mic'), { ok: true });
+  env.stub.hold('pick');
+  const first = env.pick(7);
+  await env.browser.settle();
+  env.stub.on('host/ping', () => ({ ok: false, code: 'INTERNAL' }));
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.ok(env.calls('runtime.sendMessage:host/ping') >= 1, 'a fresh ping was asked');
+  assert.equal(env.calls('offscreen.closeDocument'), 1);
+  assert.equal(env.browser.offscreenDocument, null);
+  assert.equal(hostFlag(env).up, false);
+  assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
+});
+
+test('R1 a Stop that lands inside the ONE HOST_UNAVAILABLE retry (its ensureOffscreen) ends the start: nothing is sent a second time', async () => {
+  for (const how of ['armed', 'dialog']) {
+    const env = how === 'armed' ? makeEnv() : await dialogEnv();
+    if (how === 'armed') { await env.armTab(7); await env.seedKey(); }
+    let gate = null;
+    env.stub.on('host/lane-start', () => { gate ??= env.stub.hold('ping'); return { ok: false, code: 'HOST_UNAVAILABLE' }; });
+    const start = how === 'armed' ? env.start('tab', 7) : env.pick(7);
+    await env.browser.settle();
+    assert.equal(env.stub.count('host/lane-start'), 1, `${how}: the first send was refused`);
+    assert.equal(env.stub.count('host/ping') >= 2, true, `${how}: the retry is inside ensureOffscreen (its ping is held)`);
+    // (a close queues behind the ensureOffscreen that is in progress, so the stop answers once the held ping is released)
+    const stopping = env.fromPanel('sw/lane-stop', { lane: 'tab' });
+    await env.browser.settle();
+    gate.release();
+    assert.deepEqual(await stopping, { ok: true });
+    assert.deepEqual(await start, { ok: false, code: 'START_CANCELLED' }, how);
+    assert.equal(env.stub.count('host/lane-start'), 1, `${how}: not sent a second time`);
+    assert.equal(env.calls('offscreen.closeDocument'), how === 'dialog' ? 1 : 0, how);
+    assert.equal(env.calls('offscreen.createDocument'), 1, `${how}: the retry found the document it expected, and nothing recreated one`);
+  }
+});
+
+test('R1 the lane whose start was cancelled may still be unwinding in the host: only the OTHER lane decides whether the document is kept', async () => {
+  const env = await dialogEnv();
+  env.stub.hold('pick');
+  const first = env.pick(7);
+  await env.browser.settle();
+  // A host that answers the stop while the cancelled lane has not settled yet (the ping then reports it as stopping).
+  env.stub.on('host/lane-stop', (message) => { env.stub.stops[message.lane ?? 'tab'] += 1; env.stub.lanes.tab = 'stopping'; return { ok: true }; });
+  env.log.length = 0;
+  assert.deepEqual(await env.fromPanel('sw/lane-stop', { lane: 'tab' }), { ok: true });
+  assert.equal(env.stub.lanes.tab, 'stopping');
+  assert.equal(env.calls('offscreen.closeDocument'), 1, 'the cancelled lane itself does not keep the document alive');
+  assert.deepEqual(await first, { ok: false, code: 'START_CANCELLED' });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1457,7 +2087,10 @@ test('a start whose host answers with a stale hostId still works: the worker tru
   await env.seedKey();
   assert.deepEqual(await env.start('mic'), { ok: true });
   env.stub.hostId = 'h-second';
+  // §20 review: a lane the host still runs is refused before any host work (step 3), so the lane must be off first.
   assert.deepEqual(await env.start('mic'), { ok: false, code: 'ALREADY_RUNNING' });
+  env.stub.lanes.mic = 'off';
+  assert.deepEqual(await env.start('mic'), { ok: true });
   assert.equal(env.session()[STORAGE_KEYS.host].hostId, 'h-second', 'the flag follows the host that answered');
 });
 

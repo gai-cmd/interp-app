@@ -6,10 +6,11 @@ import { createHostEnv, createLaneHost, createRealmClock } from '../extension/en
 import { createOverlayHub } from '../extension/engine/overlay-hub.js';
 import { createPanelHub } from '../extension/engine/panel-hub.js';
 import { createChromeAdapter } from '../extension/lib/chrome-adapter.js';
+import { RELAY_CHANNEL_PREFIX, createRelaySender } from '../extension/lib/audio-relay.js';
 import { LIMITS, PORT_NAMES, STORAGE_KEYS, makeFrame, makeMessage, validateFrame } from '../extension/lib/protocol.js';
 import { createFakeAudioEnv } from './fixtures/fake-audio.mjs';
 import { createHostRig, fakeKey, STYLE, tick } from './fixtures/extension-lanes.mjs';
-import { createFakeBrowser, createFakeClock } from './fixtures/fake-chrome.mjs';
+import { FakeTrack, createFakeBrowser, createFakeClock, createMediaSource } from './fixtures/fake-chrome.mjs';
 import { createSocketFixture } from './fixtures/live.mjs';
 import { audioContent, content } from './fixtures/sim.mjs';
 
@@ -1321,6 +1322,104 @@ test('host.uiState() is the current UiState; dispose stops both lanes, says bye 
 });
 
 // ---------------------------------------------------------------------------------------------
+// §22 (2026-10-08): the relay start over the host. The panel opened the share dialog and relays the tab's audio; the host
+// answers with the tab the panel named. Fails on 0.5.0 (host/lane-start knew no relay shape).
+const RELAY_ID = 'fedcba9876543210'.repeat(2);
+/** Sends a relay host/lane-start, lets the host listen, then plays the panel: a sender on a fake captured track, fed. */
+async function relayStart(rigH, overrides = {}) {
+  const world = rigH.audio.relay;
+  const track = new FakeTrack({ kind: 'audio', label: 'Tab audio', source: createMediaSource() });
+  const response = rigH.startLane('tab', { relay: RELAY_ID, chosenTab: 9, passthrough: true, ...overrides });
+  await rigH.settle();
+  const sender = createRelaySender({ track, relayId: overrides.relay ?? RELAY_ID,
+    env: { MediaStreamTrackProcessor: world.MediaStreamTrackProcessor, BroadcastChannel: world.BroadcastChannel } });
+  const feed = () => { for (let chunk = 0; chunk < 2; chunk += 1) world.feed(track, { frames: 480, sampleRate: 48000, channels: 2, fill: () => 0.2 }); };
+  feed();
+  return { world, track, sender, feed, response: await response };
+}
+
+test('§22 host/lane-start with a relay: the host listens on the relay channel, answers the chosen tab, routes the tab captions to it and runs', async () => {
+  const rigH = await createHostRig({ relay: true });
+  const panel = rigH.openPanel();
+  const before = rigH.counts();
+  const { world, response } = await relayStart(rigH, { chosenTab: 9 });
+  assert.deepEqual(response, { ok: true, epoch: 1, tabId: 9 });
+  assert.equal(world.channels[0].name, `${RELAY_CHANNEL_PREFIX}${RELAY_ID}`);
+  assert.ok(world.generators[0].written.length > 0, 'the relayed audio reached the generator');
+  await rigH.connect(before);
+  const ping = await rigH.send(makeMessage('host/ping'));
+  assert.equal(ping.lanes.tab, 'running');
+  assert.equal(ping.tabId, 9, 'the captured tab is the one the panel named');
+  assert.equal(panel.last('state').state.lanes.tab.overlay, 'unknown', 'a named tab can get its page captions');
+  assert.deepEqual(await rigH.send(makeMessage('host/overlay-wanted', { tabId: 9, active: false })), { ok: true, wanted: true, lanes: ['tab'] });
+  assert.equal(rigH.audio.picker.calls.length, 0, 'the host asked for no dialog');
+  // the chosen tab closing ends the lane like any captured tab
+  await rigH.send(makeMessage('host/tab-removed', { tabId: 9 }));
+  await rigH.settle();
+  assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.tab, 'error');
+  assert.equal(panel.last('state').state.lanes.tab.errorCode, 'TAB_ENDED');
+  assert.equal(world.channels[0].closed, true);
+});
+
+test('§22 a relay start whose tab the panel could not name has no page to draw on: tabId null and the overlay reads unavailable at once', async () => {
+  const rigH = await createHostRig({ relay: true });
+  const panel = rigH.openPanel();
+  const { response } = await relayStart(rigH, { chosenTab: null });
+  assert.deepEqual(response, { ok: true, epoch: 1, tabId: null });
+  await rigH.settle();
+  await rigH.clock.advance(150);
+  assert.equal(panel.last('state').state.lanes.tab.overlay, 'unavailable');
+  assert.equal((await rigH.send(makeMessage('host/ping'))).tabId, null);
+});
+
+test('§22 host/lane-stop while a relay start waits for its first audio answers START_CANCELLED and closes the channel; no audio for 4 s is TAB_CAPTURE_FAILED', async () => {
+  const rigH = await createHostRig({ relay: true });
+  const pending = rigH.startLane('tab', { relay: RELAY_ID, chosenTab: 9, passthrough: true });
+  await rigH.settle();
+  const world = rigH.audio.relay;
+  assert.equal(world.listening(`${RELAY_CHANNEL_PREFIX}${RELAY_ID}`).length, 1);
+  assert.deepEqual(await rigH.send(makeMessage('host/lane-stop', { lane: 'tab' })), { ok: true });
+  assert.deepEqual(await pending, { ok: false, code: 'START_CANCELLED' });
+  assert.equal(world.listening(`${RELAY_CHANNEL_PREFIX}${RELAY_ID}`).length, 0);
+  assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.tab, 'off');
+  // the panel never sends anything: the host gives up after LIMITS.relayFirstFrameMs
+  const silent = rigH.startLane('tab', { relay: RELAY_ID, chosenTab: 9, passthrough: true });
+  await rigH.settle();
+  await rigH.clock.advance(LIMITS.relayFirstFrameMs);
+  assert.deepEqual(await silent, { ok: false, code: 'TAB_CAPTURE_FAILED' });
+});
+
+test('§22 the panel\'s own stop reaches the host before its host/lane-stop: the lane settles in off with no TAB_ENDED; the panel\'s track ending is TAB_ENDED', async () => {
+  const rigH = await createHostRig({ relay: true });
+  const panel = rigH.openPanel();
+  let before = rigH.counts();
+  const first = await relayStart(rigH);
+  await rigH.connect(before);
+  first.sender.stop();          // Stop pressed: the end message travels faster than the worker's host/lane-stop
+  await rigH.settle();
+  await rigH.clock.advance(150);
+  assert.equal((await rigH.send(makeMessage('host/ping'))).lanes.tab, 'off');
+  assert.equal(panel.last('state').state.lanes.tab.errorCode, null, 'no notice for an own stop');
+  assert.deepEqual(await rigH.send(makeMessage('host/lane-stop', { lane: 'tab' })), { ok: true }, 'the late host/lane-stop finds nothing to do');
+
+  before = rigH.counts();
+  const second = await relayStart(rigH, { relay: 'abcdef0123456789'.repeat(2) });
+  assert.equal(second.response.ok, true);
+  await rigH.connect(before);
+  second.track.end();           // the shared tab closed: the panel's track ends
+  await rigH.settle();
+  await rigH.clock.advance(150);
+  assert.equal(panel.last('state').state.lanes.tab.errorCode, 'TAB_ENDED');
+});
+
+test('§22 a relay start on a host whose realm has no MediaStreamTrackGenerator answers TAB_CAPTURE_FAILED', async () => {
+  const rigH = await createHostRig();   // the plain env
+  const response = await rigH.startLane('tab', { relay: RELAY_ID, chosenTab: 9, passthrough: true });
+  assert.deepEqual(response, { ok: false, code: 'TAB_CAPTURE_FAILED' });
+  assert.equal(rigH.audio.relay.channels.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
 // The environment builders of host.js, and structural checks of the engine files (R5, R8, R9, R11, the key rule).
 
 test('createRealmClock / createHostEnv wrap the scope: arrow wrappers, nothing read up front, isSecureContext strict', async () => {
@@ -1350,6 +1449,13 @@ test('createRealmClock / createHostEnv wrap the scope: arrow wrappers, nothing r
   assert.ok(random >= 0 && random < 1);
   assert.equal(createHostEnv({ ...scope, isSecureContext: 'yes' }, engineClock).isSecureContext, false, 'only a literal true counts');
   assert.equal(createHostEnv({}, engineClock).AudioContext, undefined, 'a missing capability is undefined, not a throw');
+  // §22: the relay constructors of the offscreen realm, read from the scope like the others
+  const relayScope = { ...scope, BroadcastChannel: class {}, MediaStreamTrackGenerator: class {}, AudioData: class {}, MediaStream: class {} };
+  const relayEnv = createHostEnv(relayScope, engineClock);
+  for (const name of ['BroadcastChannel', 'MediaStreamTrackGenerator', 'AudioData', 'MediaStream']) {
+    assert.equal(relayEnv[name], relayScope[name], name);
+    assert.equal(createHostEnv({}, engineClock)[name], undefined, `${name} missing: undefined`);
+  }
 });
 
 const ENGINE_DIR = new URL('../extension/engine/', import.meta.url);
@@ -1402,6 +1508,12 @@ test('R5/R8/R11 over the engine files: allowed imports only, no chrome/browser i
   }
   assert.match(codeOf(readEngine('lane-engine.js')), /setPersonal\(''\s*,\s*key\)/, 'the one place the key is used (string literals are stripped by codeOf)');
   assert.equal((codeOf(readEngine('lane-engine.js')).match(/\bsetPersonal\b/g) ?? []).length, 1);
+  // §20: the built-in pool is the other credential, used in exactly one place too, and named nowhere else.
+  assert.match(codeOf(readEngine('lane-engine.js')), /setBuiltin\(''\s*,\s*keys\)/, 'the one place the pool is used');
+  assert.equal((codeOf(readEngine('lane-engine.js')).match(/\bsetBuiltin\b/g) ?? []).length, 1);
+  for (const name of ENGINE_FILES.filter((file) => file !== 'lane-engine.js')) {
+    assert.doesNotMatch(codeOf(readEngine(name)), /\{\s*keys\b|\bkeys\s*:|\.keys\b(?!\s*\()/, `${name}: the key pool is named only in lane-engine.js`);
+  }
   // The stream id is named only where the tab stream is acquired.
   for (const name of ENGINE_FILES.filter((file) => file !== 'tab-lane.js')) {
     assert.doesNotMatch(codeOf(readEngine(name)), /\bstreamId\b/, `${name}: the tab stream id lives in tab-lane.js only`);

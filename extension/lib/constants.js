@@ -32,7 +32,8 @@ export function clampCaptionSize(value) {
 
 export const CAPTION_POSITIONS = Object.freeze(['top', 'bottom']);
 export const CAPTION_DISPLAYS = Object.freeze(['dark', 'light', 'mono']);
-export const ORIGINAL_VOLUME = Object.freeze({ min: 0, max: 100, initial: 65 });
+// §20 (2026-10-02): the starting original volume is 45, the owner's own choice (it was 65).
+export const ORIGINAL_VOLUME = Object.freeze({ min: 0, max: 100, initial: 45 });
 export const STYLE_LIMITS = Object.freeze({
   size: CAPTION_SIZE,
   maxLines: Object.freeze({ min: 1, max: 6, initial: 3 }),
@@ -61,6 +62,10 @@ export function tabIdOfCaptureLabel(label, nonce) {
   const tabId = Number(label.slice(nonce.length + 1));
   return Number.isSafeInteger(tabId) ? tabId : null;
 }
+// §22 (2026-10-08): a tab lane whose share dialog the SIDE PANEL opened gets the chosen tab's audio from the panel over a
+// BroadcastChannel named after this id (random per start, 32 lowercase hex like the capture nonce). The message
+// validator and the relay module (lib/audio-relay.js) read the same rule from here.
+export const RELAY_ID_PATTERN = /^[a-f0-9]{32}$/;
 export const isMachineCode = (value) => typeof value === 'string' && MACHINE_CODE_PATTERN.test(value);
 // 2026-09-30: WHY an INVALID_RESULT was raised (the engine's snapshot.errorReason, one of the app's
 // INVALID_RESULT_REASONS, e.g. `audio-encoding`). It crosses as an identifier of this shape and nothing else, next to

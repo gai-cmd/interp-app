@@ -4,14 +4,14 @@ import { SUPPORTED_LANGUAGES } from '../app/i18n/index.js';
 import { CAPTION_SIZE as APP_CAPTION_SIZE, clampCaptionSize as appClampCaptionSize } from '../app/preferences.js';
 import { LIVE_MODELS, LIVE_VOICE_GENDERS } from '../app/providers/gemini/live-config.js';
 import {
-  CAPTION_SIZE as CONSTANT_CAPTION_SIZE, TARGET_LANGUAGES, UI_LANGUAGES, VOICE_GENDERS, clampCaptionSize, defaultPartnerLanguage,
-  isLanguagePair,
+  CAPTION_SIZE as CONSTANT_CAPTION_SIZE, ORIGINAL_VOLUME, TARGET_LANGUAGES, UI_LANGUAGES, VOICE_GENDERS, clampCaptionSize,
+  defaultPartnerLanguage, isLanguagePair,
 } from '../extension/lib/constants.js';
-import { STORAGE_KEYS, validateMessage } from '../extension/lib/protocol.js';
+import { LIMITS, STORAGE_KEYS, validateMessage } from '../extension/lib/protocol.js';
 import {
   CAPTION_SIZE, DEFAULT_SETTINGS, MIGRATIONS, createDefaultSettings, deleteKey, hasKey, hostSettingsOf, laneRequestOf,
-  migrateSettings, normalizeSettings, readKey, readSettings, resolveKey, setLaneTargetLanguage, updateSettings, writeKey,
-  writeSettings,
+  migrateSettings, moveOldTabDefaultModel, normalizeSettings, readKey, readSettings, resolveCredential, setLaneTargetLanguage,
+  updateSettings, writeKey, writeSettings,
 } from '../extension/lib/settings.js';
 
 // A Map-backed storage area with the promise shape of the platform's (get(key) resolves { [key]: value }), JSON
@@ -70,17 +70,19 @@ function assertNormalized(settings, label = '', { frozen = true } = {}) {
   if (frozen) assert.ok(isDeepFrozen(settings), 'deep-frozen');
 }
 
+// §20 (2026-10-02): the interpreted voice plays by default and the original volume starts at 45 (it was muted and 65).
 test('DEFAULT_SETTINGS is frozen and equals the 7.1 listing (microphone captions default to off)', () => {
-  assert.deepEqual(DEFAULT_SETTINGS, { v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: true,
+  assert.deepEqual(DEFAULT_SETTINGS, { v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: false,
     lanes: {
-      tab: { enabled: true, targetLanguage: 'ko', twoWay: false, partnerLanguage: 'en', model: 'gemini-3.5-live-translate-preview', originalVolume: 65, captions: true },
+      tab: { enabled: true, targetLanguage: 'ko', twoWay: false, partnerLanguage: 'en', model: 'gemini-3.8-live', originalVolume: 45, captions: true },
       mic: { enabled: false, targetLanguage: 'en', twoWay: false, partnerLanguage: 'ko', model: 'gemini-3.8-live', captions: false },
     },
     captions: { size: 1.5, position: 'bottom', display: 'dark', showSource: false, maxLines: 3, autoHideSeconds: 8 } });
   assert.ok(isDeepFrozen(DEFAULT_SETTINGS));
   assert.equal(DEFAULT_SETTINGS.lanes.mic.captions, false);
   assert.equal(DEFAULT_SETTINGS.lanes.mic.enabled, false);
-  assert.equal(DEFAULT_SETTINGS.speechMuted, true);
+  assert.equal(DEFAULT_SETTINGS.speechMuted, false, 'the voice is on: a member who hears nothing does not know why');
+  assert.equal(ORIGINAL_VOLUME.initial, 45);
   assertNormalized(DEFAULT_SETTINGS);
   assert.deepEqual(createDefaultSettings('ko'), DEFAULT_SETTINGS);
   assert.ok(Object.isFrozen(MIGRATIONS) && Object.keys(MIGRATIONS).length === 0);
@@ -133,7 +135,7 @@ test('normalizeSettings: top-level enums and booleans', () => {
   for (const voiceGender of ['robot', '', null, 1, 'Female']) assert.equal(norm({ voiceGender }).voiceGender, 'female');
   assert.equal(norm({ speechMuted: false }).speechMuted, false);
   assert.equal(norm({ speechMuted: true }).speechMuted, true);
-  for (const speechMuted of ['false', 0, null, undefined, 'yes']) assert.equal(norm({ speechMuted }).speechMuted, true, 'a non-boolean keeps the muted default');
+  for (const speechMuted of ['true', 1, null, undefined, 'yes']) assert.equal(norm({ speechMuted }).speechMuted, false, 'a non-boolean keeps the default (voice on)');
 });
 
 test('normalizeSettings: per-lane rules', () => {
@@ -149,11 +151,11 @@ test('normalizeSettings: per-lane rules', () => {
   }
   for (const model of LIVE_MODELS) { assert.equal(tab({ model }).model, model); assert.equal(mic({ model }).model, model); }
   for (const model of ['gemini-9', '', null, 5, 'gemini-3.8-live ']) {
-    assert.equal(tab({ model }).model, 'gemini-3.5-live-translate-preview', 'an unknown model becomes that lane\'s default');
+    assert.equal(tab({ model }).model, 'gemini-3.8-live', 'an unknown model becomes that lane\'s default (0.5.1: the latest Live model on both lanes)');
     assert.equal(mic({ model }).model, 'gemini-3.8-live');
   }
-  for (const [input, expected] of [[0, 0], [100, 100], [65, 65], [33.6, 34], [33.4, 33], [150, 100], [-5, 0], [-0.4, 0], [100.4, 100], [Number.MAX_VALUE, 100], [-Infinity, 65],
-    [Infinity, 65], [NaN, 65], ['70', 65], [null, 65], [undefined, 65], [true, 65], [{}, 65], [[70], 65]]) {
+  for (const [input, expected] of [[0, 0], [100, 100], [65, 65], [33.6, 34], [33.4, 33], [150, 100], [-5, 0], [-0.4, 0], [100.4, 100], [Number.MAX_VALUE, 100], [-Infinity, 45],
+    [Infinity, 45], [NaN, 45], ['70', 45], [null, 45], [undefined, 45], [true, 45], [{}, 45], [[70], 45]]) {
     assert.equal(tab({ originalVolume: input }).originalVolume, expected, String(input));
   }
   assert.ok(Object.is(tab({ originalVolume: -0.4 }).originalVolume, 0), 'no negative zero');
@@ -237,7 +239,7 @@ test('hostSettingsOf carries only what a running host applies live and passes th
   assert.ok(isDeepFrozen(host));
   const text = JSON.stringify(host);
   for (const forbidden of ['key', 'targetLanguage', 'model', 'gemini', 'uiLanguage', 'voice']) assert.equal(text.includes(forbidden), false, forbidden);
-  assert.deepEqual(hostSettingsOf(DEFAULT_SETTINGS), { speechMuted: true, tabOriginalVolume: 65, captions: { tab: true, mic: false },
+  assert.deepEqual(hostSettingsOf(DEFAULT_SETTINGS), { speechMuted: false, tabOriginalVolume: 45, captions: { tab: true, mic: false },
     style: { size: 1.5, position: 'bottom', display: 'dark', showSource: false, maxLines: 3, autoHideSeconds: 8 } });
   const wire = validateMessage({ v: 1, target: 'offscreen', type: 'host/settings', settings: host });
   assert.equal(wire.ok, true, 'the SW can never send settings the host rejects');
@@ -251,7 +253,7 @@ test('laneRequestOf returns the per-lane language and model, and refuses an unkn
   const settings = normalizeSettings({ lanes: { tab: { targetLanguage: 'en', model: 'gemini-3.8-live' }, mic: { targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview' } } });
   assert.deepEqual(laneRequestOf(settings, 'tab'), { targetLanguage: 'en', model: 'gemini-3.8-live' });
   assert.deepEqual(laneRequestOf(settings, 'mic'), { targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview' });
-  assert.deepEqual(laneRequestOf(DEFAULT_SETTINGS, 'tab'), { targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview' });
+  assert.deepEqual(laneRequestOf(DEFAULT_SETTINGS, 'tab'), { targetLanguage: 'ko', model: 'gemini-3.8-live' });
   assert.deepEqual(laneRequestOf(undefined, 'mic'), { targetLanguage: 'ja', model: 'gemini-3.8-live' }, 'garbage settings fall back to the English seed');
   assert.ok(Object.isFrozen(laneRequestOf(settings, 'tab')));
   assert.deepEqual(Object.keys(laneRequestOf(settings, 'tab')), ['targetLanguage', 'model']);
@@ -342,12 +344,15 @@ test('normalizeSettings: a partner equal to the target is repaired to the defaul
 });
 
 test('settings storage: an old record is read without a write; a changed target that equals the partner is repaired in the saved record', async () => {
-  const old = { v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: true,
-    lanes: { tab: { enabled: true, targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview', originalVolume: 65, captions: true },
+  const old = { v: 1, uiLanguage: 'auto', voiceGender: 'female', speechMuted: false,
+    lanes: { tab: { enabled: true, targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview', originalVolume: 45, captions: true },
       mic: { enabled: false, targetLanguage: 'en', model: 'gemini-3.8-live', captions: false } },
     captions: { size: 1.5, position: 'bottom', display: 'dark', showSource: false, maxLines: 3, autoHideSeconds: 8 } };
   const area = fakeArea({ [STORAGE_KEYS.settings]: old });
-  assert.deepEqual(await readSettings(area), DEFAULT_SETTINGS, 'the old record reads as the defaults it had');
+  // 0.5.1: the tab default moved to the latest Live model, but READING never moves a stored model (only the update
+  // migration in the service worker does): the old record keeps the translation-only preview it was saved with.
+  assert.deepEqual(await readSettings(area), { ...DEFAULT_SETTINGS, lanes: { ...DEFAULT_SETTINGS.lanes,
+    tab: { ...DEFAULT_SETTINGS.lanes.tab, model: 'gemini-3.5-live-translate-preview' } } }, 'the old record reads as it was saved');
   assert.deepEqual(area.writes(), [], 'reading never upgrades the stored record');
 
   const chosen = await updateSettings(area, (draft) => { draft.lanes.tab.twoWay = true; draft.lanes.tab.partnerLanguage = 'ja'; });
@@ -374,7 +379,7 @@ test('laneRequestOf: a two-way lane adds languages [target, partner]; targetLang
     'the model is NOT changed here: the engine moves a translation-only model to an instruction-driven one itself');
   // off, or a partner left over from an earlier choice, gives the same request as before two-way existed
   const off = normalizeSettings({ lanes: { tab: { targetLanguage: 'ko', twoWay: false, partnerLanguage: 'ja' } } });
-  assert.deepEqual(laneRequestOf(off, 'tab'), { targetLanguage: 'ko', model: 'gemini-3.5-live-translate-preview' });
+  assert.deepEqual(laneRequestOf(off, 'tab'), { targetLanguage: 'ko', model: 'gemini-3.8-live' });
   assert.equal(Object.hasOwn(laneRequestOf(off, 'tab'), 'languages'), false);
   assert.equal(Object.hasOwn(laneRequestOf(DEFAULT_SETTINGS, 'mic'), 'languages'), false);
   // a stored pair that is not a pair is repaired before it can reach a request
@@ -603,19 +608,52 @@ test('the key and the settings never meet in storage or in any settings output',
   assert.deepEqual([...area.data.keys()].sort(), ['interp.key.v1', 'interp.settings.v1']);
 });
 
-test('resolveKey: a valid personal key wins, else only builtin[0] when it has the key shape, else null', () => {
-  const personal = FAKE_KEY, builtin = Object.freeze([OTHER_KEY, 'second-key-that-is-never-used']);
-  assert.equal(resolveKey({ personal, builtin }), personal);
-  assert.equal(resolveKey({ personal: null, builtin }), OTHER_KEY);
-  assert.equal(resolveKey({ builtin }), OTHER_KEY);
+// §20 (2026-10-02) replaces resolveKey (personal, else builtin[0] only, "no rotation"): without a personal key the
+// whole built-in pool travels, and the lane moves through it by itself.
+test('resolveCredential: a valid personal key wins alone; else the built-in pool (key-shaped, each once, at most 8, in order); else null', () => {
+  const second = ['synthetic', 'z'.repeat(24)].join('-');
+  const personal = FAKE_KEY, builtin = Object.freeze([OTHER_KEY, second]);
+  assert.deepEqual(resolveCredential({ personal, builtin }), { key: personal }, 'a person\'s key never falls back to the pool');
+  assert.deepEqual(resolveCredential({ personal: null, builtin }), { keys: [OTHER_KEY, second] });
+  assert.deepEqual(resolveCredential({ builtin }), { keys: [OTHER_KEY, second] });
+  assert.ok(Object.isFrozen(resolveCredential({ builtin })) && Object.isFrozen(resolveCredential({ builtin }).keys));
   for (const invalid of ['', 'has space', 5, {}, [personal], 'x'.repeat(513), ' ', `${personal}\n`, undefined]) {
-    assert.equal(resolveKey({ personal: invalid, builtin }), OTHER_KEY, `invalid personal ${JSON.stringify(invalid)} falls through to the built-in key`);
-    assert.equal(resolveKey({ personal: invalid, builtin: [] }), null);
+    assert.deepEqual(resolveCredential({ personal: invalid, builtin }), { keys: [OTHER_KEY, second] }, `invalid personal ${JSON.stringify(invalid)} falls through to the pool`);
+    assert.equal(resolveCredential({ personal: invalid, builtin: [] }), null);
   }
-  assert.equal(resolveKey({ personal: null, builtin: ['bad key', OTHER_KEY] }), null, 'no rotation: only the first built-in key is ever used');
-  for (const empty of [undefined, null, [], 'text', {}, 5]) assert.equal(resolveKey({ personal: null, builtin: empty }), null);
-  assert.equal(resolveKey({ personal, builtin: undefined }), personal);
-  assert.equal(resolveKey(), null);
-  assert.equal(resolveKey({}), null);
-  assert.equal(resolveKey({ personal: 'x'.repeat(512) }), 'x'.repeat(512));
+  assert.deepEqual(resolveCredential({ builtin: ['bad key', OTHER_KEY, OTHER_KEY, 7, second] }), { keys: [OTHER_KEY, second] },
+    'a key without the shape is left out and a repeated key is sent once');
+  const many = Array.from({ length: LIMITS.maxPoolKeys + 3 }, (_, index) => `${FAKE_KEY}-${index}`);
+  assert.deepEqual(resolveCredential({ builtin: many }).keys, many.slice(0, LIMITS.maxPoolKeys), 'at most LIMITS.maxPoolKeys, the first ones');
+  for (const empty of [undefined, null, [], 'text', {}, 5, ['bad key']]) assert.equal(resolveCredential({ personal: null, builtin: empty }), null);
+  assert.deepEqual(resolveCredential({ personal, builtin: undefined }), { key: personal });
+  assert.equal(resolveCredential(), null);
+  assert.equal(resolveCredential({}), null);
+  assert.deepEqual(resolveCredential({ personal: 'x'.repeat(512) }), { key: 'x'.repeat(512) });
+  // what it returns is exactly what host/lane-start accepts
+  const start = (credential) => validateMessage({ v: 1, target: 'offscreen', type: 'host/lane-start', lane: 'mic', ...credential,
+    request: laneRequestOf(DEFAULT_SETTINGS, 'mic'), voiceGender: 'female', muted: false, captions: false, style: hostSettingsOf(DEFAULT_SETTINGS).style });
+  assert.equal(start(resolveCredential({ personal, builtin })).ok, true);
+  assert.equal(start(resolveCredential({ builtin: many })).ok, true);
+});
+
+// 0.5.1 (2026-10-08, owner): both lanes default to the latest Google Live model. The move of a stored OLD default is one helper.
+test('moveOldTabDefaultModel moves only the old tab default (the translation-only preview) and nothing else', () => {
+  const LATEST = 'gemini-3.8-live';
+  const OLD = 'gemini-3.5-live-translate-preview';
+  assert.equal(DEFAULT_SETTINGS.lanes.tab.model, LATEST);
+  assert.equal(DEFAULT_SETTINGS.lanes.mic.model, LATEST);
+  const draft = (tabModel, micModel) => ({ speechMuted: true, lanes: { tab: { model: tabModel, targetLanguage: 'ja' }, mic: { model: micModel, targetLanguage: 'en' } } });
+  const moved = draft(OLD, OLD);
+  moveOldTabDefaultModel(moved);
+  assert.deepEqual(moved, draft(LATEST, OLD), 'the tab lane moves; the microphone lane is never touched (its choice is its own)');
+  for (const model of [LATEST, 'gemini-2.5-flash-native-audio-latest', 'gemini-3.1-flash-live-preview', 'unknown', null, undefined]) {
+    const kept = draft(model, LATEST);
+    const before = JSON.stringify(kept);
+    moveOldTabDefaultModel(kept);
+    assert.equal(JSON.stringify(kept), before, `a stored choice ${String(model)} stays`);
+  }
+  for (const garbage of [undefined, null, {}, { lanes: null }, { lanes: { tab: null } }, { lanes: { tab: 'x' } }, 'text', 5]) {
+    assert.doesNotThrow(() => moveOldTabDefaultModel(garbage), JSON.stringify(garbage));
+  }
 });

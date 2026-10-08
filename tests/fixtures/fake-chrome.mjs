@@ -15,8 +15,9 @@
 //   browser.settle()                    flush pending microtask chains (no time passes)
 //   browser.withGesture(fn)             run fn with a user gesture but WITHOUT any tab grant
 //   browser.pushState(tabId, url)       same-document navigation: grant and content script survive
-//   browser.install(reason)             fire runtime.onInstalled in the service worker
+//   browser.install(reason, details)    fire runtime.onInstalled in the service worker ({ reason, ...details })
 //   browser.tabRecord / contentContext / hasGrant / storageData(area) / listenerErrors / injections / autoPanelOpens
+//   browser.offscreenContext            the context of the offscreen document that exists now (fake-audio.mjs ties pickers to it)
 //   browser.on<Hook> = fn               onCreateOffscreen(context), onInject(tabId, files), onContentCreated(context),
 //                                       onTabCreate(tab), onPanelOpen(record), onOpenOptions(): a throwing hook is
 //                                       recorded in listenerErrors, never thrown into the browser call
@@ -114,6 +115,8 @@ export class FakeTrack extends EventTarget {
     this.settings = { ...settings }; this.captureHandle = captureHandle;
     this.readyState = 'live'; this.muted = false; this.enabled = true; this.stops = 0;
     this.source = source;
+    // §22: what must learn of a stop() although no event fires for it (fake-relay.mjs: a processor's stream closes).
+    this.stopWatchers = new Set();
     source?.add(this);
   }
   /** Like MediaStreamTrack.stop(): ends the track WITHOUT an `ended` event. */
@@ -121,6 +124,7 @@ export class FakeTrack extends EventTarget {
     this.stops++;
     if (this.readyState === 'ended') return;
     this.readyState = 'ended';
+    for (const watcher of [...this.stopWatchers]) attempt(watcher);
     this.source?.release();
   }
   /** The source ended by itself (tab closed, capture revoked): `ended` fires. */
@@ -926,6 +930,8 @@ export function createFakeBrowser({
     get accessLevel() { return state.accessLevel; },
     get panelBehavior() { return { ...state.panelBehavior }; },
     get offscreenDocument() { return state.offscreen; },
+    /** The context of the offscreen document that exists now (null: none). A document that was closed stays `alive === false`. */
+    get offscreenContext() { return state.offscreen?.context ?? null; },
     get gestureActive() { return state.gestureActive; },
     get optionsOpens() { return state.optionsOpens; },
     get focusedWindowId() { return state.focusedWindowId; },
@@ -983,9 +989,10 @@ export function createFakeBrowser({
       if (worker) { armIdle(); fire(worker, 'runtime.onStartup', []); }
       await flush();
     },
-    async install(reason = 'install') {
+    // `details` adds what Chrome also reports, e.g. { previousVersion } for reason 'update' (§20).
+    async install(reason = 'install', details = {}) {
       const worker = liveSw('runtime.onInstalled');
-      if (worker) { armIdle(); fire(worker, 'runtime.onInstalled', [{ reason }]); }
+      if (worker) { armIdle(); fire(worker, 'runtime.onInstalled', [{ ...details, reason }]); }
       await flush();
     },
 

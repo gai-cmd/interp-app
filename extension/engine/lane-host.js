@@ -2,14 +2,16 @@
 // createLaneHost: the offscreen document's brain. It owns both lanes, the two port hubs, the frame coalescer and the
 // live settings, and answers the service worker's `host/*` messages. Nothing here names a `chrome` global: the
 // runtime arrives as `adapter.runtime` (the only namespace an offscreen document has; of its members only id, getURL,
-// sendMessage, onMessage and onConnect are used, so the six-member rule of 3.4 holds). The API key passes through here inside one
-// `host/lane-start` message and is never stored, logged or put in a frame; frames are built from LaneState and
+// sendMessage, onMessage and onConnect are used, so the six-member rule of 3.4 holds). The API key (a person's own, or
+// the built-in pool, §20) passes through here inside one `host/lane-start` message and is never stored, logged or put
+// in a frame; frames are built from LaneState and
 // CaptionFrame only, so no audio, stream id, session id or key can be in them.
 import { DEFAULT_STYLE, ORIGINAL_VOLUME, deepFreeze } from '../lib/constants.js';
 import { buildCaptionFrame, buildStyleFrame, createFrameCoalescer } from '../lib/caption-frames.js';
 import { LANES, LIMITS, PORT_NAMES, PROTOCOL_VERSION, createMessageRouter, makeFrame, makeMessage,
   validateFrame } from '../lib/protocol.js';
 import { ACTIVE_PHASES, buildUiState, createIdleLaneState, laneStateFromSnapshot } from '../lib/ui-state.js';
+import { createKeyCooldownMemory } from './lane-engine.js';
 import { createMicLane } from './mic-lane.js';
 import { createOverlayHub } from './overlay-hub.js';
 import { createPanelHub } from './panel-hub.js';
@@ -40,6 +42,11 @@ export function createHostEnv(scope = globalThis, clock = createRealmClock(scope
   return Object.freeze({
     AudioContext: scope.AudioContext,
     AudioWorkletNode: scope.AudioWorkletNode,
+    // §22: what the tab lane rebuilds a relayed tab's audio with (lib/audio-relay.js); undefined where the realm lacks one.
+    BroadcastChannel: scope.BroadcastChannel,
+    MediaStreamTrackGenerator: scope.MediaStreamTrackGenerator,
+    AudioData: scope.AudioData,
+    MediaStream: scope.MediaStream,
     navigator: scope.navigator,
     WebSocket: scope.WebSocket,
     fetch: (...args) => scope.fetch(...args),
@@ -57,8 +64,9 @@ const makeHostId = (env) => {
 };
 
 /**
- * `adapter` = { runtime }; `env` = { AudioContext, AudioWorkletNode, navigator, WebSocket, fetch, setTimeout,
- * clearTimeout, now, random, isSecureContext } where the timers are the ENGINE clock; `timers` = the REALM clock used by
+ * `adapter` = { runtime }; `env` = { AudioContext, AudioWorkletNode, BroadcastChannel, MediaStreamTrackGenerator,
+ * AudioData, MediaStream, navigator, WebSocket, fetch, setTimeout, clearTimeout, now, random, isSecureContext } where the
+ * timers are the ENGINE clock (the four §22 relay constructors may be missing: a relay start then fails, nothing else); `timers` = the REALM clock used by
  * hubs, coalescers and grace timers. `deps` overrides the real app modules in tests.
  */
 export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env } = {}) {
@@ -70,7 +78,8 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
     now: () => timers.now(),
   });
 
-  let settings = deepFreeze({ speechMuted: true, tabOriginalVolume: ORIGINAL_VOLUME.initial,
+  // The defaults of the settings (§20: the voice plays); the first host/lane-start replaces them with the stored ones.
+  let settings = deepFreeze({ speechMuted: false, tabOriginalVolume: ORIGINAL_VOLUME.initial,
     captions: { tab: false, mic: false }, style: { ...DEFAULT_STYLE } });
   let micActiveTabId = null;          // the tab you look at (host/overlay-wanted {active}); mic captions go only there
   let epochCounter = 0;
@@ -84,9 +93,11 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
   const lingerTimers = new Set();
   const nextSeq = (key) => { const value = (seqs.get(key) ?? 0) + 1; seqs.set(key, value); return value; };
 
+  // §20: which built-in keys hit a quota, remembered for this document's life and shared by both lanes and every run.
+  const cooldowns = createKeyCooldownMemory();
   const lanes = {
-    tab: createTabLane({ env, deps, timers: realm, onChange: (reason) => onLaneChange('tab', reason) }),
-    mic: createMicLane({ env, deps, timers: realm, onChange: (reason) => onLaneChange('mic', reason) }),
+    tab: createTabLane({ env, deps, timers: realm, cooldowns, onChange: (reason) => onLaneChange('tab', reason) }),
+    mic: createMicLane({ env, deps, timers: realm, cooldowns, onChange: (reason) => onLaneChange('mic', reason) }),
   };
 
   // -------------------------------------------------------------------------------------------
@@ -343,7 +354,8 @@ export function createLaneHost({ adapter, env, deps = {}, hostId, timers = env }
         style: { ...message.style } }));
       const started = await lanes[lane].start({ ...message, muted: speechMuted, epoch });
       // §19: a share-picker start that could not tell which tab was chosen (its page has no content script) has no
-      // page to draw on. Saying so at once lets the panel explain why the captions are in the panel only.
+      // page to draw on. Saying so at once lets the panel explain why the captions are in the panel only. §22: a relay
+      // start answers with the tab the panel named (`tab.tabId`, null when it could not tell), with the same effect.
       if (started.tabId === null) { overlayOutcome[lane] = 'unavailable'; refresh(); }
       return started;
     },

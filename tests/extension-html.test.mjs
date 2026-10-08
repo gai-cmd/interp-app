@@ -61,13 +61,18 @@ const PANEL_IDS = ['app', 'panel-title', 'status-pill', 'key-missing', 'key-miss
   'mic-two-way-hint', 'mic-two-way-note', 'mic-apply-next', 'mic-source-note', 'mic-captions', 'mic-captions-hint',
   'mic-permission-status', 'btn-mic-allow', 'mic-status', 'mic-route', 'mic-route-note', 'mic-output', 'mic-gap', 'mic-level', 'mic-notice', 'mic-preview',
   'no-lane-note', 'mute-note', 'echo-note', 'close-note', 'howto', 'howto-steps', 'usage-note',
-  'btn-start', 'btn-mic-permission', 'btn-mute', 'btn-options'];
+  'btn-start', 'btn-mic-permission', 'btn-mute', 'btn-options',
+  // §21: the update banner's third button and its persistent live region.
+  'update-note', 'update-text', 'btn-update-auto', 'btn-update-get', 'btn-update-reload', 'update-progress'];
 const OPTIONS_IDS = ['opt-title', 'opt-lead', 'opt-h-key', 'opt-key', 'opt-key-toggle', 'opt-key-save', 'opt-key-delete', 'opt-key-status',
   'opt-key-guide', 'opt-key-note', 'opt-h-lanes', 'opt-ui-language', 'opt-ui-language-hint', 'opt-target-tab', 'opt-target-mic',
   'opt-model-tab', 'opt-model-tab-hint', 'opt-model-mic', 'opt-model-mic-hint', 'opt-voice', 'opt-voice-hint', 'opt-volume', 'opt-volume-value',
   'opt-captions-tab', 'opt-captions-mic', 'opt-captions-mic-hint', 'opt-defaults-hint', 'opt-h-captions', 'opt-caption-size',
   'opt-caption-size-value', 'opt-caption-size-hint', 'opt-caption-position', 'opt-caption-display', 'opt-caption-source', 'opt-caption-lines',
-  'opt-caption-hide', 'opt-h-privacy', 'opt-privacy-audio', 'opt-privacy-free', 'opt-privacy-page', 'opt-saved'];
+  'opt-caption-hide', 'opt-h-privacy', 'opt-privacy-audio', 'opt-privacy-free', 'opt-privacy-page', 'opt-saved',
+  // §21: the "Automatic updates" section.
+  'update-section', 'opt-h-update', 'update-disabled-note', 'update-lead', 'update-status', 'update-detail', 'update-folder-help',
+  'update-actions', 'btn-update-folder', 'btn-update-now', 'btn-update-forget', 'update-auto-row', 'update-auto'];
 // The row order of the 7.3 table (8.3: inside a section the DOM order is the row order).
 const OPTIONS_ROW_ORDER = ['opt-key', 'opt-key-toggle', 'opt-key-save', 'opt-key-delete', 'opt-key-status', 'opt-key-guide', 'opt-key-note',
   'opt-ui-language', 'opt-target-tab', 'opt-target-mic', 'opt-model-tab', 'opt-model-mic', 'opt-voice', 'opt-volume', 'opt-captions-tab',
@@ -182,7 +187,8 @@ test('panel: DOM order equals the tab order of 8.2.6 and the button row closes t
 // The per-lane status lines (#tab-status, #mic-status) are deliberately NOT here any more: the pill and the notices announce
 // the same change, so a live status line announced each state two or three times.
 const STATUS_REGIONS = ['status-pill', 'key-missing', 'stop-note', 'tab-apply-next', 'tab-arm-note', 'tab-route-note', 'tab-output', 'tab-gap',
-  'mic-apply-next', 'mic-permission-status', 'mic-route-note', 'mic-output', 'mic-gap', 'no-lane-note', 'mute-note', 'echo-note', 'usage-note'];
+  'mic-apply-next', 'mic-permission-status', 'mic-route-note', 'mic-output', 'mic-gap', 'no-lane-note', 'mute-note', 'echo-note', 'usage-note',
+  'update-progress'];   // §21: the step of a silent update, or why it failed (the banner itself is not live)
 const ALERT_REGIONS = ['tab-notice', 'mic-notice'];
 
 test('panel: live regions are persistent (a role, never hidden, no static text) and the two notices are alerts', () => {
@@ -231,8 +237,12 @@ test('panel: hidden is used only on non-live elements, and every one of them is 
   // The update banner (§16) is a plain row too: it appears only while the download site publishes a newer version.
   assert.deepEqual(hidden, ['btn-key-options', 'btn-mic-allow', 'close-note', 'mic-level', 'mic-partner-row', 'mic-preview', 'mic-route',
     'mic-two-way-note', 'tab-level', 'tab-partner-row', 'tab-preview', 'tab-route', 'tab-tabline', 'tab-two-way-note', 'update-note',
+    // §21: the banner's "Update now" / "Turn on automatic updates" button shows only while the self-updater is on.
+    'btn-update-auto',
     // §17: one lane card at a time; the microphone card starts behind its tab (the controller picks the first lane that is on).
     'card-mic'].sort());
+  // §20: Start on an un-armed tab opens Chrome's share dialog itself; there is no second button for it and no wait for the icon.
+  assert.equal(byId('panel', 'btn-pick-tab'), null, 'the panel has no button for the share dialog any more');
   for (const id of [...STATUS_REGIONS, ...ALERT_REGIONS]) assert.equal(byId('panel', id).hidden, false);
 });
 
@@ -479,10 +489,13 @@ test('permission: ids, keys and the persistent status region', () => {
 
 const placeholdersOf = (value) => [...new Set([...value.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)].map((match) => match[1]))].sort().join(',');
 
-test('dictionaries: 143 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
+test('dictionaries: 192 ext.* keys with identical key sets and placeholders in ko, en and ja, none shadowing an app key', () => {
   const keys = Object.keys(dictionaries.en.ext);
-  assert.equal(keys.length, 143, '117 + the five ext.twoWay.* keys + the seven §16 keys + the thirteen §17 keys (lane tabs, microphone wait, setup page) + the one §19 key (ext.error.TAB_SHARE_NO_AUDIO)');
-  assert.equal(new Set(keys).size, 143);
+  assert.equal(keys.length, 192, '147 + the 45 ext.updater.* keys of §21 (the automatic update: banner, options section, five steps, fifteen error codes and the generic one). 147 = 117 + the five ext.twoWay.* keys + the seven §16 keys + the thirteen §17 keys (lane tabs, microphone wait, setup page) + the one §19 key (ext.error.TAB_SHARE_NO_AUDIO) = 143 in 0.4.0; §20 drops the two keys of the old wait for the icon (ext.status.awaitingArm, ext.arm.waiting) and adds six: the dialog status (ext.status.choosingTab), its note (ext.arm.picking), the two hints under it (ext.arm.pickSlow, ext.arm.pickLost), the quiet note (ext.quiet.check) and the sound setup step (ext.setup.step.sound)');
+  assert.equal(new Set(keys).size, 192);
+  assert.equal(keys.filter((key) => key.startsWith('ext.updater.')).length, 45, 'the 45 keys of §21 are all ext.updater.*');
+  for (const gone of ['ext.status.awaitingArm', 'ext.arm.waiting', 'ext.arm.pickButton']) assert.equal(keys.includes(gone), false, `${gone} belongs to the removed wait-for-the-icon flow`);
+  for (const key of ['ext.status.choosingTab', 'ext.arm.picking', 'ext.arm.pickSlow', 'ext.arm.pickLost']) assert.ok(keys.includes(key), `${key} is the dialog's text`);
   for (const language of LANGUAGES) {
     const dictionary = dictionaries[language].ext;
     assert.deepEqual(Object.keys(dictionary).sort(), [...keys].sort(), `${language} has the same keys as en`);
@@ -498,7 +511,8 @@ test('dictionaries: 143 ext.* keys with identical key sets and placeholders in k
   }
   assert.deepEqual(Object.fromEntries(keys.filter((key) => placeholdersOf(dictionaries.en.ext[key])).map((key) => [key, placeholdersOf(dictionaries.en.ext[key])])), {
     'ext.lane.statusLine': 'lane,status', 'ext.volume.value': 'percent', 'ext.tab.target': 'title', 'ext.status.reconnecting': 'count', 'ext.arm.shortcut': 'shortcut',
-    'ext.update.available': 'current,version',
+    'ext.update.available': 'current,version', 'ext.quiet.check': 'language',
+    'ext.updater.available': 'current,version', 'ext.updater.check.none': 'current', 'ext.updater.lastError': 'error',
   });
   for (const key of keys.filter((name) => name.startsWith('ext.error.'))) assert.match(key, /^ext\.error\.[A-Z][A-Z0-9_]+$/, 'error keys are ext.error.<CODE>');
 });
@@ -984,5 +998,184 @@ test('contrast (panel): the text, link, bar and cue pairs of panel.css pass in t
     const graphic = [['accent', 'surface-alt'], ['danger', 'surface-alt'], ['danger', 'surface'], ['warning', 'surface'], ['success', 'surface'],
       ['accent', 'surface']];   // preview bars, the mute cue, the pill borders, the attention outline
     for (const [foreground, background] of graphic) assert.ok(contrast(t(foreground), t(background)) >= 3, `${set} ${foreground} on ${background}: ${contrast(t(foreground), t(background)).toFixed(2)}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// §21 (owner, 2026-10-08): the automatic update. Markup contract of the panel banner and the options section, and the wording of
+// the 45 ext.updater.* strings. The controllers' tests pin what is SHOWN; this block pins what the markup offers and what the
+// words say (and do not say).
+
+test('panel (§21): the banner has its third button first, a persistent live region for the update, and nothing natively disabled', () => {
+  const note = byId('panel', 'update-note');
+  const actions = note.querySelector('.update-actions');
+  assert.deepEqual(actions.children.map((element) => element.id), ['btn-update-auto', 'btn-update-get', 'btn-update-reload']);
+  const auto = byId('panel', 'btn-update-auto');
+  assert.deepEqual([auto.localName, auto.getAttribute('type')], ['button', 'button']);
+  assert.ok(auto.classList.contains('btn'));
+  assert.equal(auto.hidden, true, 'hidden unless the self-updater is on');
+  assert.equal(auto.hasAttribute('data-i18n'), false, 'its label is "Update now" or "Turn on automatic updates": the controller decides');
+  assert.equal(auto.textContent, '');
+  assert.equal(auto.getAttribute('aria-describedby'), 'update-text', 'the reason it can be blocked is the banner text');
+  assert.ok(byId('panel', 'update-text'));
+  assert.equal(auto.hasAttribute('disabled') || auto.hasAttribute('aria-disabled'), false, 'the markup starts in the free state');
+  const progress = byId('panel', 'update-progress');
+  assert.equal(progress.getAttribute('role'), 'status');
+  assert.ok(progress.classList.contains('sr-only'), 'announced, not shown twice: the banner shows the same text');
+  assert.equal(progress.hidden, false);
+  assert.equal(progress.textContent, '');
+  assert.equal(progress.hasAttribute('data-i18n'), false);
+  assert.equal(note.contains(progress), false, 'outside the hidden banner: a region inside a hidden row is often not announced');
+  assertIncreasing('panel', ['update-note', 'update-text', 'btn-update-auto', 'btn-update-get', 'btn-update-reload', 'update-progress', 'key-missing']);
+});
+
+test('options (§21): the section sits between the captions and the privacy, labelled by its heading, with a persistent focusable status line', () => {
+  const section = byId('options', 'update-section');
+  assert.equal(section.localName, 'section');
+  assert.ok(section.classList.contains('card'));
+  assert.equal(section.getAttribute('aria-labelledby'), 'opt-h-update');
+  assert.equal(byId('options', 'opt-h-update').localName, 'h2');
+  assert.equal(byId('options', 'opt-h-update').getAttribute('data-i18n'), 'ext.updater.title');
+  assertIncreasing('options', ['opt-h-captions', 'opt-caption-hide', 'update-section', 'opt-h-update', 'update-disabled-note', 'update-lead', 'update-status',
+    'update-detail', 'update-folder-help', 'update-actions', 'btn-update-folder', 'btn-update-now', 'btn-update-forget', 'update-auto-row', 'update-auto',
+    'opt-h-privacy', 'opt-saved']);
+  for (const id of ['update-disabled-note', 'update-lead', 'update-status', 'update-detail', 'update-folder-help', 'update-actions', 'update-auto-row']) {
+    assert.equal(byId('options', id).parentElement?.id, 'update-section', `#${id} is a direct child of the section`);
+  }
+  const status = byId('options', 'update-status');
+  assert.equal(status.getAttribute('role'), 'status', 'the live region: a step, the news of the check, or why something failed');
+  assert.equal(status.getAttribute('tabindex'), '-1', 'the controller moves the focus here; it is not a tab stop');
+  assert.equal(status.hidden, false);
+  assert.equal(status.textContent, '');
+  assert.equal(status.hasAttribute('data-i18n'), false);
+  assert.ok(status.classList.contains('notice'));
+  const detail = byId('options', 'update-detail');
+  assert.equal(detail.hasAttribute('role') || detail.hasAttribute('aria-live'), false, 'the folder state is plain text: the status line announces');
+  assert.equal(detail.textContent, '');
+  // Static texts come from the binder; the ones the controller owns are empty.
+  assert.equal(byId('options', 'update-lead').getAttribute('data-i18n'), 'ext.updater.lead');
+  assert.equal(byId('options', 'update-folder-help').getAttribute('data-i18n'), 'ext.updater.folderHelp');
+  assert.equal(byId('options', 'update-disabled-note').getAttribute('data-i18n'), 'ext.updater.disabled');
+  assert.equal(byId('options', 'update-disabled-note').hidden, true, 'shown only by the controller, instead of the controls');
+  assert.equal(byId('options', 'update-folder-help').hidden, true);
+  assert.equal(byId('options', 'update-lead').hidden, false);
+});
+
+test('options (§21): three real buttons of the page\'s size, one checkbox wrapped by its label, nothing natively disabled', () => {
+  const row = byId('options', 'update-actions');
+  assert.ok(row.classList.contains('button-row'));
+  assert.deepEqual(row.children.map((element) => element.id), ['btn-update-folder', 'btn-update-now', 'btn-update-forget']);
+  for (const id of ['btn-update-folder', 'btn-update-now', 'btn-update-forget']) {
+    const button = byId('options', id);
+    assert.deepEqual([button.localName, button.getAttribute('type')], ['button', 'button'], id);
+    assert.ok(button.classList.contains('btn'), `#${id} is a .btn: styles.css gives it min-height var(--touch) (44 px)`);
+    assert.equal(button.hidden, true, `#${id} starts hidden: the controller shows what the folder state calls for`);
+    assert.equal(button.hasAttribute('disabled') || button.hasAttribute('aria-disabled'), false, id);
+  }
+  assert.equal(byId('options', 'btn-update-folder').getAttribute('data-i18n'), 'ext.updater.button.chooseFolder');
+  assert.equal(byId('options', 'btn-update-forget').getAttribute('data-i18n'), 'ext.updater.button.forget');
+  assert.equal(byId('options', 'btn-update-now').hasAttribute('data-i18n'), false, '"Update now" or "Allow and update": the controller decides');
+  assert.equal(byId('options', 'btn-update-now').textContent, '');
+  const box = byId('options', 'update-auto');
+  assert.equal(box.type, 'checkbox');
+  assert.equal(box.closest('label')?.id, 'update-auto-row');
+  assert.ok(byId('options', 'update-auto-row').classList.contains('field-check'));
+  assert.equal(box.closest('label').querySelector('span').getAttribute('data-i18n'), 'ext.updater.autoApply');
+  assert.equal(box.hasAttribute('checked'), true, 'the default of the update record: automatic updates are on');
+  // The sizes come from the shared rules: .btn in styles.css and .field-check in pages.css both ask for the touch size.
+  assert.match(stylesText.replace(/\s+/g, ' '), /\.btn \{[^}]*min-height: var\(--touch\)/);
+  assert.equal(declarationsFor(sheets.pages.rules, '.field-check')['min-height'], 'var(--touch)');
+  assert.equal(declarationsFor(sheets.pages.rules, '.button-row').display, 'flex');
+  assert.ok(sheets.pages.rules.some((rule) => rule.selectors.includes('.notice:empty')), 'an empty status line takes no room');
+});
+
+const UPDATER_KEYS = Object.keys(dictionaries.en.ext).filter((key) => key.startsWith('ext.updater.'));
+const UPDATER_BUTTONS = ['ext.updater.button.chooseFolder', 'ext.updater.button.update', 'ext.updater.button.allow', 'ext.updater.button.enable', 'ext.updater.button.forget'];
+
+test('wording (§21): the 45 ext.updater.* keys, with a sentence for each of the fifteen error codes, the five steps and the generic case', () => {
+  assert.equal(UPDATER_KEYS.length, 45);
+  const errors = UPDATER_KEYS.filter((key) => key.startsWith('ext.updater.error.')).map((key) => key.slice('ext.updater.error.'.length)).sort();
+  assert.deepEqual(errors, ['UNKNOWN', 'UPDATE_BAD_HASH', 'UPDATE_BAD_MANIFEST', 'UPDATE_BAD_SIGNATURE', 'UPDATE_BUSY', 'UPDATE_DISABLED', 'UPDATE_FETCH_FAILED',
+    'UPDATE_NEEDS_PERMISSION', 'UPDATE_NOT_NEWER', 'UPDATE_NO_FOLDER', 'UPDATE_PERMISSION_DENIED', 'UPDATE_PICK_CANCELLED', 'UPDATE_TOO_LARGE', 'UPDATE_UNSAFE_PATH',
+    'UPDATE_WRITE_FAILED', 'UPDATE_WRONG_FOLDER']);
+  assert.deepEqual(UPDATER_KEYS.filter((key) => key.startsWith('ext.updater.step.')).map((key) => key.split('.').pop()),
+    ['checking', 'downloading', 'verifying', 'writing', 'reloading']);
+  // No error key collides with the ext.error.* family that is pinned to the lane error codes (§9.6).
+  assert.equal(UPDATER_KEYS.some((key) => key.startsWith('ext.error.')), false);
+});
+
+test('wording (§21): ko is the polite -요 form, ja is です/ます, and no sentence is a bare fragment or ends mid-thought', () => {
+  const placeholderTail = /\{error\}$/;
+  for (const key of UPDATER_KEYS) {
+    const ko = dictionaries.ko.ext[key];
+    const ja = dictionaries.ja.ext[key];
+    const label = UPDATER_BUTTONS.includes(key) || key === 'ext.updater.title';
+    assert.doesNotMatch(ko, /(습니다|ㅂ니다|합니다|입니다)[.…]?$/, `ko ${key}: never the formal register`);
+    assert.doesNotMatch(ja, /(である|だ|する)。$/, `ja ${key}: never the plain register`);
+    if (label) continue;
+    if (key === 'ext.updater.available') continue;   // two short sentences with a placeholder in the middle: checked below
+    const koText = placeholderTail.test(ko) ? ko.replace(/\s*\{error\}$/, '') : ko;
+    const jaText = placeholderTail.test(ja) ? ja.replace(/\{error\}$/, '') : ja;
+    assert.match(koText, /(요|세요)[.…]$/, `ko ${key} ends in the polite form: ${koText}`);
+    assert.match(jaText, /(ます|です|ません|ください|ました|ませんでした)[。…]$|(います|ください)…$/, `ja ${key} ends in です/ます: ${jaText}`);
+  }
+  assert.match(dictionaries.ko.ext['ext.updater.available'], /나왔어요\. 지금은 \{current\}예요\.$/);
+  assert.match(dictionaries.ja.ext['ext.updater.available'], /あります。現在は \{current\} です。$/);
+  assert.equal(dictionaries.en.ext['ext.updater.available'], 'Version {version} is available (you have {current}).');
+});
+
+test('wording (§21): the strings say what the extension does and promise nothing it has not been seen to do', () => {
+  const claims = {
+    en: /without (a |any )?click|no click|no need to click|silent|forever|permanent|always works|guarantee|every time|for good/i,
+    ko: /클릭 없이|클릭하지 않아도|영구|영원|조용히|항상|매번|보장/,
+    ja: /クリック(なし|不要|せず)|常に|永久|永続|黙って|サイレント|毎回|保証/,
+  };
+  const what = {
+    // download · signature · replace the files of the folder
+    en: [/download/i, /signature/i, /replace/i],
+    ko: [/내려받/, /서명/, /바꿔|바꾼|바꿔요/],
+    ja: [/ダウンロード/, /署名/, /置き換え/],
+  };
+  const again = { en: /allow writing to it again/, ko: /다시 허용하라고 물을 수/, ja: /改めて求めること/ };
+  for (const language of LANGUAGES) {
+    const dictionary = dictionaries[language].ext;
+    for (const key of UPDATER_KEYS) assert.doesNotMatch(dictionary[key], claims[language], `${language} ${key} promises something unverified`);
+    for (const key of ['ext.updater.lead', 'ext.updater.banner.hintUpdate']) {
+      for (const pattern of what[language]) assert.match(dictionary[key], pattern, `${language} ${key} says what happens (${pattern})`);
+    }
+    // The permission may come back (not verified across browser restarts): the options text says so, in so many words.
+    assert.match(dictionary['ext.updater.lead'], again[language], `${language}: the lead says Chrome may ask again`);
+    assert.match(dictionary['ext.updater.folder.needsClick'], language === 'en' ? /again/ : language === 'ko' ? /다시/ : /改めて/);
+    // The automatic path is conditional in its own label.
+    assert.match(dictionary['ext.updater.autoApply'], language === 'en' ? /if the browser still allows/ : language === 'ko' ? /아직 허용하고 있으면/ : /まだ許可していれば/);
+    // A write that failed part way is not called "unchanged".
+    assert.doesNotMatch(dictionary['ext.updater.error.UPDATE_WRITE_FAILED'], language === 'en' ? /nothing was changed/ : language === 'ko' ? /아무것도 바꾸지 않았/ : /何も変更していません/);
+  }
+});
+
+test('wording (§21): the banner sentence names the button it points at, the blocked sentence says to stop first, and the five buttons read differently', () => {
+  const update = { en: 'Update now', ko: '지금 업데이트', ja: '今すぐアップデート' };
+  for (const language of LANGUAGES) {
+    const dictionary = dictionaries[language].ext;
+    assert.equal(dictionary['ext.updater.button.update'], update[language]);
+    assert.ok(dictionary['ext.updater.banner.hintUpdate'].includes(update[language]), `${language}: the sentence names the button label exactly`);
+    assert.equal(new Set(UPDATER_BUTTONS.map((key) => dictionary[key])).size, UPDATER_BUTTONS.length, `${language}: no two buttons share a name`);
+    for (const key of UPDATER_BUTTONS) assert.doesNotMatch(dictionary[key], /[.。]$/, `${language} ${key} is a label, not a sentence`);
+    assert.match(dictionary['ext.updater.banner.blocked'], language === 'en' ? /Stop it first/ : language === 'ko' ? /먼저 통역을 멈추세요/ : /先に通訳を停止/);
+    assert.match(dictionary['ext.updater.banner.hintEnable'], language === 'en' ? /Reload/ : language === 'ko' ? /다시 불러오기/ : /再読み込み/, `${language}: the manual way is still named`);
+    // The words for the manual way are the ones the §16 banner uses for its Reload button.
+    assert.ok(dictionary['ext.updater.banner.hintUpdate'].includes(dictionary['ext.update.reload']), `${language}: names the existing Reload button`);
+  }
+});
+
+test('wording (§21): the ext.updater.* strings carry no markup, no key name and no raw code, and the folder help names the file the folder must hold', () => {
+  for (const language of LANGUAGES) {
+    for (const key of UPDATER_KEYS) {
+      const text = dictionaries[language].ext[key];
+      assert.doesNotMatch(text, /<[a-z][^>]*>|&[a-z]+;/i, `${language} ${key}`);
+      assert.doesNotMatch(text.replace(/\{[^}]*\}/g, ''), /ext\.|UPDATE_[A-Z_]+/, `${language} ${key} shows no internal name`);
+    }
+    assert.ok(dictionaries[language].ext['ext.updater.folderHelp'].includes('manifest.json'));
+    assert.ok(dictionaries[language].ext['ext.updater.error.UPDATE_WRONG_FOLDER'].includes('manifest.json'));
   }
 });

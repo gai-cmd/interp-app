@@ -6,6 +6,15 @@
 
 /** How long attach() waits for the graph context to leave `suspended` before it reports TAB_AUDIO_BLOCKED. */
 export const RESUME_TIMEOUT_MS = 1500;
+/**
+ * §22: the level of the keep-alive a relayed tab's graph adds to its output (about -120 dBFS, far below hearing). Chrome
+ * renders a context whose output is all zeros slower than real time after a while (measured 2026-09-30 for the capture
+ * worklet: half the audio lost; the 2026-10-08 relay spike needed a ±2^-20 output for the same reason), and the engine's
+ * copy of the tab is then fed slowly too. A relayed tab's graph outputs only zeros whenever the tab is silent, or always
+ * when it is not played back (passthrough off, or the original volume at 0), so it keeps a constant 2^-20 on its
+ * destination. The stream-id and §19 paths are left as they were (not measured here).
+ */
+export const KEEP_ALIVE_LEVEL = 2 ** -20;
 
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 const codedError = (code) => Object.assign(new Error(code), { code });
@@ -16,7 +25,7 @@ export function createTabAudioGraph({ env, timers } = {}) {
   const handlers = new Set();
   const engineStreams = new Map();   // synthetic stream -> its destination node
   const listened = [];               // [track, listener] pairs installed by attach()
-  let context = null, source = null, gain = null, rawTracks = [];
+  let context = null, source = null, gain = null, keeper = null, rawTracks = [];
   let attachStarted = false, attached = false, stopped = false, endedFired = false, volume = 0, passthrough = true;
   let stopPromise = null, cancelAttach = null;
 
@@ -60,6 +69,8 @@ export function createTabAudioGraph({ env, timers } = {}) {
     engineStreams.clear();
     attempt(() => source?.disconnect());
     attempt(() => gain?.disconnect());
+    attempt(() => keeper?.stop());
+    attempt(() => keeper?.disconnect());
     // 3. Last the context. A rejected close (already closed) is swallowed.
     if (context) await Promise.resolve().then(() => context.close()).catch(() => {});
     attached = false;
@@ -82,8 +93,10 @@ export function createTabAudioGraph({ env, timers } = {}) {
      * when stop() ran before or during the wait (nothing is created after a stop).
      * `passthrough: false` (§19) is for a capture that did NOT silence the tab: the tab is still heard by itself, so
      * playing it back here would double it. The gain then stays at 0 whatever the volume setting says.
+     * `keepAlive: true` (§22, the relayed tab) adds a KEEP_ALIVE_LEVEL constant to the destination, never to the
+     * engine's copy; a context without ConstantSourceNode simply goes without it.
      */
-    async attach(raw, { originalVolume = 100, passthrough: play = true } = {}) {
+    async attach(raw, { originalVolume = 100, passthrough: play = true, keepAlive = false } = {}) {
       if (attachStarted) throw codedError('INVALID_REQUEST');
       attachStarted = true;
       if (stopped) { stopTracks(raw); throw codedError('START_CANCELLED'); }
@@ -104,6 +117,16 @@ export function createTabAudioGraph({ env, timers } = {}) {
         gain.gain.value = volume / 100;
         source.connect(gain);
         gain.connect(context.destination);
+        if (keepAlive === true) {
+          keeper = attempt(() => context.createConstantSource()) ?? null;
+          const running = keeper !== null && attempt(() => {
+            keeper.offset.value = KEEP_ALIVE_LEVEL;
+            keeper.connect(context.destination);
+            keeper.start();
+            return true;
+          }) === true;
+          if (!running) { attempt(() => keeper?.disconnect()); keeper = null; }
+        }
       } catch {
         const cancelled = stopped;
         stopPromise ??= stopNow();

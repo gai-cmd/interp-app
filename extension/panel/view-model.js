@@ -12,7 +12,9 @@ import { TARGET_LANGUAGES, deepFreeze } from '../lib/constants.js';
 const LANES = ['tab', 'mic'];
 const ACTIVE = ['starting', 'running', 'reconnecting'];
 const BUSY = [...ACTIVE, 'stopping'];
-const SILENT_CODES = ['ALREADY_RUNNING', 'START_CANCELLED'];
+// NEEDS_ARM (§20) is the worker's "this tab was not armed after all": the controller answers it with a start through
+// Chrome's share dialog, never a notice.
+const SILENT_CODES = ['ALREADY_RUNNING', 'START_CANCELLED', 'NEEDS_ARM'];
 const NOT_AN_ALARM = ['TAB_ENDED', 'TAB_GONE'];
 // Tab-lane notices that already say what to do next (press Start again, share the tab's audio, or "this page cannot
 // be captured"). The arm note would repeat them or, with an armed record that survived, contradict them: only the
@@ -32,6 +34,9 @@ const PERMISSION_TEXT = Object.freeze({
   prompt: Object.freeze(['permission.title', 'permission.prompt']),
 });
 const STOP_NOTE_KEY = Object.freeze({ 'panel-gone': 'ext.notice.panelGone', 'host-lost': 'ext.notice.hostLost' });
+// §20: the tab lane waits for the user's choice in Chrome's share dialog; the pill and the lane say so.
+const CHOOSING_STATUS_KEY = 'ext.status.choosingTab';
+const LANGUAGE_NAME_KEY = Object.freeze({ ko: 'language.ko', en: 'language.en', ja: 'language.ja' });
 const CHECKING = Object.freeze(['permission.checking']);
 const MAX_PREVIEW_ROWS = 4;
 
@@ -65,7 +70,7 @@ const pairChanged = (started, laneSettings) => started !== null && typeof starte
 const bounded = (title) => (typeof title === 'string' && title !== '' ? [...title].slice(0, LIMITS.titleMaxChars).join('') : null);
 
 function laneDraft(lane, input) {
-  const { settings, host, armed, pending, localErrors } = input;
+  const { settings, host, pending, localErrors } = input;
   const hostLane = host?.lanes?.[lane] ?? null;
   const hostPhase = hostLane?.phase ?? 'off';
   // A page that is known to be unsupported is named by the arm note; a local TAB_UNSUPPORTED recorded earlier (from
@@ -74,14 +79,18 @@ function laneDraft(lane, input) {
   const localCode = superseded ? null : (localErrors?.[lane] ?? null);
   let phase = hostPhase;
   let errorCode = hostPhase === 'error' ? hostLane.errorCode : null;
-  // §19: `awaiting` = the start of a tab the toolbar icon did not arm, which is waiting for the user's choice in
-  // Chrome's share picker. The host is already `starting` then (it holds the dialog open), but it has no engine yet;
-  // once the engine exists the choice was made and the lane reads as any other start.
-  // The HOST says so once it reports: starting, no engine, and no tab yet (a stream-id start names its tab from the
-  // first state; a picker start cannot). Every panel then reads the same thing, whatever tab is active now. Before the
-  // host reports, it is this panel's own start on a tab that is not armed.
-  const hostChoosing = hostPhase === 'starting' && (hostLane?.engineStatus ?? null) === null && (hostLane?.tabId ?? null) === null;
-  const choosing = lane === 'tab' && (hostChoosing || (pending?.tab === true && !armed && !BUSY.includes(hostPhase)));
+  // `awaiting` = the tab lane waits for the user: Chrome's share dialog is open (`picking`: Start was pressed on a tab
+  //  the toolbar icon did not arm) (§19, §20). The host is already `starting` then (it holds the dialog open) but has no
+  //  engine yet; once the engine exists the choice was made and the lane reads as any other start. The HOST says so once
+  //  it reports: starting, no engine and no tab yet (a stream-id start names its tab from the first state; a picker
+  //  start cannot), so every panel reads the same, whatever tab is active now.
+  //  2026-10-08: `relaying` = this panel opened the dialog itself, the tab is chosen and the start it sent is the relay
+  //  start; a host starting that one without an engine yet (and without a tab, when the choice could not be named) is
+  //  not holding a dialog.
+  const hostChoosing = input.relaying !== true
+    && hostPhase === 'starting' && (hostLane?.engineStatus ?? null) === null && (hostLane?.tabId ?? null) === null;
+  const choosing = lane === 'tab'
+    && (hostChoosing || (pending?.tab === true && input.picking === true && !BUSY.includes(hostPhase)));
   if (choosing) {
     phase = 'awaiting';
     errorCode = null;
@@ -98,7 +107,7 @@ function laneDraft(lane, input) {
 function statusOf(draft) {
   const { phase, errorCode, hostLane } = draft;
   switch (phase) {
-    case 'awaiting': return { key: 'ext.status.awaitingArm', params: {} };
+    case 'awaiting': return { key: CHOOSING_STATUS_KEY, params: {} };
     case 'starting': return { key: hostLane?.engineStatus === 'connecting' ? 'sim.status.connecting' : 'sim.status.preparing', params: {} };
     case 'running': return { key: 'sim.status.running', params: {} };
     case 'reconnecting': return calm(draft) ? { key: 'sim.status.reconnecting', params: {} }
@@ -129,8 +138,9 @@ function pillOf(drafts) {
   }
   if (drafts.some((draft) => draft.phase === 'stopping')) return { state: 'warning', key: 'sim.status.stopping', params: {} };
   const starting = drafts.filter((draft) => draft.phase === 'starting');
-  if (drafts.some((draft) => draft.phase === 'awaiting') && starting.length === 0) {
-    return { state: 'warning', key: 'ext.status.awaitingArm', params: {} };
+  const waiting = drafts.find((draft) => draft.phase === 'awaiting');
+  if (waiting && starting.length === 0) {
+    return { state: 'warning', key: CHOOSING_STATUS_KEY, params: {} };
   }
   if (starting.length > 0) {
     const early = starting.some((draft) => !draft.hostLane?.engineStatus || draft.hostLane.engineStatus === 'preparing');
@@ -175,16 +185,34 @@ function armNoteOf(draft, input) {
   const { armed, targetTab, shortcut } = input;
   if (isActive(draft.phase)) return null;
   if (!draft.settings.enabled) return null;   // a lane the user turned off has nothing to arm
+  const keyboard = typeof shortcut === 'string' && shortcut !== '' ? shortcut : null;
+  // §20. In Chrome's share dialog (Start on a tab the icon did not arm) the note says what to do there and, at once,
+  // that the toolbar icon on the tab starts it without the dialog (with the shortcut when one is set); once the dialog
+  // has been open ~8 s the controller sets `pickSlow` and the note adds where to look when the window is not in sight,
+  // and where the icon is (the puzzle menu: it names the icon "at the top right", which is not always visible). The open
+  // dialog comes BEFORE the page check: the dialog is a fact of the host, and the panel's active tab may become a
+  // chrome:// page while it is open; the pill and Cancel still say "waiting", so the note must too.
+  if (draft.phase === 'awaiting') {
+    return { key: 'ext.arm.picking', attention: true,
+      hintKeys: input.pickSlow === true ? ['ext.arm.pickSlow', 'ext.arm.pickLost', 'ext.arm.pinHint'] : ['ext.arm.pickSlow'],
+      shortcut: keyboard };
+  }
   if (targetTab && targetTab.capturable === false) return { key: 'ext.error.TAB_UNSUPPORTED', attention: false, hintKeys: [], shortcut: null };
   // The capture stopped arriving (5.11) or the tab went away: the grant is probably spent, and the notice below
   // already asks for a fresh click. Showing "click the icon" twice, or "ready" next to it, only adds noise.
   if (draft.phase === 'error' && SELF_EXPLAINING_TAB_CODES.includes(draft.errorCode)) return null;
-  // §19. Waiting: Chrome's share picker is open, and the note says what to do in it (whatever tab is active now).
-  // Otherwise: Start will ask, and the toolbar icon (its pin hint and shortcut follow) is the way to skip the question.
-  if (draft.phase === 'awaiting') return { key: 'ext.arm.waiting', attention: true, hintKeys: [], shortcut: null };
   if (armed) return { key: 'ext.arm.ready', attention: false, hintKeys: [], shortcut: null };
-  return { key: 'ext.arm.needed', attention: false,
-    hintKeys: ['ext.arm.pinHint'], shortcut: typeof shortcut === 'string' && shortcut !== '' ? shortcut : null };
+  return { key: 'ext.arm.needed', attention: false, hintKeys: ['ext.arm.pinHint'], shortcut: keyboard };
+}
+
+// §20: a lane that runs and hears speech (the controller counts ~15 s of input above a small level since the start)
+// but has not produced one interpreted row gets a calm note: if the speech is already in the target language there is
+// nothing to interpret. A two-way lane interprets either language, so the note would be wrong there.
+function quietNoteOf(draft, input) {
+  if (input.quiet?.[draft.lane] !== true || !['running', 'reconnecting'].includes(draft.phase)) return null;
+  if (draft.settings.twoWay === true || input.runWith?.[draft.lane]?.twoWay === true) return null;
+  const language = draft.hostLane?.targetLanguage ?? draft.settings.targetLanguage;
+  return LANGUAGE_NAME_KEY[language] ? { key: 'ext.quiet.check', languageKey: LANGUAGE_NAME_KEY[language] } : null;
 }
 
 function previewOf(draft, frame) {
@@ -196,7 +224,7 @@ function previewOf(draft, frame) {
 /** See the header of 8.2.3 for the input and output shapes. `has` is the i18n dictionary's key test. */
 export function buildViewModel(input) {
   const {
-    settings, keyPresent = false, host = null, armed = false, targetTab = null, micPermission = 'unknown',
+    settings, keyPresent = false, host = null, micPermission = 'unknown',
     pending = { tab: false, mic: false }, stopReason = null, previews = { tab: null, mic: null },
     capturedTitle = null, language = 'en', runWith = { tab: null, mic: null },
   } = input;
@@ -206,7 +234,9 @@ export function buildViewModel(input) {
 
   // Rule 2: the primary button.
   const mode = drafts.some((draft) => [...BUSY, 'awaiting'].includes(draft.phase)) ? 'stop' : 'start';
-  const nonIdle = drafts.filter((draft) => draft.phase !== 'off');
+  // A lane the user switched off that only carries an old host error is out of the picture (like pillOf); one that is
+  // still busy (the host has not finished stopping it) counts.
+  const nonIdle = drafts.filter((draft) => draft.phase !== 'off' && (draft.settings.enabled || draft.phase !== 'error'));
   const cancelOnly = nonIdle.length > 0 && nonIdle.every((draft) => draft.phase === 'awaiting');
   const noLane = mode === 'start' && !settings.lanes.tab.enabled && !settings.lanes.mic.enabled;
   const primary = { mode, key: mode === 'start' ? 'common.start' : cancelOnly ? 'common.cancel' : 'common.stop',
@@ -257,6 +287,7 @@ export function buildViewModel(input) {
           || pairChanged(runWith?.[lane] ?? null, laneSettings)),
       level: live ? (hostLane?.level ?? 0) : 0,
       levelVisible: live,
+      quietNote: quietNoteOf(draft, input),
       preview: previewOf(draft, previews?.[lane] ?? null),
     };
     if (lane === 'tab') {
@@ -298,6 +329,74 @@ export function buildViewModel(input) {
       noteVisible: muted && (settings.lanes.tab.enabled || settings.lanes.mic.enabled) },
     echoNote: !muted && settings.lanes.mic.enabled,
     usageNote: { visible: bothEnabled, emphasis: bothEnabled && quotaSuspect },
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// §21: the update banner. Pure like the rest of this file: the controller passes what it knows (the newer published
+// version, the self-updater's folder state, whether a lane is under way, the step of a silent update in progress, the
+// error code of one that failed) and renders the frozen result. The i18n keys are literals on purpose, one table each:
+// a step or an error code the table does not know gets the generic sentence, never a raw code in front of a person.
+const UPDATE_STEP_KEY = Object.freeze({
+  checking: 'ext.updater.step.checking', downloading: 'ext.updater.step.downloading', verifying: 'ext.updater.step.verifying',
+  writing: 'ext.updater.step.writing', reloading: 'ext.updater.step.reloading',
+});
+export const UPDATE_ERROR_KEY = Object.freeze({
+  UPDATE_DISABLED: 'ext.updater.error.UPDATE_DISABLED', UPDATE_NO_FOLDER: 'ext.updater.error.UPDATE_NO_FOLDER',
+  UPDATE_NEEDS_PERMISSION: 'ext.updater.error.UPDATE_NEEDS_PERMISSION', UPDATE_PERMISSION_DENIED: 'ext.updater.error.UPDATE_PERMISSION_DENIED',
+  UPDATE_WRONG_FOLDER: 'ext.updater.error.UPDATE_WRONG_FOLDER', UPDATE_NOT_NEWER: 'ext.updater.error.UPDATE_NOT_NEWER',
+  UPDATE_FETCH_FAILED: 'ext.updater.error.UPDATE_FETCH_FAILED', UPDATE_BAD_SIGNATURE: 'ext.updater.error.UPDATE_BAD_SIGNATURE',
+  UPDATE_BAD_MANIFEST: 'ext.updater.error.UPDATE_BAD_MANIFEST', UPDATE_UNSAFE_PATH: 'ext.updater.error.UPDATE_UNSAFE_PATH',
+  UPDATE_TOO_LARGE: 'ext.updater.error.UPDATE_TOO_LARGE', UPDATE_BAD_HASH: 'ext.updater.error.UPDATE_BAD_HASH',
+  UPDATE_WRITE_FAILED: 'ext.updater.error.UPDATE_WRITE_FAILED', UPDATE_PICK_CANCELLED: 'ext.updater.error.UPDATE_PICK_CANCELLED',
+  UPDATE_BUSY: 'ext.updater.error.UPDATE_BUSY',
+});
+const UPDATE_UNKNOWN_ERROR_KEY = 'ext.updater.error.UNKNOWN';
+export const UPDATE_STEPS = Object.freeze(Object.keys(UPDATE_STEP_KEY));
+const stepKeyOf = (step) => (Object.hasOwn(UPDATE_STEP_KEY, step) ? UPDATE_STEP_KEY[step] : UPDATE_STEP_KEY.checking);
+const errorKeyOf = (code) => (typeof code === 'string' && Object.hasOwn(UPDATE_ERROR_KEY, code) ? UPDATE_ERROR_KEY[code] : UPDATE_UNKNOWN_ERROR_KEY);
+// A stored folder (its permission may still be asked again with a click) reads "Update now"; no usable folder reads "Turn on".
+const FOLDER_SET = Object.freeze(['granted', 'needs-click']);
+const NO_AUTO = Object.freeze({ visible: false, labelKey: null, blocked: false });
+
+/**
+ * buildUpdateBanner({ update, currentVersion, updater, lastActive, laneBusy, step, error }) -> deeply frozen
+ * { visible, parts: [{ key, params, nested? }], progress: { key } | null, get, reload, auto: { visible, labelKey, blocked } }.
+ * `update` = { version } or null (no newer version published); `updater` = { enabled, folder } or null (no self-updater);
+ * `lastActive` = a lane is under way per the host (a manual Reload would end it); `laneBusy` = that, or a start in flight,
+ * or anything else a reload would cut; `step` = the step name while a silent update runs; `error` = its error code.
+ * `parts` are joined with a space; a part's `nested` maps a parameter name to a KEY the controller translates first.
+ * `progress` is the same news for the persistent live region (the banner itself is not live).
+ */
+export function buildUpdateBanner({
+  update = null, currentVersion = null, updater = null, lastActive = false, laneBusy = false, step = null, error = null,
+} = {}) {
+  if (update === null) return deepFreeze({ visible: false, parts: [], progress: null, get: false, reload: false, auto: NO_AUTO });
+  const params = { version: update.version, current: currentVersion };
+  const reload = !lastActive;   // as before §21: a manual Reload would end a running lane
+  if (updater?.enabled !== true) {
+    return deepFreeze({ visible: true, parts: [{ key: 'ext.update.available', params }], progress: null, get: true, reload, auto: NO_AUTO });
+  }
+  // A silent update is under way: the banner says which step, and offers nothing to press (a Reload in the middle of
+  // the writing would be the worst moment).
+  if (step !== null) {
+    const progress = { key: stepKeyOf(step) };
+    return deepFreeze({ visible: true, parts: [{ key: progress.key, params: {} }], progress, get: false, reload: false, auto: NO_AUTO });
+  }
+  const hasFolder = FOLDER_SET.includes(updater.folder);
+  const parts = [{ key: 'ext.updater.available', params }];
+  let progress = null;
+  if (error !== null) {
+    progress = { key: errorKeyOf(error) };
+    parts.push({ key: 'ext.updater.lastError', params: {}, nested: { error: progress.key } });
+  }
+  // Updating or turning it on opens the options page, and an update ends with a reload that would cut a lane: while one
+  // is under way the button stays (focusable) but asks for nothing, and the sentence says why.
+  if (laneBusy) parts.push({ key: 'ext.updater.banner.blocked', params: {} });
+  else parts.push({ key: hasFolder ? 'ext.updater.banner.hintUpdate' : 'ext.updater.banner.hintEnable', params: {} });
+  return deepFreeze({
+    visible: true, parts, progress, get: true, reload,
+    auto: { visible: true, labelKey: hasFolder ? 'ext.updater.button.update' : 'ext.updater.button.enable', blocked: laneBusy },
   });
 }
 

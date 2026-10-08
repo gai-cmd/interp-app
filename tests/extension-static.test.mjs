@@ -48,6 +48,14 @@ const EXPECTED_FILES = Object.freeze([
   ['B', 'extension/lib/protocol.js'], ['B', 'extension/lib/settings.js'], ['B', 'extension/lib/ui-state.js'],
   ['B', 'extension/lib/caption-frames.js'], ['C', 'extension/lib/chrome-adapter.js'], ['C', 'extension/lib/i18n.js'],
   ['C', 'extension/lib/dom-i18n.js'], ['C', 'extension/lib/update-check.js'],
+  // §21 (2026-10-08): the self-update. update-keys.js holds the two public keys, self-update.js the pure checks and the
+  // writes, update-store.js the folder handle (the only module that names IndexedDB), update-state.js the stored record,
+  // update-run.js the orchestration the panel and the options page call.
+  ['C', 'extension/lib/update-keys.js'], ['C', 'extension/lib/self-update.js'], ['C', 'extension/lib/update-store.js'],
+  ['C', 'extension/lib/update-state.js'], ['C', 'extension/lib/update-run.js'],
+  // §22 (2026-10-08): the share dialog the side panel may open itself (display-media.js) and the tab-audio relay from the
+  // panel to the offscreen document (audio-relay.js). Only the panel and the engine import them.
+  ['B', 'extension/lib/display-media.js'], ['B', 'extension/lib/audio-relay.js'],
   ['C', 'extension/background/service-worker.js'], ['C', 'extension/background/sw-core.js'], ['C', 'extension/background/arming.js'],
   ['B', 'extension/engine/host.html'], ['B', 'extension/engine/host.js'], ['B', 'extension/engine/lane-host.js'],
   ['B', 'extension/engine/lane-engine.js'], ['B', 'extension/engine/tab-lane.js'], ['B', 'extension/engine/mic-lane.js'],
@@ -72,6 +80,11 @@ const EXPECTED_TESTS = Object.freeze([
   ['C', 'tests/extension-permission.test.mjs'], ['C', 'tests/extension-integration.test.mjs'],
   ['D', 'tests/extension-fixtures.test.mjs'], ['D', 'tests/extension-overlay.test.mjs'], ['D', 'tests/extension-html.test.mjs'],
   ['D', 'tests/fixtures/fake-chrome.mjs'], ['D', 'tests/fixtures/fake-audio.mjs'], ['D', 'tests/fixtures/extension-dom.mjs'],
+  // §21: the self-update (its fake folder and fake download site are the fixture).
+  ['C', 'tests/extension-self-update.test.mjs'], ['C', 'tests/extension-update-store.test.mjs'], ['C', 'tests/extension-update-state.test.mjs'],
+  ['C', 'tests/extension-update-run.test.mjs'], ['C', 'tests/extension-update-check.test.mjs'], ['C', 'tests/fixtures/fake-fs.mjs'],
+  // §22: the relay and its doubles (BroadcastChannel, MediaStreamTrackProcessor/Generator, AudioData).
+  ['B', 'tests/extension-audio-relay.test.mjs'], ['B', 'tests/fixtures/fake-relay.mjs'],
 ].map((row) => Object.freeze(row)));
 const OWNERS = new Map([...EXPECTED_FILES, ...EXPECTED_TESTS].map(([group, path]) => [path, group]));
 const ownerOf = (path) => OWNERS.get(path) ?? '?';
@@ -86,6 +99,8 @@ const CHROME_ADAPTER = 'extension/lib/chrome-adapter.js';
 const LINKS = 'extension/lib/links.js';
 const UPDATE_CHECK = 'extension/lib/update-check.js';
 const BUILTIN_KEY = 'extension/lib/builtin-key.js';
+// §21: the one module that may name IndexedDB (the folder handle of the self-update is not JSON, so it can not live in chrome.storage).
+const UPDATE_STORE = 'extension/lib/update-store.js';
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const TEXT_FILE = /\.(?:js|mjs|html|css|json)$/;
 
@@ -320,6 +335,7 @@ function scanBans(tree) {
   for (const path of jsFiles(tree, 'extension/')) {
     const { code, ident } = viewsOf(tree, path);
     for (const [rule, pattern] of BANS) {
+      if (rule === 'indexed-db' && path === UPDATE_STORE) continue;       // exactly this path, nowhere else (§21)
       const label = rule.startsWith('iframe') ? 'D1' : `R11-${rule}`;
       for (const match of code.matchAll(pattern)) findings.push(finding(label, path, `${match[0].trim()} is banned`, { text: code, index: match.index }));
     }
@@ -402,7 +418,11 @@ const resolveTarget = (from, spec) => (spec.startsWith('.') ? posix.normalize(po
 
 const APP_FOR_LIB = Object.freeze(['app/i18n/index.js', 'app/i18n/boot-fallback.js', 'app/providers/gemini/live-config.js', 'app/engine/listen-state.js', 'app/security/shared-key.js']);
 const APP_FOR_ENGINE = Object.freeze(['app/config.js', 'app/engine/sim.js', 'app/platform.js', 'app/providers/gemini/live-config.js']);
-const IMPORTS_NOTHING = Object.freeze(['chrome-adapter.js', 'links.js', 'builtin-key.js', 'constants.js']);
+const IMPORTS_NOTHING = Object.freeze(['chrome-adapter.js', 'links.js', 'builtin-key.js', 'constants.js', 'display-media.js']);
+// §22: the share-dialog rule and the tab-audio relay belong to the two documents that hold a capture: the side panel and
+// the offscreen engine. No other directory (and no other lib module) imports them; the relay reads only constants.js
+// (the relay id rule) and protocol.js (LIMITS).
+const MEDIA_MODULES = Object.freeze(['extension/lib/display-media.js', 'extension/lib/audio-relay.js']);
 /** §3.3 R2-R6: what a file may import, by the directory it sits in. */
 function policyFor(path) {
   const lib = 'extension/lib/';
@@ -411,16 +431,18 @@ function policyFor(path) {
     const name = path.slice(lib.length);
     if (IMPORTS_NOTHING.includes(name)) return { rule: 'R4', ext: [], app: [] };
     if (name === 'protocol.js') return { rule: 'R4', ext: [`${lib}constants.js`], app: [] };
+    if (name === 'audio-relay.js') return { rule: 'R4', ext: [`${lib}constants.js`, `${lib}protocol.js`], app: [] };
     return { rule: 'R4', ext: [lib], app: APP_FOR_LIB };
   }
-  if (path.startsWith('extension/engine/')) return { rule: 'R5', ext: [lib, 'extension/engine/'], app: APP_FOR_ENGINE };
-  if (path.startsWith('extension/panel/')) return { rule: 'R6', ext: [lib, 'extension/panel/'], app: ['app/i18n/index.js'] };
+  if (path.startsWith('extension/engine/')) return { rule: 'R5', ext: [lib, 'extension/engine/'], app: APP_FOR_ENGINE, media: true };
+  if (path.startsWith('extension/panel/')) return { rule: 'R6', ext: [lib, 'extension/panel/'], app: ['app/i18n/index.js'], media: true };
   if (path.startsWith('extension/options/')) return { rule: 'R6', ext: [lib, 'extension/options/'], app: ['app/i18n/index.js', 'app/providers/gemini/live-config.js', 'app/security/shared-key.js'] };
   if (path.startsWith('extension/permission/')) return { rule: 'R6', ext: [lib, 'extension/permission/'], app: ['app/i18n/index.js'] };
   if (path.startsWith('extension/overlay/')) return { rule: 'R3', ext: [], app: [] };
   return null;
 }
-const permits = (policy, target) => policy.ext.some((prefix) => (prefix.endsWith('/') ? target.startsWith(prefix) : target === prefix)) || policy.app.includes(target);
+const permits = (policy, target) => (policy.media === true || !MEDIA_MODULES.includes(target))
+  && (policy.ext.some((prefix) => (prefix.endsWith('/') ? target.startsWith(prefix) : target === prefix)) || policy.app.includes(target));
 
 function scanImports(tree) {
   const findings = [];
@@ -723,7 +745,7 @@ async function scanNoSound(root = repoRoot, { self = 'extension-static.test.mjs'
   const names = async (directory) => (await readdir(join(root, directory)).catch(() => [])).sort();
   const paths = [
     ...(await names('tests')).filter((name) => (/^extension-.+\.test\.mjs$/.test(name) && name !== self) || name === 'session-isolated.test.mjs').map((name) => `tests/${name}`),
-    ...(await names('tests/fixtures')).filter((name) => /^extension-.+\.mjs$/.test(name) || name === 'fake-chrome.mjs' || name === 'fake-audio.mjs').map((name) => `tests/fixtures/${name}`),
+    ...(await names('tests/fixtures')).filter((name) => /^extension-.+\.mjs$/.test(name) || ['fake-chrome.mjs', 'fake-audio.mjs', 'fake-relay.mjs'].includes(name)).map((name) => `tests/fixtures/${name}`),
   ];
   const findings = [];
   for (const path of paths) findings.push(...d13FindingsFor(path, await readFile(join(root, path), 'utf8')));
@@ -844,11 +866,12 @@ const loadRegistry = () => {
     const scenarios = await readFile(join(repoRoot, 'tests/fixtures/scenarios.mjs'), 'utf8');
     const secretMark = /export const SECRET_MARK = '([^']+)'/.exec(scenarios)?.[1];
     if (!secretMark) throw new Error('SECRET_MARK is not declared in tests/fixtures/scenarios.mjs');
-    // §16: the download site the update check reads. Its two URLs are read from the module's TEXT (importing it here would
-    // put it in the module cache before the purity probe) and, like the documentation links, may be written only there.
+    // §16, §21: the download site the update check reads and the base of the signed update tree. Their three URLs are read from
+    // the module's TEXT (importing it here would put it in the module cache before the purity probe) and, like the
+    // documentation links, may be written only there.
     const updateText = await readFile(join(repoRoot, UPDATE_CHECK), 'utf8');
     const updateUrls = [...updateText.matchAll(/export const UPDATE_[A-Z]+_URL = '(https:\/\/[^']+)';/g)].map((match) => match[1]);
-    if (updateUrls.length !== 2) throw new Error(`${UPDATE_CHECK} must declare UPDATE_SITE_URL and UPDATE_MANIFEST_URL`);
+    if (updateUrls.length !== 3) throw new Error(`${UPDATE_CHECK} must declare UPDATE_SITE_URL, UPDATE_MANIFEST_URL and UPDATE_TREE_URL`);
     return Object.freeze({
       allowedOrigins: new Set([...config.ENDPOINT_ORIGINS, ...config.DOCUMENTATION_ORIGINS, ...updateUrls.map((url) => new URL(url).origin)]),
       documentationUrls: new Set([...Object.values(config.DOCUMENTATION_LINKS), ...updateUrls]),
@@ -870,7 +893,12 @@ test('real tree R9/R10: every non-entry extension module imports without touchin
   // A probe over an empty or partial directory would be green for nothing: name the modules it must cover, with their owners.
   const mustProbe = ['extension/lib/constants.js', 'extension/lib/protocol.js', 'extension/lib/settings.js', 'extension/lib/i18n.js',
     'extension/background/sw-core.js', 'extension/engine/lane-host.js', 'extension/engine/lane-engine.js', 'extension/panel/controller.js',
-    'extension/options/controller.js', 'extension/permission/controller.js'];
+    'extension/options/controller.js', 'extension/permission/controller.js',
+    // §21: the self-update modules touch no platform object at import time either (update-store.js names IndexedDB only inside a function).
+    'extension/lib/update-keys.js', 'extension/lib/update-check.js', 'extension/lib/self-update.js', 'extension/lib/update-store.js',
+    'extension/lib/update-state.js', 'extension/lib/update-run.js',
+    // §22: the share-dialog rule and the relay name their platform constructors only inside functions.
+    'extension/lib/display-media.js', 'extension/lib/audio-relay.js'];
   assert.deepEqual(mustProbe.filter((path) => !modules.includes(path)).map((path) => `${path} (group ${ownerOf(path)})`), [], 'modules that must be probed');
   const findings = await probeImportPurity(repoRoot, modules);
   assert.deepEqual(render(findings), [], 'import purity');
@@ -938,7 +966,8 @@ test('real tree R12/D1: every extension HTML file has module scripts with a src,
 
 test('real tree D13: no extension test or fixture launches a browser, makes sound, or reaches a real audio or capture object', async () => {
   const result = await scanNoSound(repoRoot);
-  for (const path of ['tests/fixtures/fake-chrome.mjs', 'tests/fixtures/fake-audio.mjs', 'tests/fixtures/extension-dom.mjs', 'tests/session-isolated.test.mjs']) {
+  for (const path of ['tests/fixtures/fake-chrome.mjs', 'tests/fixtures/fake-audio.mjs', 'tests/fixtures/fake-relay.mjs', 'tests/fixtures/extension-dom.mjs',
+    'tests/session-isolated.test.mjs', 'tests/extension-audio-relay.test.mjs']) {
     assert.ok(result.scanned.includes(path), `${path} is covered by the scan`);
   }
   assert.ok(result.scanned.filter((path) => /^tests\/extension-.+\.test\.mjs$/.test(path)).length >= 5, 'the extension test files are covered');
@@ -1138,6 +1167,56 @@ test('scanner R11: URL literals are limited to the registered origins, and a doc
   assert.deepEqual(rulesOf(await url("// https://evil.example.test/x\nexport const u = 1;\n")), [], 'a URL in a comment is prose');
 });
 
+test('scanner R11 (§21): IndexedDB may be named in extension/lib/update-store.js and in no other file', async (t) => {
+  const ctx = { ...FIXTURE_ORIGINS, secretPatterns: (await loadRegistry()).secretPatterns };
+  const sandbox = await createSandbox(t, BASELINE);
+  const rules = async (changes) => rulesOf(await sandbox.within(changes, (root) => scanStatic(root, ctx)));
+  const use = "export const open = (env) => env.indexedDB.open('x');\n";
+  assert.deepEqual(await rules({ [UPDATE_STORE]: use }), [], 'the one module');
+  assert.deepEqual(await rules({ [UPDATE_STORE]: "export const open = () => indexedDB.open('x');\n" }), [], 'the exemption is the path; the import-time probe is what keeps a global read out of import time');
+  for (const path of ['extension/lib/extra.js', 'extension/lib/update-state.js', 'extension/lib/update-run.js', 'extension/lib/self-update.js', 'extension/lib/update-check.js',
+    'extension/lib/sub/update-store.js', 'extension/panel/update-store.js', 'extension/options/update-store.js', 'extension/background/update-store.js',
+    'extension/engine/update-store.js', 'extension/permission/update-store.js']) {
+    assert.deepEqual(await rules({ [path]: use }), ['R11-indexed-db'], path);
+  }
+  assert.deepEqual(await rules({ [UPDATE_STORE]: use, 'extension/lib/extra.js': use }), ['R11-indexed-db'], 'one exempt module does not excuse another');
+  // The exemption is for that ban only: the other bans still bite inside update-store.js.
+  assert.deepEqual(await rules({ [UPDATE_STORE]: `${use}export const f = () => localStorage.getItem('k');\n` }), ['R11-local-storage']);
+  assert.deepEqual(await rules({ [UPDATE_STORE]: `${use}export const f = () => console.log(1);\n` }), ['R11-console']);
+  assert.deepEqual(await rules({ [UPDATE_STORE]: `${use}export const f = () => chrome.runtime.id;\n` }), ['R8']);
+});
+
+test('scanner R11 (§21): the update tree URL is a registered URL like the site and manifest URLs, written only in update-check.js', async (t) => {
+  const registry = await loadRegistry();
+  const text = await readFile(join(repoRoot, UPDATE_CHECK), 'utf8');
+  const urls = [...text.matchAll(/export const UPDATE_[A-Z]+_URL = '(https:\/\/[^']+)';/g)].map((match) => match[1]);
+  assert.equal(urls.length, 3, 'UPDATE_SITE_URL, UPDATE_MANIFEST_URL and UPDATE_TREE_URL');
+  assert.ok(urls.includes('https://kc-live-interpreter.vercel.app/update/'));
+  for (const url of urls) assert.ok(registry.documentationUrls.has(url), `${url} is a registered URL`);
+  assert.equal(registry.documentationFiles.has(UPDATE_CHECK), true);
+  assert.equal(registry.allowedOrigins.has('https://kc-live-interpreter.vercel.app'), true);
+  // The fixture links.js of the baseline names fixture origins, which the real registry does not know: use an empty one.
+  const sandbox = await createSandbox(t, { ...BASELINE, [LINKS]: 'export const GUIDE_URL = 1;\n' });
+  const found = (changes) => sandbox.within(changes, async (root) => rulesOf(scanUrls(await loadTree(root), registry)));
+  assert.deepEqual(await found({ [UPDATE_CHECK]: text }), [], 'update-check.js itself');
+  for (const url of urls) {
+    assert.deepEqual(await found({ 'extension/lib/extra.js': `export const u = '${url}';\n` }), ['R11-url'], `${url} in another module`);
+    assert.deepEqual(await found({ [UPDATE_CHECK]: text, 'extension/lib/update-run.js': `export const u = '${url}';\n` }), ['R11-url'], `${url} in the self-update orchestration`);
+    assert.deepEqual(await found({ 'extension/panel/controller.js': `export const u = \`${url}\`;\n` }), ['R11-url'], `${url} in a template`);
+  }
+  assert.deepEqual(await found({ 'extension/lib/extra.js': "export const u = 'https://evil.example.test/update/';\n" }), ['R11-url'], 'another origin');
+});
+
+test('real tree §21: update-store.js really names IndexedDB (so the exemption is not vacuous), no other extension module does, and the bans are quiet', async () => {
+  const tree = await loadTree(repoRoot);
+  const naming = jsFiles(tree, 'extension/').filter((path) => /\bindexedDB\b/.test(viewsOf(tree, path).code));
+  assert.deepEqual(naming, [UPDATE_STORE]);
+  assert.deepEqual(render(scanBans(tree)), []);
+  for (const path of ['extension/lib/update-keys.js', 'extension/lib/self-update.js', 'extension/lib/update-store.js', 'extension/lib/update-state.js', 'extension/lib/update-run.js']) {
+    assert.ok(tree.files.has(path), `${path} exists`);
+  }
+});
+
 test('scanner R8: chrome and browser are identifiers only in chrome-adapter.js (parameter default) and overlay.js; strings and comments never count', async (t) => {
   const ctx = { ...FIXTURE_ORIGINS, secretPatterns: (await loadRegistry()).secretPatterns };
   const sandbox = await createSandbox(t, BASELINE);
@@ -1205,6 +1284,15 @@ const IMPORT_CASES = Object.freeze([
   ['R4: a side-effect import of a forbidden module', { 'extension/lib/extra.js': "import '../engine/lane-host.js';\nexport const y = 1;\n" }, ['R4']],
   ['R5: a worker URL that leaves the directory', { 'extension/engine/worker-timers.js': "export const w = (Worker) => new Worker(new URL('../panel/controller.js', import.meta.url));\n" }, ['R5']],
   ['R7: a worker URL that does not resolve', { 'extension/engine/worker-timers.js': "export const w = (Worker) => new Worker(new URL('./nope.js', import.meta.url));\n" }, ['R7']],
+  // §22: the two media modules. display-media.js imports nothing, audio-relay.js only constants.js and protocol.js, and only
+  // the panel and the engine import either of them.
+  ['R4: display-media.js imports something', { 'extension/lib/display-media.js': "import { LIMIT } from './constants.js';\nexport const y = LIMIT;\n" }, ['R4']],
+  ['R4: audio-relay.js imports settings', { 'extension/lib/audio-relay.js': "import { MAX } from './protocol.js';\nimport { S } from './settings.js';\nexport const y = [MAX, S];\n", 'extension/lib/settings.js': 'export const S = 1;\n' }, ['R4']],
+  ['R4: audio-relay.js imports an app module', { 'extension/lib/audio-relay.js': "import { SUPPORTED } from '../../app/i18n/index.js';\nexport const y = SUPPORTED;\n" }, ['R4']],
+  ['R4: another lib module imports the relay', { 'extension/lib/audio-relay.js': "import { MAX } from './protocol.js';\nexport const isRelayId = MAX;\n", 'extension/lib/extra.js': "import { isRelayId } from './audio-relay.js';\nexport const y = isRelayId;\n" }, ['R4']],
+  ['R2: the worker imports the relay', { 'extension/lib/audio-relay.js': "import { MAX } from './protocol.js';\nexport const isRelayId = MAX;\n", 'extension/background/extra.js': "import { isRelayId } from '../lib/audio-relay.js';\nexport const y = isRelayId;\n" }, ['R2']],
+  ['R6: the options page imports the dialog rule', { 'extension/lib/display-media.js': 'export const canOpenDialogInPanel = () => false;\n', 'extension/options/extra.js': "import { canOpenDialogInPanel } from '../lib/display-media.js';\nexport const y = canOpenDialogInPanel;\n" }, ['R6']],
+  ['R6: the permission page imports the relay', { 'extension/lib/audio-relay.js': "import { MAX } from './protocol.js';\nexport const isRelayId = MAX;\n", 'extension/permission/extra.js': "import { isRelayId } from '../lib/audio-relay.js';\nexport const y = isRelayId;\n" }, ['R6']],
   ['R7: a file outside every known directory imports something', { 'extension/x/extra.js': "import { LIMIT } from '../lib/constants.js';\nexport const y = LIMIT;\n" }, ['R7']],
   ['R10: a page loads a module that is not an entry', { 'extension/panel/panel.html': HTML_PAGE('./controller.js') }, ['R10']],
 ]);
@@ -1214,6 +1302,11 @@ const GOOD_IMPORT_CASES = Object.freeze([
   ['R6: options imports its three listed app modules', { 'extension/options/extra.js': ['i18n/index.js', 'providers/gemini/live-config.js', 'security/shared-key.js'].map((file, index) => `import * as m${index} from '../../app/${file}';`).join('\n').concat('\nexport const y = [m0, m1, m2];\n') }],
   ['R6: a page imports lib and its own directory', { 'extension/panel/extra.js': "import { MAX } from '../lib/protocol.js';\nimport { start } from './controller.js';\nexport const y = [MAX, start];\n" }],
   ['R2: background imports lib and background', { 'extension/background/extra.js': "import { MAX } from '../lib/protocol.js';\nimport { createServiceWorker } from './sw-core.js';\nexport const y = [MAX, createServiceWorker];\n" }],
+  ['§22: the engine and the panel import both media modules; the relay imports constants.js and protocol.js', {
+    'extension/lib/display-media.js': 'export const DISPLAY_MEDIA_CONSTRAINTS = Object.freeze({});\n',
+    'extension/lib/audio-relay.js': "import { LIMIT } from './constants.js';\nimport { MAX } from './protocol.js';\nexport const createRelaySource = () => [LIMIT, MAX];\n",
+    'extension/engine/extra.js': "import { DISPLAY_MEDIA_CONSTRAINTS } from '../lib/display-media.js';\nimport { createRelaySource } from '../lib/audio-relay.js';\nexport const y = [DISPLAY_MEDIA_CONSTRAINTS, createRelaySource];\n",
+    'extension/panel/extra.js': "import { DISPLAY_MEDIA_CONSTRAINTS } from '../lib/display-media.js';\nimport { createRelaySource } from '../lib/audio-relay.js';\nexport const y = [DISPLAY_MEDIA_CONSTRAINTS, createRelaySource];\n" }],
   ['R7: a JSON import inside lib', { 'extension/lib/extra.js': "import data from './data.json';\nexport const y = data;\n", 'extension/lib/data.json': '{}\n' }],
   ['an import statement written inside a comment or a string is not an edge', { 'extension/lib/extra.js': "// import x from 'left-pad';\nexport const s = \"import y from 'left-pad'\";\n" }],
 ]);
@@ -1260,7 +1353,7 @@ test('scanner R13 and layout: unsafe names, symlinks, foreign file types, stray 
   assert.equal(new Set(EXPECTED_FILES.map(([, path]) => path)).size, EXPECTED_FILES.length);
   assert.ok(EXPECTED_FILES.every(([group, path]) => 'ABCD'.includes(group) && path.startsWith('extension/')));
   assert.ok(ENTRY_FILES.every((path) => EXPECTED_FILES.some(([, expected]) => expected === path)), 'every R10 entry is on the §3.1 list');
-  assert.equal(EXPECTED_FILES.length, 47, '46 + lib/update-check.js (§16)');
+  assert.equal(EXPECTED_FILES.length, 54, '46 + lib/update-check.js (§16) + the five self-update modules (§21) + the two §22 media modules');
 });
 
 test('scanner R3: a classic script is one parseable IIFE without import, export or require, for overlay.js and for every manifest content script', async (t) => {

@@ -7,20 +7,33 @@
 // What this file guarantees, each pinned by tests/extension-sw.test.mjs:
 //   * the first call of onActionClicked is sidePanel.open, in the same synchronous turn as the click (the user
 //     gesture that also grants tabCapture is only alive for that turn);
+//   * after the arming of a capturable tab has been written, the toolbar icon (its shortcut, the context menu) asks the
+//     panel of that window to start on that tab (§20, interp.autostart.v1): the icon is the one instant start;
 //   * the stream-id mint is the LAST awaited step before host/lane-start is sent (an id is single-use and expires);
-//   * a tab the toolbar icon did not arm is never refused: its start goes to the host without a stream id and the
-//     host asks through Chrome's share picker (§19), after the panel's own tab (and no other page) was given its
-//     capture label;
-//   * the API key leaves this file in exactly one message, host/lane-start, and is never stored or logged;
-//   * a Stop overtakes a start that is still inside ensureOffscreen, the mint or the host (stop wins).
+//   * `pick` is what the panel sends for every tab it does not read as armed (§20): that start goes to the host
+//     without a stream id and the host asks through Chrome's share dialog (§19), after the panel's own tab (and no
+//     other page) was given its capture label. A start WITHOUT `pick` for a tab that is not armed after all (the
+//     panel's armed record was stale) is refused with NEEDS_ARM, and the panel answers it with one more start with
+//     `pick`; a start with `pick` is never answered NEEDS_ARM;
+//   * the API key (a personal key, or the built-in pool) leaves this file in exactly one message, host/lane-start, and
+//     is never stored or logged;
+//   * a Stop overtakes a start that is still inside ensureOffscreen, the mint or the host (stop wins);
+//   * a Stop that cancels a share-dialog start also closes the offscreen document when no other lane lives in it: a
+//     dialog nobody answered stays open in the document for ever (it cannot be closed from there), and while it is open
+//     the stream-id start of the SAME document never completes (see closeLeftOverDialog);
+//   * §22: a `relay` start (the side panel opened the dialog itself and relays the tab's audio) asks the worker for no
+//     arming, no mint, no label, no keep-alive and never leaves a dialog in the document; sw/tab-label labels the
+//     panel's tab before the panel opens its dialog and always answers.
 import { BUILTIN_KEYS } from '../lib/builtin-key.js';
 import { isMachineCode } from '../lib/constants.js';
 import {
   LANES, LIMITS, PATHS, SETUP_QUERY, STORAGE_KEYS, createMessageRouter, makeMessage,
 } from '../lib/protocol.js';
 import {
-  hostSettingsOf, laneRequestOf, normalizeSettings, readKey, readSettings, resolveKey,
+  hostSettingsOf, laneRequestOf, moveOldTabDefaultModel, normalizeSettings, readKey, readSettings, resolveCredential,
+  updateSettings,
 } from '../lib/settings.js';
+import { compareVersions } from '../lib/update-check.js';
 import { createArming } from './arming.js';
 
 const HOST_JUSTIFICATION = 'Runs the live interpretation engine and the tab audio graph.';
@@ -33,11 +46,15 @@ const NONCE_BYTES = 16;
 // not listening yet). Later than that the dialog was already open: a re-send would open a second one by itself.
 const PICK_RETRY_WINDOW_MS = 1000;
 const ATTACH_DELAYS_MS = Object.freeze([0, 150, 400, 1000]);
+// §20: an update from a version before this one turns the interpreted voice on once (0.4.x started muted).
+const VOICE_ON_SINCE = '0.5.0';
+const LATEST_MODEL_SINCE = '0.5.1';
 const PING_ATTEMPTS = 20;
 const PING_INTERVAL_MS = 100;
 const STOP_POLL_MS = 100;
 const MINT_RETRY_MS = 250;
 const LIVE_LANE_PHASES = Object.freeze(['starting', 'running', 'reconnecting', 'stopping']);
+const ACTIVE_LANE_PHASES = Object.freeze(['starting', 'running', 'reconnecting']);
 const IDLE_LANE_PHASES = Object.freeze(['off', 'error']);
 const attempt = (fn) => { try { return fn(); } catch { return undefined; } };
 const codeError = (code) => Object.assign(new Error(code), { code });
@@ -45,7 +62,7 @@ const isObject = (value) => value !== null && typeof value === 'object';
 const schemeOf = (url) => attempt(() => new URL(url).protocol) ?? '';
 
 export function createServiceWorker({ adapter, now = () => Date.now(), setTimeout = globalThis.setTimeout,
-  getRandomValues = (bytes) => globalThis.crypto.getRandomValues(bytes) } = {}) {
+  getRandomValues = (bytes) => globalThis.crypto.getRandomValues(bytes), builtinKeys = BUILTIN_KEYS } = {}) {
   const { runtime, storage, tabs, tabCapture, sidePanel, action, contextMenus, offscreen, scripting, i18n } = adapter;
   const local = storage.local;
   const session = storage.session;
@@ -131,9 +148,11 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     throw codeError('HOST_UNAVAILABLE');
   });
 
-  // 6.9: refuses while a lane other than `except` is starting; never closes while a lane is running (callers check).
+  // 6.9: refuses while a lane other than `except` (a lane name, or a list of them) is starting; never closes while a lane
+  // is running (callers check).
   const closeHost = ({ except = null } = {}) => exclusive(async () => {
-    for (const lane of starting.keys()) if (lane !== except) return false;
+    const allowed = [].concat(except ?? []);
+    for (const lane of starting.keys()) if (!allowed.includes(lane)) return false;
     await closeDocumentQuietly();
     await writeHost(false, null);
     return true;
@@ -193,13 +212,24 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 
-  async function labelTab(tab, nonce, cancelled) {
-    if (!Number.isInteger(tab?.id) || !LABEL_SCHEMES.includes(schemeOf(tab.url))) return;
+  // Resolves true when the page answered that it took the label. Never rejects.
+  async function labelTab(tab, nonce, { waitMs, cancelled = null }) {
+    if (!Number.isInteger(tab?.id) || !LABEL_SCHEMES.includes(schemeOf(tab.url))) return false;
     const sent = settle(() => tabs.sendMessage(tab.id,
       makeMessage('content/capture-label', { label: `${nonce}.${tab.id}` }), { frameId: 0 }));
     // A page without the content script rejects at once; a frozen one may never answer, so the wait is bounded, and a
     // Stop ends it. A tab that misses its label is still interpreted: only its page captions are unavailable.
-    await Promise.race([sent, sleep(LIMITS.labelWaitMs), cancelled]);
+    const answer = await Promise.race([sent, sleep(waitMs), ...(cancelled ? [cancelled] : [])]);
+    return isObject(answer) && answer.ok === true;
+  }
+
+  // §22 sw/tab-label: the panel is about to open the share dialog itself and asks for the label on its own tab first
+  // (the same one-page rule as above; the nonce is the panel's). Always answers: a tab that is gone, a page that cannot
+  // take a label or one that does not answer within LIMITS.labelWaitMs is `labelled: false`, never an error.
+  async function labelPanelTab({ tabId, nonce }) {
+    let tab;
+    try { tab = await tabs.get(tabId); } catch { return { labelled: false }; }
+    return { labelled: await labelTab(tab, nonce, { waitMs: LIMITS.labelWaitMs }) };
   }
 
   // While the picker is open nothing happens in this worker, and an idle MV3 worker is stopped after 30 s: the
@@ -257,48 +287,67 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
   }
 
   // ---------------------------------------------------------------------------------------------
-  // 6.3 start orchestration.
-  async function startLane({ lane, tabId } = {}) {
+  // 6.3 start orchestration. `pick` (§20) = the panel asked for Chrome's share dialog: it sends it for every tab it does
+  // not read as armed (the same dialog on every OS), on a Chrome where the panel cannot show that dialog itself.
+  // `relay` (§22) = the panel showed the dialog itself, holds the captured track and relays its audio under this id;
+  // `passthrough` = Chrome silenced that tab, `chosenTab` = the tab its capture label named (null: unknown). Such a
+  // start skips the tab lookup, the arming, the mint, the label and the keep-alive; `tabId` is only the panel's tab.
+  async function startLane({ lane, tabId, pick = false, relay = null, passthrough = false, chosenTab = null } = {}) {
     if (!LANES.includes(lane)) throw codeError('INVALID_REQUEST');
+    if (relay !== null && pick) throw codeError('INVALID_REQUEST');   // two ways to ask for one dialog: a panel bug
+    const relayed = lane === 'tab' && relay !== null;
     // In memory; the host repeats the check authoritatively. A start that a stop already cancelled still holds the lane
     // until it has unwound (a hung getUserMedia can keep it there for a long time). Answering ALREADY_RUNNING to the
     // NEXT press would be wrong twice: nothing is running, and the panel deliberately ignores that code, so the press
     // would vanish without a word. LANE_STOPPING is what the panel shows as "still stopping, press Start again".
     const inFlight = starting.get(lane);
     if (inFlight) throw codeError(inFlight.cancelled ? 'LANE_STOPPING' : 'ALREADY_RUNNING');
-    const run = { cancelled: false, signal: null, whenCancelled: null };
+    // `dialogAsked` = host/lane-start of a share-dialog start has been sent: a dialog may be open in the document now.
+    const run = { cancelled: false, signal: null, whenCancelled: null, dialogAsked: false };
     run.whenCancelled = new Promise((resolve) => { run.signal = resolve; });
     starting.set(lane, run);
     const alive = () => { if (run.cancelled) throw codeError('START_CANCELLED'); };
     try {
-      // 1. Settings and key. The worker is the only context that reads the key.
+      // 1. Settings and key. The worker is the only context that reads the key. A stored personal key wins and never
+      //    falls back; without one the whole built-in pool travels, and the lane moves through it by itself (§20).
       let settings;
       let personal;
       try { settings = await readSettings(local); personal = await readKey(local); } catch { throw codeError('INTERNAL'); }
       alive();
-      const key = resolveKey({ personal, builtin: BUILTIN_KEYS });
-      if (key === null) throw codeError('CREDENTIAL_REQUIRED');
+      const credential = resolveCredential({ personal, builtin: builtinKeys });
+      if (credential === null) throw codeError('CREDENTIAL_REQUIRED');
 
       // 2. Tab lane: the tab must exist and be capturable by scheme. Armed (the toolbar icon was clicked on it) means
-      //    the instant path below; anything else is asked through Chrome's share picker (§19).
+      //    the instant path below. Anything else is NEEDS_ARM, unless the panel asked for Chrome's share dialog
+      //    (`pick`, §20, which it sends for every tab it does not read as armed): that start is asked through the share
+      //    picker (§19). NEEDS_ARM is the defense for a stale armed record (the panel thought the tab armed and sent no
+      //    `pick`); the panel answers it with one more start with `pick`. A tab that has no armed record at all is refused
+      //    HERE, before any host work, and creates no offscreen document; a record that outlived Chrome's grant is only
+      //    found by the mint (step 6), after the document exists and is flagged up.
+      //    A relay start (§22) has its capture already: the tab it interprets is the one chosen in the dialog, so the
+      //    panel's tab is neither looked up nor refused here.
       let armed = false;
       let tab = null;
-      if (lane === 'tab') {
+      if (lane === 'tab' && !relayed) {
         try { tab = await tabs.get(tabId); } catch { throw codeError('TAB_GONE'); }
         alive();
         if (!isObject(tab)) throw codeError('TAB_GONE');
         if (typeof tab.url === 'string' && !CAPTURABLE_SCHEMES.includes(schemeOf(tab.url))) throw codeError('TAB_UNSUPPORTED');
         armed = await arming.isArmed(tabId);
         alive();
+        if (!armed && !pick) throw codeError('NEEDS_ARM');
       }
 
       // 3. Wait out a lane that is still stopping. This MUST happen before the mint: an id the host then refuses
       //    stays pending and blocks the next mint of that tab ("Cannot capture a tab with an active stream.").
+      //    For the same reason a lane the host already runs is refused HERE (§20 review: a panel that had no host
+      //    state yet sent a start next to a running lane, and the id it left pending broke the next icon click).
       if (await hostExists()) {
         for (let waited = 0; ; waited += STOP_POLL_MS) {
           alive();
           const answer = await ping();   // a FRESH ping each time
           alive();
+          if (answer.ok && ACTIVE_LANE_PHASES.includes(answer.lanes?.[lane])) throw codeError('ALREADY_RUNNING');
           if (!answer.ok || answer.lanes?.[lane] !== 'stopping') break;
           if (waited >= LIMITS.stopWaitMs) throw codeError('LANE_STOPPING');
           await sleep(STOP_POLL_MS);
@@ -311,9 +360,9 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       await markHostUp(hostId);
       alive();
 
-      // 5. The request. `key` is copied into the one message below and nowhere else.
+      // 5. The request. The credential (`key` or `keys`) is copied into the one message below and nowhere else.
       const payload = {
-        lane, key,
+        lane, ...credential,
         request: laneRequestOf(settings, lane),
         voiceGender: settings.voiceGender,
         muted: settings.speechMuted,
@@ -322,13 +371,16 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       };
 
       // 6. The mint is the LAST awaited step before the send: the id is single-use and short-lived. A grant that
-      //    turns out to be gone (the armed record was stale; mapMintError cleared it) is not an error any more: the
-      //    start goes on through the picker, like a tab that was never armed.
+      //    turns out to be gone (the armed record was stale; mapMintError cleared it) is NEEDS_ARM, which the panel
+      //    answers with one more start with `pick` (§20); a start that already carries `pick` goes on through the picker.
       let picking = false;
-      if (lane === 'tab') {
+      if (relayed) {
+        // §22: no mint and no label; the host listens on the relay channel and plays what the panel sends.
+        payload.tab = { relay, tabId: chosenTab, passthrough, originalVolume: settings.lanes.tab.originalVolume };
+      } else if (lane === 'tab') {
         let streamId = null;
         if (armed) {
-          try { streamId = await mintStreamId(tabId, lane); } catch (error) { if (error?.code !== 'NEEDS_ARM') throw error; }
+          try { streamId = await mintStreamId(tabId, lane); } catch (error) { if (error?.code !== 'NEEDS_ARM' || !pick) throw error; }
           alive();   // a stop that landed during the mint: nothing is sent, the host already got its host/lane-stop
         }
         if (streamId !== null) {
@@ -336,7 +388,7 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
         } else {
           picking = true;
           const nonce = makeNonce();
-          await labelTab(tab, nonce, run.whenCancelled);
+          await labelTab(tab, nonce, { waitMs: LIMITS.pickLabelWaitMs, cancelled: run.whenCancelled });
           alive();
           payload.tab = { pick: nonce, originalVolume: settings.lanes.tab.originalVolume };
         }
@@ -345,12 +397,15 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       // A picker start answers only after the user chose (or closed the dialog): keep this worker alive meanwhile.
       const release = picking ? keepAwake() : () => {};
       const sentAt = now();
+      run.dialogAsked = picking;   // set in the turn of the send: a stop that cancels this run from now on may leave a dialog behind
       let res;
       try {
         res = await sendToHost(message);
         // Exactly ONE retry: the document was not listening yet. For a picker start only while that can still be the
-        // reason; a document that went away with the dialog open is reported, not asked a second time.
-        if (!res.ok && res.code === 'HOST_UNAVAILABLE' && (!picking || now() - sentAt < PICK_RETRY_WINDOW_MS)) {
+        // reason; a document that went away with the dialog open is reported, not asked a second time. Never for a
+        // cancelled run: its stop may have closed the document on purpose (closeLeftOverDialog), and a retry would
+        // create a new one (flagged down) only for alive() to end the run.
+        if (!res.ok && res.code === 'HOST_UNAVAILABLE' && !run.cancelled && (!picking || now() - sentAt < PICK_RETRY_WINDOW_MS)) {
           await ensureOffscreen();
           alive();
           res = await sendToHost(message);
@@ -364,22 +419,51 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
       }
       if (!res.ok) throw codeError(res.code);
       await settle(() => session.remove(STORAGE_KEYS.lastStop));   // a new run began
-      // A picker start reports the tab the user really chose (null: it could not be told, so no page gets captions).
-      const captured = picking ? (Number.isInteger(res.tabId) ? res.tabId : null) : tabId;
+      // A picker start reports the tab the user really chose (null: it could not be told, so no page gets captions); a
+      // relay start (§22) names it itself.
+      const reported = Number.isInteger(res.tabId) ? res.tabId : null;
+      const captured = relayed ? chosenTab : picking ? reported : tabId;
       afterLaneStarted(lane, captured).catch(() => {});
     } finally {
       if (starting.get(lane) === run) starting.delete(lane);
     }
   }
 
+  // A dialog that a stop leaves open (Chrome's share dialog cannot be closed from the document that asked for it) is a
+  // trap, seen in headless Chrome for Testing 149 (docs/extension.md §20, check 20.5; headed Chrome and Windows
+  // UNVERIFIED): while it is open, a tab-capture getUserMedia in the SAME document never completes. So the icon (an instant
+  // stream-id start) could not take over an open dialog or one left behind, and a Stop then cost startSettleMs. Closing
+  // the offscreen document removes the dialog at once (the next start recreates the document, through ensureOffscreen).
+  // It is done only when nothing else lives in the document: `cancelled` = the lanes whose start this stop cancelled
+  // (they are being torn down; their unwinding start still sits in `starting`, hence closeHost's `except`); any other
+  // lane must be idle in a FRESH ping, and a ping that fails means the host is unusable, so it is closed too. A
+  // running, starting, reconnecting or stopping microphone keeps the document: closing it would end the microphone.
+  // KNOWN LIMIT: with the microphone running, the dialog this stop cancelled stays open (the next dialog start takes it
+  // over inside the same document), and an instant tab start (the icon) can hang at "Checking permissions..." until
+  // that dialog is answered, because the document cannot be closed.
+  // The close runs inside the lifecycle mutex, so it waits for an ensureOffscreen in progress (a few ms; at most the
+  // handshake's PING_ATTEMPTS * PING_INTERVAL_MS for a document that does not answer) and the stop answers after it.
+  async function closeLeftOverDialog(cancelled) {
+    const answer = await ping();
+    if (answer.ok && LANES.some((name) => !cancelled.includes(name) && !IDLE_LANE_PHASES.includes(answer.lanes?.[name]))) return false;
+    return closeHost({ except: cancelled });
+  }
+
   // 6.11 sw/lane-stop: cancel starts that have not reached the host, then tell the host (best effort, never throws).
   async function stopLane({ lane } = {}) {
     const named = LANES.includes(lane) ? [lane] : LANES;
+    const cancelled = [];
+    let dialog = false;
     for (const name of named) {
       const run = starting.get(name);
-      if (run) { run.cancelled = true; run.signal(); }
+      if (!run) continue;
+      run.cancelled = true;
+      run.signal();
+      cancelled.push(name);
+      dialog ||= run.dialogAsked;
     }
     await settle(() => sendToHost(makeMessage('host/lane-stop', LANES.includes(lane) ? { lane } : {})));
+    if (dialog) await settle(() => closeLeftOverDialog(cancelled));
   }
 
   // 6.11 sw/host-probe: compare interp.host.v1.up with reality.
@@ -439,12 +523,33 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     ]);
   }
 
+  // Two one-time moves of an UPDATED install, each from the version that introduced it; nothing else changes.
+  // §20 (0.5.0): 0.4.x started every lane muted, and a member heard nothing: an update from a version before 0.5.0
+  // turns the interpreted voice on ONCE; a later mute is the user's own and stays.
+  // 0.5.1 (2026-10-08, owner): both lanes default to the latest Google Live model; an update from a version before 0.5.1
+  // moves a tab lane that still holds the old default (the translation-only preview) to it ONCE, and a model the user
+  // chose stays. With no stored settings there is nothing to change: the new defaults apply, and the panel still
+  // seeds the languages on first run.
+  async function migrateAfterUpdate(details) {
+    if (details?.reason !== 'update') return;
+    const voiceOn = compareVersions(details.previousVersion, VOICE_ON_SINCE) === -1;
+    const latestModel = compareVersions(details.previousVersion, LATEST_MODEL_SINCE) === -1;
+    if (!voiceOn && !latestModel) return;
+    const stored = await settle(() => local.get(STORAGE_KEYS.settings));
+    if (!isObject(stored) || !isObject(stored[STORAGE_KEYS.settings])) return;
+    await settle(() => updateSettings(local, (settings) => {
+      if (voiceOn) settings.speechMuted = false;
+      if (latestModel) moveOldTabDefaultModel(settings);
+    }));
+  }
+
   async function onInstalled(details) {
     await settle(async () => {
       await contextMenus.removeAll();   // menus persist across restarts: creating twice would throw "duplicate id"
       contextMenus.create({ id: MENU_ID, title: i18n.getMessage('menuOpen'), contexts: [...MENU_CONTEXTS] });
     });
-    await settle(() => session.remove([STORAGE_KEYS.armed, STORAGE_KEYS.host, STORAGE_KEYS.lastStop]));
+    await settle(() => session.remove([STORAGE_KEYS.armed, STORAGE_KEYS.host, STORAGE_KEYS.lastStop, STORAGE_KEYS.autostart]));
+    await migrateAfterUpdate(details);
     await bootstrap();
     // §17: a FIRST install opens the setup page (the permission page in setup mode): it asks for the microphone at once
     // and shows the pin and first-use steps, so nobody has to find the microphone button before the first Start.
@@ -459,10 +564,18 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
   function openPanel(tab) {
     try { return Promise.resolve(sidePanel.open({ windowId: tab?.windowId })); } catch (error) { return Promise.reject(error); }
   }
+  // §20: the click also asks the panel of that window to start on that tab. The record is written AFTER the arming (the
+  // panel starts only on a tab it reads as armed) and only for a page that can be captured; on any other page the click
+  // only opens the panel, whose arm note says the page cannot be interpreted. The panel consumes the record once.
+  function requestAutostart(tab) {
+    if (!Number.isInteger(tab?.id) || !Number.isInteger(tab.windowId)) return undefined;
+    if (typeof tab.url === 'string' && !CAPTURABLE_SCHEMES.includes(schemeOf(tab.url))) return undefined;
+    return writeRecord(STORAGE_KEYS.autostart, { v: 1, tabId: tab.id, windowId: tab.windowId, at: now() });
+  }
   function armAndOpen(tab) {
     const opened = openPanel(tab);
-    const armed = arming.arm(tab);
-    return Promise.allSettled([opened, armed]).then(() => considerOverlay(tab?.id));
+    const asked = arming.arm(tab).then(() => requestAutostart(tab));
+    return Promise.allSettled([opened, asked]).then(() => considerOverlay(tab?.id));
   }
   const onActionClicked = (tab) => armAndOpen(tab);
   function onMenuClicked(info, tab) {
@@ -512,8 +625,13 @@ export function createServiceWorker({ adapter, now = () => Date.now(), setTimeou
     createMessageRouter({
       runtime, target: 'sw',
       handlers: {
-        'sw/lane-start': async ({ lane, tabId }) => { await startLane({ lane, tabId }); return {}; },
+        'sw/lane-start': async ({ lane, tabId, pick, relay, passthrough, chosenTab }) => {
+          await startLane({ lane, tabId, pick: pick === true,
+            ...(relay === undefined ? {} : { relay, passthrough: passthrough === true, chosenTab: chosenTab ?? null }) });
+          return {};
+        },
         'sw/lane-stop': async ({ lane }) => { await stopLane({ lane }); return {}; },
+        'sw/tab-label': (message) => labelPanelTab(message),
         'sw/permission-open': () => openPermission(),
         'sw/host-probe': async () => ({ up: await probeHost() }),
         'sw/host-idle': (message) => onHostIdle(message),

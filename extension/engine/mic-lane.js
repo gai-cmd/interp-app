@@ -6,7 +6,7 @@ import { createLanePlatform } from './platform-shim.js';
 
 const codedError = (code) => Object.assign(new Error(code), { code });
 
-export function createMicLane({ env, deps = {}, timers, onChange } = {}) {
+export function createMicLane({ env, deps = {}, timers, onChange, cooldowns = null } = {}) {
   // Steps 2-3 of 5.6.2. Nothing exists yet while the permission query is pending, so a stop needs no cleanup here.
   async function acquire({ run }) {
     const permissions = env.navigator?.permissions;
@@ -20,5 +20,5 @@ export function createMicLane({ env, deps = {}, timers, onChange } = {}) {
     return { platform: createLanePlatform({ env, createPlatform: deps.createPlatform }) };
   }
 
-  return createLaneController({ lane: 'mic', env, deps, timers, onChange, acquire });
+  return createLaneController({ lane: 'mic', env, deps, timers, onChange, acquire, cooldowns });
 }
